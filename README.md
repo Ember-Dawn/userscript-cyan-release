@@ -1,1 +1,5 @@
-# userscript-cyan-release
+# Cyan 油猴脚本发布仓库
+
+本仓库用于公开发布可直接安装和自动更新的 Tampermonkey 用户脚本。
+
+公开内容由私有开发仓库通过 GitHub Actions 自动同步。首次同步完成后，本页会自动替换为完整脚本列表和安装链接。
