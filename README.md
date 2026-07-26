@@ -2,7 +2,7 @@
 
 这是 Cyan 油猴脚本的公开发布仓库，用于提供可直接安装和自动更新的 Tampermonkey 用户脚本。
 
-本仓库中的内容由私有开发仓库通过 GitHub Actions 自动生成和同步。请通过下表安装脚本，不要直接修改本仓库中的发布文件。
+本仓库中的公开文件由私有开发仓库维护。请通过下表安装脚本，不要直接修改公开仓库中的发布文件。
 
 ## 仓库结构
 
@@ -38,7 +38,6 @@ userscript-cyan-release/
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
 | NocoDB 代码块复制 | [`nocodb-code-copy.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-code-copy.user.js) | 为 LongText/Rich Text 中的代码块增加悬浮复制按钮。 |
-| NocoDB 复制 Record 为 JSON | [`nocodb-record-json.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-record-json.user.js) | 在记录详情弹层中增加按钮，将当前记录复制为 JSON。 |
 | NocoDB 彩虹标题 | [`nocodb-rainbow-headings.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-rainbow-headings.user.js) | 为 Rich Text 编辑器中的 H1-H6 标题应用不同颜色。 |
 | NocoDB 文件夹 | [`nocodb-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-folders.user.js) | 为 NocoDB 表格提供文件夹式组织、排序、状态保存和 WebDAV 同步等功能。 |
 | NocoDB LongText 字体改色 | [`nocodb-longtext-color.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-longtext-color.user.js) | 为加粗文字、`【xxx】` 和 `「xxx」` 等内容应用便于识别的颜色。 |
