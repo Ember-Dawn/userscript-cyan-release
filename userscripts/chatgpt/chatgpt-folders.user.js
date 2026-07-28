@@ -537,7 +537,6 @@ WebDAV 按钮：
 文件夹
 
 要求：
-
 - “文件夹”三个字顶格显示。
 - 标题前的三角箭头隐藏。
 - 点击“文件夹”这三个字仍然可以折叠 / 展开整个文件夹区域。
@@ -717,7 +716,6 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
 --------------------------------------------------------------------------------
 二十、当前期望行为总览
 --------------------------------------------------------------------------------
-
 - ChatGPT 官方侧边栏展开：显示脚本“文件夹”区域。
 - ChatGPT 官方侧边栏收起：文件夹区域随之隐藏，并释放左侧宽度，不占空白外壳。
 - 自定义侧边栏宽度：只在官方侧边栏展开时生效。
@@ -2517,7 +2515,6 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
       return title;
     } catch (_) { return ''; }
   }
-
   function normalizeStoredUrl(url) {
     const id = extractConversationId(url);
     return id ? '/c/' + id : String(url || '');
@@ -2697,7 +2694,6 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     document.documentElement.classList.toggle('cgfm-sidebar-width-active', enabled && expanded);
     document.documentElement.classList.toggle('cgfm-official-sidebar-collapsed', !expanded);
   }
-
   function ensureSidebarWidthStyle(cssPx) {
     if (!sidebarWidthStyleEl) {
       sidebarWidthStyleEl = document.getElementById('cgfm-sidebar-width-style') || document.createElement('style');

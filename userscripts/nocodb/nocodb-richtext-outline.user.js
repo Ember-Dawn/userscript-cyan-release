@@ -397,7 +397,6 @@
 
 (function () {
  'use strict';
-
  /*
   * v44 部分 ProseMirror 重构说明：
   * - 标题数据优先来自 editor.state.doc，而不是 DOM querySelectorAll。
@@ -1117,7 +1116,6 @@
    }
    return Math.max(0, Math.round(Number(top) || 0));
  }
-
  function buildDomHeadingSnapshot(state) {
    if (!(state && state.editor instanceof HTMLElement)) return null;
    const nodes = getLiveHeadingNodes(state.editor);
@@ -1357,7 +1355,6 @@
    }
    return true;
  }
-
  function setStatus(state, kind, text) {
    if (!(state && state.status instanceof HTMLElement)) return;
    state.status.className = CLASS.status;

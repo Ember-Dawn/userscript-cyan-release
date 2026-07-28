@@ -777,7 +777,6 @@
                         offsetFields.style.display = config.enableTableOffset ? 'block' : 'none';
                         saveConfig(); updateGlobalCSSVars();
                     };
-
                     panel.querySelector('#inp-table-offset').oninput = (ev) => {
                         const val = asInt(ev.target.value);
                         panel.querySelector('#lbl-table-offset').innerText = val; config.tableOffset = val;
