@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/github/github-hide-archived-repositories.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/github/github-hide-archived-repositories.user.js
-// @version      1.0.0
-// @description  在 GitHub 个人仓库列表中隐藏已归档仓库，并提供按钮随时切换显示状态。
+// @version      1.1.0
+// @description  在 GitHub 个人仓库列表中隐藏已归档仓库，并提供带数量提示的状态按钮随时切换显示状态。
 // @author       Penghao
 // @match        https://github.com/*
 // @run-at       document-idle
@@ -19,7 +19,7 @@
 
 1. 仅在 GitHub 个人主页的 Repositories 列表中生效。
 2. 默认隐藏带有 archived 类名的仓库条目。
-3. 在 Type、Language、Sort 旁添加“显示归档 / 隐藏归档”按钮。
+3. 在 Type、Language、Sort 旁显示当前状态和归档仓库数量。
 4. 开关状态保存在 Tampermonkey 本地存储中。
 */
 
@@ -36,6 +36,11 @@
   let hideArchived = GM_getValue(STORAGE_KEY, true);
   let refreshTimer = null;
 
+  function getArchivedCount() {
+    const repositoryList = document.querySelector(REPOSITORY_LIST_SELECTOR);
+    return repositoryList?.querySelectorAll('li.archived').length || 0;
+  }
+
   function updateRepositoryList() {
     const repositoryList = document.querySelector(REPOSITORY_LIST_SELECTOR);
     if (!repositoryList) return false;
@@ -45,11 +50,14 @@
   }
 
   function updateButton(button) {
-    button.textContent = hideArchived ? '显示归档' : '隐藏归档';
+    const archivedCount = getArchivedCount();
+    button.textContent = hideArchived
+      ? `归档：已隐藏 (${archivedCount})`
+      : `归档：已显示 (${archivedCount})`;
     button.setAttribute('aria-pressed', String(hideArchived));
     button.title = hideArchived
-      ? '当前已隐藏归档仓库，点击后显示'
-      : '当前显示归档仓库，点击后隐藏';
+      ? `当前已隐藏 ${archivedCount} 个归档仓库，点击后显示`
+      : `当前已显示 ${archivedCount} 个归档仓库，点击后隐藏`;
   }
 
   function createToggleButton() {
