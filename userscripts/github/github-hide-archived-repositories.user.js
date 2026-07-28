@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
-// @version      1.3.0
+// @version      1.3.1
 // @description  在 GitHub 个人仓库列表中自动合并全部分页，并在最终显示前隐藏已归档仓库，避免列表闪烁。
 // @author       Penghao
 // @match        https://github.com/*
@@ -22,7 +22,7 @@
 3. 自动请求并合并当前筛选条件下的全部分页，完成后一次性显示最终列表。
 4. 默认隐藏已归档仓库，并在 Type、Language、Sort 旁显示归档数量和切换按钮。
 5. 搜索、筛选、排序、前进后退及 GitHub SPA 导航后会重新整理列表。
-6. 如果后续分页加载失败，会恢复当前页和原分页控件，不会让列表一直隐藏。
+6. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
 */
 
 (() => {
@@ -34,16 +34,12 @@
   const STATUS_ID = 'cyan-github-repository-loading-status';
   const HIDDEN_CLASS = 'cyan-github-hide-archived';
   const PREPARING_CLASS = 'cyan-github-repositories-preparing';
-  const READY_CLASS = 'cyan-github-repositories-ready';
   const MERGED_ATTRIBUTE = 'data-cyan-all-pages-merged';
-  const REPOSITORY_LIST_SELECTOR = '#user-repositories-list';
+  const REPOSITORY_ROOT_SELECTOR = '#user-repositories-list';
+  const REPOSITORY_ITEMS_SELECTOR = ':scope > li[itemprop="owns"], :scope > li';
   const FILTER_FORM_SELECTOR = 'form[aria-label="Repositories"]';
   const FILTER_ACTIONS_SELECTOR = `${FILTER_FORM_SELECTOR} .d-flex.flex-wrap.gap-2`;
-  const PAGINATION_SELECTORS = [
-    '.paginate-container',
-    'nav[aria-label="Pagination"]',
-    '[data-testid="pagination"]',
-  ];
+  const PAGINATION_SELECTOR = '.paginate-container, nav[aria-label="Pagination"], [data-testid="pagination"]';
 
   let hideArchived = GM_getValue(STORAGE_KEY, true);
   let activeRunId = 0;
@@ -60,14 +56,53 @@
     }
   }
 
+  function getRepositoryRoot(root = document) {
+    return root.querySelector(REPOSITORY_ROOT_SELECTOR);
+  }
+
+  function getRepositoryItemsContainer(root = document) {
+    const repositoryRoot = getRepositoryRoot(root);
+    if (!repositoryRoot) return null;
+
+    const directList = Array.from(repositoryRoot.children).find((child) =>
+      child instanceof HTMLElement && /^(UL|OL)$/.test(child.tagName)
+    );
+    if (directList) return directList;
+
+    const nestedList = repositoryRoot.querySelector('ul, ol');
+    if (nestedList) return nestedList;
+
+    const firstRepoItem = repositoryRoot.querySelector('li[itemprop="owns"], li');
+    return firstRepoItem?.parentElement || null;
+  }
+
+  function collectRepositoryItems(root = document) {
+    const container = getRepositoryItemsContainer(root);
+    if (!container) return [];
+    return Array.from(container.querySelectorAll(REPOSITORY_ITEMS_SELECTOR));
+  }
+
+  function getRepositoryKey(item) {
+    if (!(item instanceof Element)) return '';
+    const anchor = item.querySelector('a[itemprop="name codeRepository"], h3 a[href]');
+    const href = anchor?.getAttribute('href') || '';
+    return href.replace(/\/$/, '').toLowerCase();
+  }
+
+  function getArchivedCount(root = document) {
+    return collectRepositoryItems(root).filter((item) => item.classList.contains('archived')).length;
+  }
+
+  function getRepositoryCount(root = document) {
+    return collectRepositoryItems(root).length;
+  }
+
   function applyHiddenState() {
     document.documentElement.classList.toggle(HIDDEN_CLASS, hideArchived);
   }
 
   function setPreparingState(preparing) {
-    const html = document.documentElement;
-    html.classList.toggle(PREPARING_CLASS, preparing);
-    html.classList.toggle(READY_CLASS, !preparing);
+    document.documentElement.classList.toggle(PREPARING_CLASS, preparing);
   }
 
   function injectStyle() {
@@ -76,11 +111,11 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      html.${HIDDEN_CLASS} ${REPOSITORY_LIST_SELECTOR} li.archived {
+      html.${HIDDEN_CLASS} ${REPOSITORY_ROOT_SELECTOR} li.archived {
         display: none !important;
       }
 
-      html.${PREPARING_CLASS} ${REPOSITORY_LIST_SELECTOR} {
+      html.${PREPARING_CLASS} ${REPOSITORY_ROOT_SELECTOR} {
         visibility: hidden !important;
       }
 
@@ -103,34 +138,11 @@
         color: var(--fgColor-danger, var(--color-danger-fg, #d1242f));
       }
     `;
-
     document.documentElement.appendChild(style);
-  }
-
-  function getRepositoryList(root = document) {
-    return root.querySelector(REPOSITORY_LIST_SELECTOR);
-  }
-
-  function getRepositoryKey(item) {
-    if (!(item instanceof Element)) return '';
-    const anchor = item.querySelector('h3 a[itemprop="name codeRepository"], h3 a[href], a[itemprop="name codeRepository"]');
-    const href = anchor?.getAttribute('href') || '';
-    return href.replace(/\/$/, '').toLowerCase();
-  }
-
-  function getArchivedCount(root = document) {
-    const repositoryList = getRepositoryList(root);
-    return repositoryList?.querySelectorAll(':scope > li.archived').length || 0;
-  }
-
-  function getRepositoryCount(root = document) {
-    const repositoryList = getRepositoryList(root);
-    return repositoryList?.querySelectorAll(':scope > li').length || 0;
   }
 
   function updateButton(button = document.getElementById(BUTTON_ID)) {
     if (!button) return;
-
     const archivedCount = getArchivedCount();
     const totalCount = getRepositoryCount();
     const text = hideArchived
@@ -150,14 +162,12 @@
     button.id = BUTTON_ID;
     button.type = 'button';
     button.className = 'btn mt-1 mt-lg-0';
-
     button.addEventListener('click', () => {
       hideArchived = !hideArchived;
       GM_setValue(STORAGE_KEY, hideArchived);
       applyHiddenState();
       updateButton(button);
     });
-
     updateButton(button);
     return button;
   }
@@ -165,7 +175,6 @@
   function ensureToggleButton() {
     const filterActions = document.querySelector(FILTER_ACTIONS_SELECTOR);
     if (!filterActions) return null;
-
     let button = document.getElementById(BUTTON_ID);
     if (!button) {
       button = createToggleButton();
@@ -173,22 +182,19 @@
     } else {
       updateButton(button);
     }
-
     return button;
   }
 
   function ensureStatusElement() {
     let status = document.getElementById(STATUS_ID);
     if (status) return status;
-
-    const repositoryList = getRepositoryList();
-    if (!repositoryList?.parentElement) return null;
-
+    const repositoryRoot = getRepositoryRoot();
+    if (!repositoryRoot?.parentElement) return null;
     status = document.createElement('div');
     status.id = STATUS_ID;
     status.setAttribute('role', 'status');
     status.setAttribute('aria-live', 'polite');
-    repositoryList.insertAdjacentElement('beforebegin', status);
+    repositoryRoot.insertAdjacentElement('beforebegin', status);
     return status;
   }
 
@@ -207,17 +213,7 @@
   }
 
   function getPaginationContainers(root = document) {
-    const containers = new Set();
-    for (const selector of PAGINATION_SELECTORS) {
-      root.querySelectorAll(selector).forEach((node) => containers.add(node));
-    }
-
-    root.querySelectorAll('a[rel="next"], a.next_page, a[aria-label="Next Page"]').forEach((link) => {
-      const container = link.closest('.paginate-container, nav, [data-testid="pagination"]');
-      if (container) containers.add(container);
-    });
-
-    return Array.from(containers);
+    return Array.from(root.querySelectorAll(PAGINATION_SELECTOR));
   }
 
   function showPagination() {
@@ -235,36 +231,15 @@
   }
 
   function findNextPageUrl(root, baseUrl) {
-    const selectors = [
-      'a[rel="next"]',
-      'a.next_page',
-      'a[aria-label="Next Page"]',
-      '.paginate-container a[href]:last-of-type',
-    ];
-
-    for (const selector of selectors) {
-      const candidates = Array.from(root.querySelectorAll(selector));
-      for (const link of candidates) {
-        const text = (link.textContent || '').trim().toLowerCase();
-        const rel = (link.getAttribute('rel') || '').toLowerCase();
-        const aria = (link.getAttribute('aria-label') || '').toLowerCase();
-        const isNext = rel.includes('next') || aria.includes('next') || text === 'next' || link.classList.contains('next_page');
-        const href = link.getAttribute('href');
-        if (isNext && href) return new URL(href, baseUrl).href;
-      }
-    }
-
-    return '';
+    const link = root.querySelector(
+      'a[rel~="next"][href], a.next_page[href], a[aria-label="Next page"][href], a[aria-label="Next Page"][href]'
+    );
+    const href = link?.getAttribute('href');
+    return href ? new URL(href, baseUrl).href : '';
   }
 
-  function collectRepositoryItems(root) {
-    const list = getRepositoryList(root);
-    if (!list) return [];
-    return Array.from(list.querySelectorAll(':scope > li'));
-  }
-
-  async function waitForRepositoryList(runId, timeoutMs = 15000) {
-    const immediate = getRepositoryList();
+  async function waitForRepositoryRoot(runId, timeoutMs = 15000) {
+    const immediate = getRepositoryRoot();
     if (immediate) return immediate;
 
     return new Promise((resolve, reject) => {
@@ -272,8 +247,8 @@
       const timeout = window.setTimeout(() => finish(null, new Error('等待 GitHub 仓库列表超时。')), timeoutMs);
       const observer = new MutationObserver(() => {
         if (runId !== activeRunId) return finish(null, new DOMException('任务已取消。', 'AbortError'));
-        const list = getRepositoryList();
-        if (list) finish(list);
+        const root = getRepositoryRoot();
+        if (root) finish(root);
       });
 
       function finish(value, error) {
@@ -292,79 +267,87 @@
   async function fetchPageDocument(url, signal) {
     const response = await fetch(url, {
       credentials: 'same-origin',
-      headers: {
-        Accept: 'text/html,application/xhtml+xml',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
+      headers: { Accept: 'text/html,application/xhtml+xml' },
       signal,
     });
-
-    if (!response.ok) {
-      throw new Error(`加载分页失败：HTTP ${response.status}`);
-    }
-
-    const html = await response.text();
-    return new DOMParser().parseFromString(html, 'text/html');
+    if (!response.ok) throw new Error(`加载分页失败：HTTP ${response.status}`);
+    return new DOMParser().parseFromString(await response.text(), 'text/html');
   }
 
-  function appendUniqueItems(targetList, items, seenKeys) {
+  function appendUniqueItems(targetContainer, items, seenKeys) {
     const fragment = document.createDocumentFragment();
     let added = 0;
-
     for (const item of items) {
       const key = getRepositoryKey(item);
-      if (key && seenKeys.has(key)) continue;
-      if (key) seenKeys.add(key);
+      if (!key || seenKeys.has(key)) continue;
+      seenKeys.add(key);
       fragment.appendChild(item.cloneNode(true));
       added += 1;
     }
-
-    targetList.appendChild(fragment);
+    targetContainer.appendChild(fragment);
     return added;
   }
 
   async function loadAndMergeAllPages(runId, signal) {
-    const currentList = await waitForRepositoryList(runId);
-    if (runId !== activeRunId) throw new DOMException('任务已取消。', 'AbortError');
+    const repositoryRoot = await waitForRepositoryRoot(runId);
+    const liveContainer = getRepositoryItemsContainer();
+    const firstPageItems = collectRepositoryItems();
 
-    const workingList = currentList.cloneNode(false);
+    if (!liveContainer || firstPageItems.length === 0) {
+      throw new Error('未识别到 GitHub 仓库条目，已保留原始页面。');
+    }
+
+    const originalChildren = Array.from(liveContainer.childNodes).map((node) => node.cloneNode(true));
+    const workingContainer = liveContainer.cloneNode(false);
     const seenKeys = new Set();
-    appendUniqueItems(workingList, collectRepositoryItems(document), seenKeys);
+    appendUniqueItems(workingContainer, firstPageItems, seenKeys);
+
+    if (workingContainer.children.length === 0) {
+      throw new Error('第一页仓库解析结果为空，已保留原始页面。');
+    }
 
     let nextUrl = findNextPageUrl(document, location.href);
     let loadedPage = 1;
-    let totalKnownPages = null;
     const visitedUrls = new Set([new URL(location.href).href]);
 
-    while (nextUrl) {
+    try {
+      while (nextUrl) {
+        if (signal.aborted || runId !== activeRunId) {
+          throw new DOMException('任务已取消。', 'AbortError');
+        }
+        if (visitedUrls.has(nextUrl)) break;
+        visitedUrls.add(nextUrl);
+
+        loadedPage += 1;
+        setStatus(`正在整理仓库列表… 正在加载第 ${loadedPage} 页`);
+        const pageDocument = await fetchPageDocument(nextUrl, signal);
+        const pageItems = collectRepositoryItems(pageDocument);
+        if (pageItems.length === 0) {
+          throw new Error(`第 ${loadedPage} 页未识别到仓库条目。`);
+        }
+        appendUniqueItems(workingContainer, pageItems, seenKeys);
+        nextUrl = findNextPageUrl(pageDocument, nextUrl);
+      }
+
       if (signal.aborted || runId !== activeRunId) {
         throw new DOMException('任务已取消。', 'AbortError');
       }
-      if (visitedUrls.has(nextUrl)) break;
-      visitedUrls.add(nextUrl);
+      if (workingContainer.children.length < firstPageItems.length) {
+        throw new Error('合并结果异常，已保留原始页面。');
+      }
 
-      loadedPage += 1;
-      setStatus(totalKnownPages
-        ? `正在整理仓库列表… 正在加载第 ${loadedPage}/${totalKnownPages} 页`
-        : `正在整理仓库列表… 正在加载第 ${loadedPage} 页`);
-
-      const pageDocument = await fetchPageDocument(nextUrl, signal);
-      const pageItems = collectRepositoryItems(pageDocument);
-      appendUniqueItems(workingList, pageItems, seenKeys);
-
-      const nextFromPage = findNextPageUrl(pageDocument, nextUrl);
-      if (!nextFromPage) totalKnownPages = loadedPage;
-      nextUrl = nextFromPage;
+      liveContainer.replaceChildren(...Array.from(workingContainer.childNodes));
+      repositoryRoot.setAttribute(MERGED_ATTRIBUTE, 'true');
+      hidePagination();
+      ensureToggleButton();
+      updateButton();
+      clearStatus();
+    } catch (error) {
+      if (error?.name !== 'AbortError' && liveContainer.childNodes.length === 0) {
+        liveContainer.replaceChildren(...originalChildren.map((node) => node.cloneNode(true)));
+      }
+      throw error;
     }
-
-    if (runId !== activeRunId) throw new DOMException('任务已取消。', 'AbortError');
-
-    currentList.replaceChildren(...Array.from(workingList.children));
-    currentList.setAttribute(MERGED_ATTRIBUTE, 'true');
-    hidePagination();
-    ensureToggleButton();
-    updateButton();
-    clearStatus();
   }
 
   function revealFinalList() {
@@ -385,8 +368,8 @@
     }
 
     const pageUrl = new URL(location.href).href;
-    const existingList = getRepositoryList();
-    if (!force && pageUrl === lastProcessedUrl && existingList?.getAttribute(MERGED_ATTRIBUTE) === 'true') {
+    const repositoryRoot = getRepositoryRoot();
+    if (!force && pageUrl === lastProcessedUrl && repositoryRoot?.getAttribute(MERGED_ATTRIBUTE) === 'true') {
       ensureToggleButton();
       updateButton();
       revealFinalList();
@@ -396,11 +379,10 @@
     const runId = ++activeRunId;
     if (activeAbortController) activeAbortController.abort();
     activeAbortController = new AbortController();
-
     prepareCurrentPage();
 
     try {
-      await waitForRepositoryList(runId);
+      await waitForRepositoryRoot(runId);
       setStatus('正在整理仓库列表…');
       showPagination();
       await loadAndMergeAllPages(runId, activeAbortController.signal);
@@ -412,7 +394,7 @@
       showPagination();
       ensureToggleButton();
       updateButton();
-      setStatus('部分分页加载失败，已恢复 GitHub 原始分页。', 'error');
+      setStatus('自动合并失败，已恢复 GitHub 原始分页。', 'error');
       revealFinalList();
       window.setTimeout(clearStatus, 3500);
     }
@@ -425,7 +407,6 @@
 
   function markNavigationStart(event) {
     if (!isRepositoriesPage()) return;
-
     const target = event?.target;
     if (target instanceof Element) {
       const relevant = target.closest(
@@ -433,7 +414,6 @@
       );
       if (!relevant) return;
     }
-
     prepareCurrentPage();
   }
 
