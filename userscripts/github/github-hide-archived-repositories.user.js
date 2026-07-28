@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
-// @version      1.3.1
+// @version      1.3.2
 // @description  在 GitHub 个人仓库列表中自动合并全部分页，并在最终显示前隐藏已归档仓库，避免列表闪烁。
 // @author       Penghao
 // @match        https://github.com/*
@@ -22,7 +22,8 @@
 3. 自动请求并合并当前筛选条件下的全部分页，完成后一次性显示最终列表。
 4. 默认隐藏已归档仓库，并在 Type、Language、Sort 旁显示归档数量和切换按钮。
 5. 搜索、筛选、排序、前进后退及 GitHub SPA 导航后会重新整理列表。
-6. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
+6. 保留第一页原始仓库节点；后续分页只追加静态仓库条目，并移除可能撑高布局的趋势图异步组件。
+7. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
 */
 
 (() => {
@@ -136,6 +137,11 @@
 
       #${STATUS_ID}[data-state="error"] {
         color: var(--fgColor-danger, var(--color-danger-fg, #d1242f));
+      }
+
+      ${REPOSITORY_ROOT_SELECTOR} poll-include-fragment[src*="/graphs/participation"].is-error,
+      ${REPOSITORY_ROOT_SELECTOR} include-fragment[src*="/graphs/participation"].is-error {
+        display: none !important;
       }
     `;
     document.documentElement.appendChild(style);
@@ -274,17 +280,36 @@
     return new DOMParser().parseFromString(await response.text(), 'text/html');
   }
 
-  function appendUniqueItems(targetContainer, items, seenKeys) {
-    const fragment = document.createDocumentFragment();
+  function removeFailedParticipationWidgets(root = document) {
+    root.querySelectorAll(
+      'poll-include-fragment[src*="/graphs/participation"].is-error, ' +
+      'include-fragment[src*="/graphs/participation"].is-error'
+    ).forEach((node) => node.remove());
+  }
+
+  function cloneRepositoryItemForMerge(item) {
+    if (!(item instanceof Element)) return null;
+    const clone = item.cloneNode(true);
+
+    clone.querySelectorAll(
+      'poll-include-fragment[src*="/graphs/participation"], ' +
+      'include-fragment[src*="/graphs/participation"]'
+    ).forEach((node) => node.remove());
+
+    return clone;
+  }
+
+  function collectUniqueClones(items, seenKeys, targetFragment) {
     let added = 0;
     for (const item of items) {
       const key = getRepositoryKey(item);
       if (!key || seenKeys.has(key)) continue;
+      const clone = cloneRepositoryItemForMerge(item);
+      if (!clone) continue;
       seenKeys.add(key);
-      fragment.appendChild(item.cloneNode(true));
+      targetFragment.appendChild(clone);
       added += 1;
     }
-    targetContainer.appendChild(fragment);
     return added;
   }
 
@@ -297,57 +322,53 @@
       throw new Error('未识别到 GitHub 仓库条目，已保留原始页面。');
     }
 
-    const originalChildren = Array.from(liveContainer.childNodes).map((node) => node.cloneNode(true));
-    const workingContainer = liveContainer.cloneNode(false);
     const seenKeys = new Set();
-    appendUniqueItems(workingContainer, firstPageItems, seenKeys);
-
-    if (workingContainer.children.length === 0) {
+    for (const item of firstPageItems) {
+      const key = getRepositoryKey(item);
+      if (key) seenKeys.add(key);
+    }
+    if (seenKeys.size === 0) {
       throw new Error('第一页仓库解析结果为空，已保留原始页面。');
     }
 
+    const pendingFragment = document.createDocumentFragment();
+    let pendingCount = 0;
     let nextUrl = findNextPageUrl(document, location.href);
     let loadedPage = 1;
     const visitedUrls = new Set([new URL(location.href).href]);
 
-    try {
-      while (nextUrl) {
-        if (signal.aborted || runId !== activeRunId) {
-          throw new DOMException('任务已取消。', 'AbortError');
-        }
-        if (visitedUrls.has(nextUrl)) break;
-        visitedUrls.add(nextUrl);
-
-        loadedPage += 1;
-        setStatus(`正在整理仓库列表… 正在加载第 ${loadedPage} 页`);
-        const pageDocument = await fetchPageDocument(nextUrl, signal);
-        const pageItems = collectRepositoryItems(pageDocument);
-        if (pageItems.length === 0) {
-          throw new Error(`第 ${loadedPage} 页未识别到仓库条目。`);
-        }
-        appendUniqueItems(workingContainer, pageItems, seenKeys);
-        nextUrl = findNextPageUrl(pageDocument, nextUrl);
-      }
-
+    while (nextUrl) {
       if (signal.aborted || runId !== activeRunId) {
         throw new DOMException('任务已取消。', 'AbortError');
       }
-      if (workingContainer.children.length < firstPageItems.length) {
-        throw new Error('合并结果异常，已保留原始页面。');
-      }
+      if (visitedUrls.has(nextUrl)) break;
+      visitedUrls.add(nextUrl);
 
-      liveContainer.replaceChildren(...Array.from(workingContainer.childNodes));
-      repositoryRoot.setAttribute(MERGED_ATTRIBUTE, 'true');
-      hidePagination();
-      ensureToggleButton();
-      updateButton();
-      clearStatus();
-    } catch (error) {
-      if (error?.name !== 'AbortError' && liveContainer.childNodes.length === 0) {
-        liveContainer.replaceChildren(...originalChildren.map((node) => node.cloneNode(true)));
+      loadedPage += 1;
+      setStatus(`正在整理仓库列表… 正在加载第 ${loadedPage} 页`);
+      const pageDocument = await fetchPageDocument(nextUrl, signal);
+      const pageItems = collectRepositoryItems(pageDocument);
+      if (pageItems.length === 0) {
+        throw new Error(`第 ${loadedPage} 页未识别到仓库条目。`);
       }
-      throw error;
+      pendingCount += collectUniqueClones(pageItems, seenKeys, pendingFragment);
+      nextUrl = findNextPageUrl(pageDocument, nextUrl);
     }
+
+    if (signal.aborted || runId !== activeRunId) {
+      throw new DOMException('任务已取消。', 'AbortError');
+    }
+    if (!document.contains(liveContainer) || getRepositoryItemsContainer() !== liveContainer) {
+      throw new Error('仓库列表在加载期间已变化，已取消本次合并。');
+    }
+
+    if (pendingCount > 0) liveContainer.appendChild(pendingFragment);
+    removeFailedParticipationWidgets(repositoryRoot);
+    repositoryRoot.setAttribute(MERGED_ATTRIBUTE, 'true');
+    hidePagination();
+    ensureToggleButton();
+    updateButton();
+    clearStatus();
   }
 
   function revealFinalList() {
@@ -369,7 +390,7 @@
 
     const pageUrl = new URL(location.href).href;
     const repositoryRoot = getRepositoryRoot();
-    if (!force && pageUrl === lastProcessedUrl && repositoryRoot?.getAttribute(MERGED_ATTRIBUTE) === 'true') {
+    if (pageUrl === lastProcessedUrl && repositoryRoot?.getAttribute(MERGED_ATTRIBUTE) === 'true') {
       ensureToggleButton();
       updateButton();
       revealFinalList();
