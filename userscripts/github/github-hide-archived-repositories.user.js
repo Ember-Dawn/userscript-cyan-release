@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
-// @version      1.3.2
+// @version      1.3.3
 // @description  在 GitHub 个人仓库列表中自动合并全部分页，并在最终显示前隐藏已归档仓库，避免列表闪烁。
 // @author       Penghao
 // @match        https://github.com/*
@@ -23,7 +23,8 @@
 4. 默认隐藏已归档仓库，并在 Type、Language、Sort 旁显示归档数量和切换按钮。
 5. 搜索、筛选、排序、前进后退及 GitHub SPA 导航后会重新整理列表。
 6. 保留第一页原始仓库节点；后续分页只追加静态仓库条目，并移除可能撑高布局的趋势图异步组件。
-7. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
+7. 归档显示切换只更新当前列表，不会误触发页面预隐藏或重新合并。
+8. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
 */
 
 (() => {
@@ -46,6 +47,8 @@
   let activeRunId = 0;
   let activeAbortController = null;
   let scheduledTimer = null;
+  let preparingRecoveryTimer = null;
+  let isProcessingPage = false;
   let lastProcessedUrl = '';
 
   function isRepositoriesPage(url = location.href) {
@@ -102,8 +105,20 @@
     document.documentElement.classList.toggle(HIDDEN_CLASS, hideArchived);
   }
 
-  function setPreparingState(preparing) {
+  function clearPreparingRecoveryTimer() {
+    window.clearTimeout(preparingRecoveryTimer);
+    preparingRecoveryTimer = null;
+  }
+
+  function setPreparingState(preparing, autoRecover = false) {
     document.documentElement.classList.toggle(PREPARING_CLASS, preparing);
+
+    clearPreparingRecoveryTimer();
+    if (preparing && autoRecover) {
+      preparingRecoveryTimer = window.setTimeout(() => {
+        if (!isProcessingPage) setPreparingState(false);
+      }, 2500);
+    }
   }
 
   function injectStyle() {
@@ -168,7 +183,9 @@
     button.id = BUTTON_ID;
     button.type = 'button';
     button.className = 'btn mt-1 mt-lg-0';
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       hideArchived = !hideArchived;
       GM_setValue(STORAGE_KEY, hideArchived);
       applyHiddenState();
@@ -375,11 +392,11 @@
     setPreparingState(false);
   }
 
-  function prepareCurrentPage() {
+  function prepareCurrentPage(autoRecover = false) {
     if (!isRepositoriesPage()) return;
     applyHiddenState();
     injectStyle();
-    setPreparingState(true);
+    setPreparingState(true, autoRecover);
   }
 
   async function processRepositoriesPage(force = false) {
@@ -400,6 +417,7 @@
     const runId = ++activeRunId;
     if (activeAbortController) activeAbortController.abort();
     activeAbortController = new AbortController();
+    isProcessingPage = true;
     prepareCurrentPage();
 
     try {
@@ -418,6 +436,11 @@
       setStatus('自动合并失败，已恢复 GitHub 原始分页。', 'error');
       revealFinalList();
       window.setTimeout(clearStatus, 3500);
+    } finally {
+      if (runId === activeRunId) {
+        isProcessingPage = false;
+        clearPreparingRecoveryTimer();
+      }
     }
   }
 
@@ -426,27 +449,33 @@
     scheduledTimer = window.setTimeout(() => processRepositoriesPage(force), delay);
   }
 
-  function markNavigationStart(event) {
+  function markFormSubmitStart(event) {
+    if (!isRepositoriesPage()) return;
+    const form = event?.target;
+    if (!(form instanceof Element) || !form.matches(FILTER_FORM_SELECTOR)) return;
+    prepareCurrentPage(true);
+  }
+
+  function markFilterLinkStart(event) {
     if (!isRepositoriesPage()) return;
     const target = event?.target;
-    if (target instanceof Element) {
-      const relevant = target.closest(
-        `${FILTER_FORM_SELECTOR}, ${FILTER_FORM_SELECTOR} button, ${FILTER_FORM_SELECTOR} a, ${FILTER_FORM_SELECTOR} input, ${FILTER_FORM_SELECTOR} select`
-      );
-      if (!relevant) return;
-    }
-    prepareCurrentPage();
+    if (!(target instanceof Element)) return;
+    if (target.closest(`#${BUTTON_ID}`)) return;
+
+    const link = target.closest(`${FILTER_FORM_SELECTOR} a[href]`);
+    if (!link) return;
+    prepareCurrentPage(true);
   }
 
   applyHiddenState();
   injectStyle();
   if (isRepositoriesPage()) setPreparingState(true);
 
-  document.addEventListener('submit', markNavigationStart, true);
-  document.addEventListener('click', markNavigationStart, true);
-  document.addEventListener('turbo:before-render', prepareCurrentPage);
+  document.addEventListener('submit', markFormSubmitStart, true);
+  document.addEventListener('click', markFilterLinkStart, true);
+  document.addEventListener('turbo:before-render', () => prepareCurrentPage());
   document.addEventListener('turbo:load', () => scheduleProcess(true));
-  document.addEventListener('pjax:start', prepareCurrentPage);
+  document.addEventListener('pjax:start', () => prepareCurrentPage());
   document.addEventListener('pjax:end', () => scheduleProcess(true));
   window.addEventListener('popstate', () => {
     prepareCurrentPage();
