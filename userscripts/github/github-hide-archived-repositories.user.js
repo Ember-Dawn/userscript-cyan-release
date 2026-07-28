@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
-// @version      1.3.3
+// @version      1.3.4
 // @description  在 GitHub 个人仓库列表中自动合并全部分页，并在最终显示前隐藏已归档仓库，避免列表闪烁。
 // @author       Penghao
 // @match        https://github.com/*
@@ -40,7 +40,7 @@
   const REPOSITORY_ROOT_SELECTOR = '#user-repositories-list';
   const REPOSITORY_ITEMS_SELECTOR = ':scope > li[itemprop="owns"], :scope > li';
   const FILTER_FORM_SELECTOR = 'form[aria-label="Repositories"]';
-  const FILTER_ACTIONS_SELECTOR = `${FILTER_FORM_SELECTOR} .d-flex.flex-wrap.gap-2`;
+  const NEW_REPOSITORY_LINK_SELECTOR = 'a[href="/new"].btn-primary, a[href="/new"].btn';
   const PAGINATION_SELECTOR = '.paginate-container, nav[aria-label="Pagination"], [data-testid="pagination"]';
 
   let hideArchived = GM_getValue(STORAGE_KEY, true);
@@ -182,10 +182,17 @@
     const button = document.createElement('button');
     button.id = BUTTON_ID;
     button.type = 'button';
-    button.className = 'btn mt-1 mt-lg-0';
+    button.className = 'btn';
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      window.clearTimeout(scheduledTimer);
+      scheduledTimer = null;
+      setPreparingState(false);
+      clearStatus();
+
       hideArchived = !hideArchived;
       GM_setValue(STORAGE_KEY, hideArchived);
       applyHiddenState();
@@ -195,16 +202,37 @@
     return button;
   }
 
-  function ensureToggleButton() {
-    const filterActions = document.querySelector(FILTER_ACTIONS_SELECTOR);
-    if (!filterActions) return null;
-    let button = document.getElementById(BUTTON_ID);
-    if (!button) {
-      button = createToggleButton();
-      filterActions.appendChild(button);
-    } else {
-      updateButton(button);
+  function getExternalButtonPlacement() {
+    const filterForm = document.querySelector(FILTER_FORM_SELECTOR);
+    if (!filterForm?.parentElement) return null;
+
+    const newRepositoryLink = filterForm.parentElement.querySelector(NEW_REPOSITORY_LINK_SELECTOR);
+    const host = newRepositoryLink?.parentElement;
+    if (host && !filterForm.contains(host)) {
+      return { host, before: newRepositoryLink };
     }
+
+    const sibling = filterForm.nextElementSibling;
+    if (sibling && !filterForm.contains(sibling)) {
+      return { host: sibling, before: sibling.firstElementChild };
+    }
+
+    return null;
+  }
+
+  function ensureToggleButton() {
+    const placement = getExternalButtonPlacement();
+    if (!placement) return null;
+
+    let button = document.getElementById(BUTTON_ID);
+    if (!button) button = createToggleButton();
+
+    if (button.parentElement !== placement.host) {
+      placement.host.insertBefore(button, placement.before || null);
+    }
+
+    button.className = 'btn';
+    updateButton(button);
     return button;
   }
 
@@ -439,6 +467,7 @@
     } finally {
       if (runId === activeRunId) {
         isProcessingPage = false;
+        revealFinalList();
         clearPreparingRecoveryTimer();
       }
     }
@@ -449,36 +478,26 @@
     scheduledTimer = window.setTimeout(() => processRepositoriesPage(force), delay);
   }
 
-  function markFormSubmitStart(event) {
-    if (!isRepositoriesPage()) return;
-    const form = event?.target;
-    if (!(form instanceof Element) || !form.matches(FILTER_FORM_SELECTOR)) return;
-    prepareCurrentPage(true);
+  function handleNavigationStart() {
+    if (isRepositoriesPage()) prepareCurrentPage(true);
   }
 
-  function markFilterLinkStart(event) {
-    if (!isRepositoriesPage()) return;
-    const target = event?.target;
-    if (!(target instanceof Element)) return;
-    if (target.closest(`#${BUTTON_ID}`)) return;
-
-    const link = target.closest(`${FILTER_FORM_SELECTOR} a[href]`);
-    if (!link) return;
-    prepareCurrentPage(true);
+  function handleNavigationEnd() {
+    scheduleProcess(true);
   }
 
   applyHiddenState();
   injectStyle();
-  if (isRepositoriesPage()) setPreparingState(true);
+  if (isRepositoriesPage()) setPreparingState(true, true);
 
-  document.addEventListener('submit', markFormSubmitStart, true);
-  document.addEventListener('click', markFilterLinkStart, true);
-  document.addEventListener('turbo:before-render', () => prepareCurrentPage());
-  document.addEventListener('turbo:load', () => scheduleProcess(true));
-  document.addEventListener('pjax:start', () => prepareCurrentPage());
-  document.addEventListener('pjax:end', () => scheduleProcess(true));
+  document.addEventListener('turbo:before-render', handleNavigationStart);
+  document.addEventListener('turbo:before-frame-render', handleNavigationStart);
+  document.addEventListener('turbo:load', handleNavigationEnd);
+  document.addEventListener('turbo:frame-load', handleNavigationEnd);
+  document.addEventListener('pjax:start', handleNavigationStart);
+  document.addEventListener('pjax:end', handleNavigationEnd);
   window.addEventListener('popstate', () => {
-    prepareCurrentPage();
+    prepareCurrentPage(true);
     scheduleProcess(true, 80);
   });
 
