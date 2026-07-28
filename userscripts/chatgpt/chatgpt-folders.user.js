@@ -3,8 +3,8 @@
 // @namespace    https://chatgpt.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-folders.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-folders.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @version      0.3.18
 // @description  ChatGPT 普通聊天文件夹管理：v0.3.18；文件夹选中高亮仅在当前页面保留，并继续兼容最近列表中 draggable=false 的 GPT 对话。
 // @author       ChatGPT

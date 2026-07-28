@@ -3,8 +3,8 @@
 // @namespace    https://github.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/github/github-hide-archived-repositories.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/github/github-hide-archived-repositories.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
 // @version      1.1.0
 // @description  在 GitHub 个人仓库列表中隐藏已归档仓库，并提供带数量提示的状态按钮随时切换显示状态。
 // @author       Penghao

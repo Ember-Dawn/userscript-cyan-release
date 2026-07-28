@@ -3,8 +3,8 @@
 // @namespace    https://chatgpt.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-auto-allow-github.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-auto-allow-github.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-auto-allow-github.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-auto-allow-github.user.js
 // @version      0.4.0
 // @description  自动允许 ChatGPT 的 GitHub 授权请求；支持点击结果验证、有限退避重试和后台恢复，并保持低资源占用。
 // @author       Penghao

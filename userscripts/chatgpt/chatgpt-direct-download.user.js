@@ -3,8 +3,8 @@
 // @namespace    https://chatgpt.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-direct-download.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-direct-download.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-direct-download.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-direct-download.user.js
 // @version      0.5.0
 // @description  只在 ChatGPT 聊天记录中的生成文件链接旁边添加“下载”按钮，点击后不打开右侧预览栏，直接调用下载接口并下载文件。
 // @author       Penghao

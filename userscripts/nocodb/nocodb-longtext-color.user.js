@@ -3,8 +3,8 @@
 // @namespace    http://tampermonkey.net/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-longtext-color.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-longtext-color.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-longtext-color.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-longtext-color.user.js
 // @version      2.1.2
 // @description  NocoDB LongText 富文本字体改色：加粗文字 CSS 改色；【xxx】和「xxx」使用 ProseMirror Decoration 改色，不修改原文内容。
 // @match        https://nocodb.380782744.xyz/*

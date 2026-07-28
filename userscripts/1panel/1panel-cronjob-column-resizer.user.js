@@ -5,8 +5,8 @@
 // @description  为 1Panel 计划任务表格增加名称列拖动调整，并通过压缩其他列保持表格总宽度基本不变。
 // @author       Ember-Dawn
 // @match        https://1panel.380782744.xyz/*
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/1panel/1panel-cronjob-column-resizer.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/1panel/1panel-cronjob-column-resizer.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/1panel/1panel-cronjob-column-resizer.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/1panel/1panel-cronjob-column-resizer.user.js
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==

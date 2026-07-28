@@ -3,8 +3,8 @@
 // @namespace    https://openai.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-rainbow-headings.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-rainbow-headings.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-rainbow-headings.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-rainbow-headings.user.js
 // @version      1.0.2
 // @description  仅为 NocoDB Longtext RichText 的弹窗编辑器正文中的 H1-H6 添加彩虹标题颜色
 // @match        https://nocodb.380782744.xyz/*

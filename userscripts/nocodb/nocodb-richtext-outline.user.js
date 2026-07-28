@@ -3,8 +3,8 @@
 // @namespace    http://tampermonkey.net/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-richtext-outline.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/nocodb/nocodb-richtext-outline.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @version      46.0.2
 // @description  为 NocoDB Rich Text 弹窗提供低频 TOC：ProseMirror 标题快照/变更检测 + DOM UI/滚动保守方案 + TOC 宽度拖拽
 // @match        https://nocodb.380782744.xyz/*
