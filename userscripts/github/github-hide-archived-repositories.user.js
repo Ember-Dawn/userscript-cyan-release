@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
-// @version      1.4.0
+// @version      1.4.1
 // @description  在 GitHub 个人仓库列表中合并全部分页并隐藏归档仓库；使用官方筛选时自动暂停。
 // @author       Penghao
 // @match        https://github.com/*
@@ -25,7 +25,8 @@
 6. 筛选期间按钮显示“归档已暂停”并不可用；清除筛选后自动恢复之前保存的归档状态。
 7. 保留第一页原始仓库节点；后续分页只追加静态仓库条目，并移除可能撑高布局的趋势图异步组件。
 8. 归档显示切换只更新当前列表，不会误触发页面预隐藏或重新合并。
-9. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
+9. 同时监听 URL 与仓库区域的局部更新，确保 GitHub 局部筛选后按钮状态及时同步。
+10. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
 */
 
 (() => {
@@ -45,15 +46,19 @@
   const NEW_REPOSITORY_LINK_SELECTOR = 'a[href="/new"].btn-primary, a[href="/new"].btn';
   const PAGINATION_SELECTOR = '.paginate-container, nav[aria-label="Pagination"], [data-testid="pagination"]';
   const FILTER_PARAMETER_NAMES = ['q', 'type', 'language', 'sort'];
+  const LOCATION_CHANGE_EVENT = 'cyan:github-location-change';
 
   let hideArchived = GM_getValue(STORAGE_KEY, true);
   let activeRunId = 0;
   let activeAbortController = null;
   let scheduledTimer = null;
   let preparingRecoveryTimer = null;
+  let filterSyncTimer = null;
+  let repositoryObserver = null;
   let isProcessingPage = false;
   let filterPaused = false;
   let lastProcessedUrl = '';
+  let lastSyncedUrl = location.href;
 
   function isRepositoriesPage(url = location.href) {
     try {
@@ -433,19 +438,26 @@
   }
 
   function enterFilterPausedMode() {
+    const wasPaused = filterPaused;
     filterPaused = true;
-    cancelActiveProcessing();
+
+    if (!wasPaused || isProcessingPage || document.querySelector(`[${APPENDED_ATTRIBUTE}]`)) {
+      cancelActiveProcessing();
+      removeAppendedRepositoryItems();
+    }
+
     setPreparingState(false);
     clearStatus();
     document.documentElement.classList.remove(HIDDEN_CLASS);
-    removeAppendedRepositoryItems();
     showPagination();
     ensureToggleButton();
     updateButton();
   }
 
   function leaveFilterPausedMode() {
+    const wasPaused = filterPaused;
     filterPaused = false;
+    if (wasPaused) lastProcessedUrl = '';
     applyHiddenState();
     ensureToggleButton();
     updateButton();
@@ -543,6 +555,13 @@
     leaveFilterPausedMode();
     const pageUrl = new URL(location.href).href;
     const repositoryRoot = getRepositoryRoot();
+    if (!force && pageUrl === lastProcessedUrl && repositoryRoot?.getAttribute(MERGED_ATTRIBUTE) === 'true') {
+      ensureToggleButton();
+      updateButton();
+      revealFinalList();
+      return;
+    }
+
     if (pageUrl === lastProcessedUrl && repositoryRoot?.getAttribute(MERGED_ATTRIBUTE) === 'true') {
       ensureToggleButton();
       updateButton();
@@ -586,6 +605,89 @@
     scheduledTimer = window.setTimeout(() => processRepositoriesPage(force), delay);
   }
 
+  function syncFilterMode() {
+    window.clearTimeout(filterSyncTimer);
+    filterSyncTimer = null;
+
+    const currentUrl = location.href;
+    const urlChanged = currentUrl !== lastSyncedUrl;
+    lastSyncedUrl = currentUrl;
+
+    if (!isRepositoriesPage()) {
+      filterPaused = false;
+      setPreparingState(false);
+      document.documentElement.classList.remove(HIDDEN_CLASS);
+      return;
+    }
+
+    if (isOfficialFilterActive()) {
+      enterFilterPausedMode();
+      return;
+    }
+
+    const wasPaused = filterPaused;
+    leaveFilterPausedMode();
+
+    if (wasPaused || urlChanged) {
+      scheduleProcess(true, 20);
+    } else {
+      ensureToggleButton();
+      updateButton();
+    }
+  }
+
+  function scheduleFilterSync(delay = 30) {
+    window.clearTimeout(filterSyncTimer);
+    filterSyncTimer = window.setTimeout(syncFilterMode, delay);
+  }
+
+  function nodeTouchesRepositoryUi(node) {
+    if (!(node instanceof Element)) return false;
+    return node.matches(REPOSITORY_ROOT_SELECTOR) ||
+      node.matches(FILTER_FORM_SELECTOR) ||
+      Boolean(node.querySelector(REPOSITORY_ROOT_SELECTOR)) ||
+      Boolean(node.querySelector(FILTER_FORM_SELECTOR));
+  }
+
+  function startRepositoryObserver() {
+    if (repositoryObserver || !document.body) return;
+
+    repositoryObserver = new MutationObserver((mutations) => {
+      const relevant = mutations.some((mutation) => {
+        const target = mutation.target;
+        if (target instanceof Element &&
+            (target.matches(REPOSITORY_ROOT_SELECTOR) || target.closest(REPOSITORY_ROOT_SELECTOR) ||
+             target.matches(FILTER_FORM_SELECTOR) || target.closest(FILTER_FORM_SELECTOR))) {
+          return true;
+        }
+
+        return [...mutation.addedNodes, ...mutation.removedNodes].some(nodeTouchesRepositoryUi);
+      });
+
+      if (relevant) scheduleFilterSync(20);
+    });
+
+    repositoryObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function installHistoryHooks() {
+    for (const methodName of ['pushState', 'replaceState']) {
+      const original = history[methodName];
+      if (typeof original !== 'function' || original.__cyanWrapped) continue;
+
+      const wrapped = function (...args) {
+        const previousUrl = location.href;
+        const result = original.apply(this, args);
+        if (location.href !== previousUrl) {
+          window.dispatchEvent(new Event(LOCATION_CHANGE_EVENT));
+        }
+        return result;
+      };
+      Object.defineProperty(wrapped, '__cyanWrapped', { value: true });
+      history[methodName] = wrapped;
+    }
+  }
+
   function getIncomingNavigationRoot(event) {
     return event?.detail?.newBody || event?.detail?.newFrame || null;
   }
@@ -603,10 +705,13 @@
   }
 
   function handleNavigationEnd() {
+    scheduleFilterSync(0);
     scheduleProcess(true);
   }
 
+  installHistoryHooks();
   injectStyle();
+
   if (isRepositoriesPage()) {
     if (isOfficialFilterActive()) {
       filterPaused = true;
@@ -618,6 +723,7 @@
     }
   }
 
+  window.addEventListener(LOCATION_CHANGE_EVENT, () => scheduleFilterSync(0));
   document.addEventListener('turbo:before-render', handleNavigationStart);
   document.addEventListener('turbo:before-frame-render', handleNavigationStart);
   document.addEventListener('turbo:load', handleNavigationEnd);
@@ -625,13 +731,20 @@
   document.addEventListener('pjax:start', handleNavigationStart);
   document.addEventListener('pjax:end', handleNavigationEnd);
   window.addEventListener('popstate', () => {
+    scheduleFilterSync(0);
     prepareCurrentPage(true);
     scheduleProcess(true, 80);
   });
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => scheduleProcess(true, 0), { once: true });
+    document.addEventListener('DOMContentLoaded', () => {
+      startRepositoryObserver();
+      scheduleFilterSync(0);
+      scheduleProcess(true, 0);
+    }, { once: true });
   } else {
+    startRepositoryObserver();
+    scheduleFilterSync(0);
     scheduleProcess(true, 0);
   }
 })();
