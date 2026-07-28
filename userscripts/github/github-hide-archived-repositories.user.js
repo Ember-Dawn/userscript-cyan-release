@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/github/github-hide-archived-repositories.user.js
-// @version      1.3.4
-// @description  在 GitHub 个人仓库列表中自动合并全部分页，并在最终显示前隐藏已归档仓库，避免列表闪烁。
+// @version      1.4.0
+// @description  在 GitHub 个人仓库列表中合并全部分页并隐藏归档仓库；使用官方筛选时自动暂停。
 // @author       Penghao
 // @match        https://github.com/*
 // @run-at       document-start
@@ -19,12 +19,13 @@
 
 1. 仅在 GitHub 个人主页的 Repositories 列表中生效。
 2. 页面加载时先隐藏整个仓库列表，避免“全部仓库先出现、归档仓库随后消失”的闪烁。
-3. 自动请求并合并当前筛选条件下的全部分页，完成后一次性显示最终列表。
+3. 未使用 GitHub 官方筛选时，自动请求并合并全部分页，完成后一次性显示最终列表。
 4. 默认隐藏已归档仓库，并在 Type、Language、Sort 旁显示归档数量和切换按钮。
-5. 搜索、筛选、排序、前进后退及 GitHub SPA 导航后会重新整理列表。
-6. 保留第一页原始仓库节点；后续分页只追加静态仓库条目，并移除可能撑高布局的趋势图异步组件。
-7. 归档显示切换只更新当前列表，不会误触发页面预隐藏或重新合并。
-8. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
+5. 启用搜索、Type、Language 或 Sort 后，自动暂停分页合并和归档隐藏，并恢复 GitHub 原生结果与分页。
+6. 筛选期间按钮显示“归档已暂停”并不可用；清除筛选后自动恢复之前保存的归档状态。
+7. 保留第一页原始仓库节点；后续分页只追加静态仓库条目，并移除可能撑高布局的趋势图异步组件。
+8. 归档显示切换只更新当前列表，不会误触发页面预隐藏或重新合并。
+9. 若 GitHub 页面结构变化或分页加载失败，会恢复原始列表和分页，不会清空页面。
 */
 
 (() => {
@@ -37,11 +38,13 @@
   const HIDDEN_CLASS = 'cyan-github-hide-archived';
   const PREPARING_CLASS = 'cyan-github-repositories-preparing';
   const MERGED_ATTRIBUTE = 'data-cyan-all-pages-merged';
+  const APPENDED_ATTRIBUTE = 'data-cyan-appended-repository';
   const REPOSITORY_ROOT_SELECTOR = '#user-repositories-list';
   const REPOSITORY_ITEMS_SELECTOR = ':scope > li[itemprop="owns"], :scope > li';
   const FILTER_FORM_SELECTOR = 'form[aria-label="Repositories"]';
   const NEW_REPOSITORY_LINK_SELECTOR = 'a[href="/new"].btn-primary, a[href="/new"].btn';
   const PAGINATION_SELECTOR = '.paginate-container, nav[aria-label="Pagination"], [data-testid="pagination"]';
+  const FILTER_PARAMETER_NAMES = ['q', 'type', 'language', 'sort'];
 
   let hideArchived = GM_getValue(STORAGE_KEY, true);
   let activeRunId = 0;
@@ -49,6 +52,7 @@
   let scheduledTimer = null;
   let preparingRecoveryTimer = null;
   let isProcessingPage = false;
+  let filterPaused = false;
   let lastProcessedUrl = '';
 
   function isRepositoriesPage(url = location.href) {
@@ -58,6 +62,30 @@
     } catch (_) {
       return false;
     }
+  }
+
+  function isOfficialFilterActive(url = location.href, root = document) {
+    try {
+      const parsed = new URL(url, location.origin);
+      if (parsed.hostname !== 'github.com' || parsed.searchParams.get('tab') !== 'repositories') return false;
+
+      if (FILTER_PARAMETER_NAMES.some((name) => (parsed.searchParams.get(name) || '').trim() !== '')) {
+        return true;
+      }
+    } catch (_) {
+      return false;
+    }
+
+    const form = root?.querySelector?.(FILTER_FORM_SELECTOR);
+    if (!form) return false;
+
+    const query = form.querySelector('input[name="q"]');
+    if ((query?.value || '').trim() !== '') return true;
+
+    return ['type', 'language', 'sort'].some((name) => {
+      const selected = form.querySelector(`input[name="${name}"]:checked`);
+      return (selected?.value || '').trim() !== '';
+    });
   }
 
   function getRepositoryRoot(root = document) {
@@ -102,7 +130,8 @@
   }
 
   function applyHiddenState() {
-    document.documentElement.classList.toggle(HIDDEN_CLASS, hideArchived);
+    const shouldHide = hideArchived && !filterPaused && !isOfficialFilterActive();
+    document.documentElement.classList.toggle(HIDDEN_CLASS, shouldHide);
   }
 
   function clearPreparingRecoveryTimer() {
@@ -158,24 +187,50 @@
       ${REPOSITORY_ROOT_SELECTOR} include-fragment[src*="/graphs/participation"].is-error {
         display: none !important;
       }
+
+      #${BUTTON_ID}[data-cyan-active="true"]:not(:disabled) {
+        color: var(--fgColor-onEmphasis, #ffffff) !important;
+        background-color: var(--bgColor-accent-emphasis, var(--color-accent-emphasis, #0969da)) !important;
+        border-color: var(--borderColor-accent-emphasis, var(--color-accent-emphasis, #0969da)) !important;
+      }
+
+      #${BUTTON_ID}[data-cyan-active="true"]:not(:disabled):hover {
+        background-color: var(--bgColor-accent-emphasis, var(--color-accent-emphasis, #0969da)) !important;
+        filter: brightness(0.94);
+      }
+
+      #${BUTTON_ID}:disabled {
+        cursor: not-allowed;
+        opacity: 0.65;
+      }
     `;
     document.documentElement.appendChild(style);
   }
 
   function updateButton(button = document.getElementById(BUTTON_ID)) {
     if (!button) return;
+
+    const paused = filterPaused || isOfficialFilterActive();
     const archivedCount = getArchivedCount();
     const totalCount = getRepositoryCount();
-    const text = hideArchived
-      ? `归档：已隐藏 (${archivedCount})`
-      : `归档：已显示 (${archivedCount})`;
-    const title = hideArchived
-      ? `共加载 ${totalCount} 个仓库，已隐藏 ${archivedCount} 个归档仓库；点击后显示`
-      : `共加载 ${totalCount} 个仓库，当前显示 ${archivedCount} 个归档仓库；点击后隐藏`;
+    const text = paused
+      ? '归档已暂停'
+      : hideArchived
+        ? `归档已隐藏 (${archivedCount})`
+        : `归档已显示 (${archivedCount})`;
+    const title = paused
+      ? 'GitHub 官方筛选生效时，归档隐藏与自动分页合并已暂停。清除筛选后会自动恢复。'
+      : hideArchived
+        ? `共加载 ${totalCount} 个仓库，已隐藏 ${archivedCount} 个归档仓库；点击后显示`
+        : `共加载 ${totalCount} 个仓库，当前显示 ${archivedCount} 个归档仓库；点击后隐藏`;
 
     if (button.textContent !== text) button.textContent = text;
     if (button.title !== title) button.title = title;
-    button.setAttribute('aria-pressed', String(hideArchived));
+
+    button.disabled = paused;
+    button.setAttribute('aria-disabled', String(paused));
+    button.setAttribute('aria-pressed', String(!paused && hideArchived));
+    button.dataset.cyanActive = String(!paused && hideArchived);
   }
 
   function createToggleButton() {
@@ -187,6 +242,8 @@
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
+
+      if (button.disabled || filterPaused || isOfficialFilterActive()) return;
 
       window.clearTimeout(scheduledTimer);
       scheduledTimer = null;
@@ -335,6 +392,7 @@
   function cloneRepositoryItemForMerge(item) {
     if (!(item instanceof Element)) return null;
     const clone = item.cloneNode(true);
+    clone.setAttribute(APPENDED_ATTRIBUTE, 'true');
 
     clone.querySelectorAll(
       'poll-include-fragment[src*="/graphs/participation"], ' +
@@ -356,6 +414,41 @@
       added += 1;
     }
     return added;
+  }
+
+  function removeAppendedRepositoryItems() {
+    document.querySelectorAll(`[${APPENDED_ATTRIBUTE}]`).forEach((item) => item.remove());
+    getRepositoryRoot()?.removeAttribute(MERGED_ATTRIBUTE);
+  }
+
+  function cancelActiveProcessing() {
+    activeRunId += 1;
+    if (activeAbortController) activeAbortController.abort();
+    activeAbortController = null;
+
+    window.clearTimeout(scheduledTimer);
+    scheduledTimer = null;
+    isProcessingPage = false;
+    clearPreparingRecoveryTimer();
+  }
+
+  function enterFilterPausedMode() {
+    filterPaused = true;
+    cancelActiveProcessing();
+    setPreparingState(false);
+    clearStatus();
+    document.documentElement.classList.remove(HIDDEN_CLASS);
+    removeAppendedRepositoryItems();
+    showPagination();
+    ensureToggleButton();
+    updateButton();
+  }
+
+  function leaveFilterPausedMode() {
+    filterPaused = false;
+    applyHiddenState();
+    ensureToggleButton();
+    updateButton();
   }
 
   async function loadAndMergeAllPages(runId, signal) {
@@ -421,18 +514,33 @@
   }
 
   function prepareCurrentPage(autoRecover = false) {
-    if (!isRepositoriesPage()) return;
+    if (!isRepositoriesPage()) return false;
+    if (isOfficialFilterActive()) {
+      enterFilterPausedMode();
+      return false;
+    }
+
+    filterPaused = false;
     applyHiddenState();
     injectStyle();
     setPreparingState(true, autoRecover);
+    return true;
   }
 
   async function processRepositoriesPage(force = false) {
     if (!isRepositoriesPage()) {
+      filterPaused = false;
       setPreparingState(false);
+      document.documentElement.classList.remove(HIDDEN_CLASS);
       return;
     }
 
+    if (isOfficialFilterActive()) {
+      enterFilterPausedMode();
+      return;
+    }
+
+    leaveFilterPausedMode();
     const pageUrl = new URL(location.href).href;
     const repositoryRoot = getRepositoryRoot();
     if (pageUrl === lastProcessedUrl && repositoryRoot?.getAttribute(MERGED_ATTRIBUTE) === 'true') {
@@ -478,17 +586,37 @@
     scheduledTimer = window.setTimeout(() => processRepositoriesPage(force), delay);
   }
 
-  function handleNavigationStart() {
-    if (isRepositoriesPage()) prepareCurrentPage(true);
+  function getIncomingNavigationRoot(event) {
+    return event?.detail?.newBody || event?.detail?.newFrame || null;
+  }
+
+  function handleNavigationStart(event) {
+    if (!isRepositoriesPage()) return;
+
+    const incomingRoot = getIncomingNavigationRoot(event);
+    if (isOfficialFilterActive(location.href, incomingRoot || document)) {
+      enterFilterPausedMode();
+      return;
+    }
+
+    prepareCurrentPage(true);
   }
 
   function handleNavigationEnd() {
     scheduleProcess(true);
   }
 
-  applyHiddenState();
   injectStyle();
-  if (isRepositoriesPage()) setPreparingState(true, true);
+  if (isRepositoriesPage()) {
+    if (isOfficialFilterActive()) {
+      filterPaused = true;
+      document.documentElement.classList.remove(HIDDEN_CLASS);
+      setPreparingState(false);
+    } else {
+      applyHiddenState();
+      setPreparingState(true, true);
+    }
+  }
 
   document.addEventListener('turbo:before-render', handleNavigationStart);
   document.addEventListener('turbo:before-frame-render', handleNavigationStart);
