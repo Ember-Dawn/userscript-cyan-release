@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-direct-download.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-direct-download.user.js
-// @version      0.4.2
+// @version      0.5.0
 // @description  只在 ChatGPT 聊天记录中的生成文件链接旁边添加“下载”按钮，点击后不打开右侧预览栏，直接调用下载接口并下载文件。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -89,7 +89,7 @@
   'use strict';
 
   const SCRIPT_NAME = 'ChatGPT 文件直链下载按钮助手';
-  const VERSION = '0.4.0';
+  const VERSION = '0.5.0';
 
   const FILE_EXT_RE =
     /\.(md|txt|pdf|docx?|xlsx?|xls|pptx?|csv|zip|json|py|js|ts|tsx|jsx|html?|css|png|jpe?g|webp|gif|svg|yaml|yml|xml)$/i;
@@ -811,6 +811,12 @@
         vertical-align: baseline;
       }
 
+      .cg-download-link-text,
+      .cg-download-link-text * {
+        color: rgb(37, 99, 235) !important;
+        font-weight: 600 !important;
+      }
+
       .cg-direct-download-button {
         display: inline-flex;
         align-items: center;
@@ -884,6 +890,11 @@
       }
 
       @media (prefers-color-scheme: dark) {
+        .cg-download-link-text,
+        .cg-download-link-text * {
+          color: rgb(147, 197, 253) !important;
+        }
+
         .cg-direct-download-button {
           border-color: rgba(96, 165, 250, 0.40);
           background: rgba(96, 165, 250, 0.13);
@@ -1025,10 +1036,21 @@
     return true;
   }
 
+  function isDirectDownloadTextButton(button) {
+    if (!button || button.tagName !== 'BUTTON') return false;
+    if (!button.classList.contains('behavior-btn')) return false;
+    if (isInsideForbiddenArea(button)) return false;
+    if (!isInsideAssistantMarkdown(button)) return false;
+
+    const label = getVisibleLabel(button);
+    return label.startsWith('下载') || label.toLowerCase().startsWith('download');
+  }
+
   function enhanceFileButton(button) {
     if (processedFileButtons.has(button)) return;
     if (!isValidChatFileButton(button)) return;
 
+    button.classList.add('cg-download-link-text');
     processedFileButtons.add(button);
 
     const next = button.nextElementSibling;
@@ -1067,8 +1089,14 @@
       const buttons = Array.from(markdown.querySelectorAll('button[aria-label], button'));
 
       for (const button of buttons) {
-        if (!isValidChatFileButton(button)) continue;
-        enhanceFileButton(button);
+        if (isValidChatFileButton(button)) {
+          enhanceFileButton(button);
+          continue;
+        }
+
+        if (isDirectDownloadTextButton(button)) {
+          button.classList.add('cg-download-link-text');
+        }
       }
     }
   }
