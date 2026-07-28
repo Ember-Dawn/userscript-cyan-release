@@ -12,6 +12,7 @@ userscript-cyan-release/
 └─ scripts/
    ├─ 1panel/
    ├─ chatgpt/
+   ├─ github/
    ├─ nocodb/
    └─ youtube/
 ```
@@ -32,6 +33,12 @@ userscript-cyan-release/
 | ChatGPT 文件夹 | [`chatgpt-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-folders.user.js) | 在 ChatGPT 侧边栏中提供聊天文件夹、排序、多标签同步和 WebDAV 同步等功能。 |
 | ChatGPT 文件直链下载按钮助手 | [`chatgpt-direct-download.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-direct-download.user.js) | 在生成文件链接旁增加“下载”按钮，尽量绕过右侧预览栏并直接下载文件。 |
 | ChatGPT GitHub 自动允许助手 | [`chatgpt-auto-allow-github.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/chatgpt/chatgpt-auto-allow-github.user.js) | 当 ChatGPT 出现 GitHub 权限卡片时，延迟后自动点击“允许”。 |
+
+### GitHub
+
+| 中文名称 | 安装文件 | 用途 |
+|---|---|---|
+| GitHub 已归档仓库隐藏助手 | [`github-hide-archived-repositories.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/scripts/github/github-hide-archived-repositories.user.js) | 在个人仓库列表中默认隐藏已归档仓库，并在筛选栏提供显示或隐藏开关。 |
 
 ### NocoDB
 
