@@ -5,11 +5,11 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      2.0.0
-// @description  自动识别粘贴到 NocoDB Rich Text 的 Markdown 表格，并以内嵌方式提供单元格编辑及行列增删
+// @version      3.0.0
+// @description  在页面主环境接入 NocoDB Rich Text，自动转换并内嵌编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
-// @grant        none
+// @grant        unsafeWindow
 // ==/UserScript==
 
 /*
@@ -43,7 +43,8 @@
  * 旧版使用编辑器外部的 absolute overlay，容易与 TOC 的左侧占位、滚动坐标、
  * ProseMirror DOM 重建和鼠标事件发生冲突。
  *
- * 当前版本改为自定义 ProseMirror codeBlock NodeView：
+ * 当前版本在网页主 JavaScript 环境中接入 Vue/Tiptap，并使用自定义
+ * ProseMirror codeBlock NodeView：
  *
  * - 文档模型里仍然是可持久化的 codeBlock；
  * - 只有带内部标记的 codeBlock 被替换为可视化表格；
@@ -54,11 +55,14 @@
  *
  * 三、性能原则
  * -----------------------------------------------------------------------------
+ * - 油猴外壳只负责把主体注入网页主环境；
  * - 页面只注册一个 paste 事件；
  * - 全局 MutationObserver 只发现新增或移除的 Rich Text 编辑器；
  * - 不扫描正文寻找代码块，不轮询，不监听滚动，不做坐标测量；
  * - 浏览状态只渲染普通 table；点击“编辑表格”后才创建 input/select；
- * - 表格更新仅替换对应的一个 codeBlock 节点。
+ * - 表格更新仅替换对应的一个 codeBlock 节点；
+ * - Rich Text 弹窗出现或获得焦点时提前连接 Tiptap；
+ * - 已识别为表格的粘贴会立即阻止 NocoDB 默认处理，避免被压平成普通文字。
  *
  * 四、格式边界
  * -----------------------------------------------------------------------------
@@ -73,7 +77,7 @@
  * =============================================================================
  */
 
-(function () {
+function nocodbMarkdownTablePageMain() {
   'use strict';
 
   const EDITOR_SELECTOR = '.nc-rich-text-content .tiptap.ProseMirror';
@@ -83,20 +87,31 @@
   const LEGACY_MARKER = '[[NOCODB_MARKDOWN_TABLE_V1]]';
   const NEW_MARKER_PATTERN = /^\[\[NOCODB_MARKDOWN_TABLE:v1:([A-Za-z0-9_-]{6,64})\]\]$/;
 
-  const STYLE_ID = 'tm-nocodb-markdown-table-style-v2';
-  const NODEVIEW_CLASS = 'tm-nocodb-markdown-table-v2';
+  const STYLE_ID = 'tm-nocodb-markdown-table-style-v3';
+  const NODEVIEW_CLASS = 'tm-nocodb-markdown-table-v3';
 
   const MAX_SOURCE_CHARS = 100000;
   const MAX_COLUMNS = 40;
   const MAX_BODY_ROWS = 200;
   const MAX_CELLS = 4000;
-  const DISCOVERY_RETRY_LIMIT = 8;
-  const DISCOVERY_RETRY_DELAY = 80;
+  const DISCOVERY_RETRY_LIMIT = 30;
+  const DISCOVERY_RETRY_DELAY = 100;
+  const PASTE_RETRY_LIMIT = 30;
+  const PASTE_RETRY_DELAY = 50;
+  const READY_ATTR = 'data-tm-nmt-ready';
+  const STATE_ATTR = 'data-tm-nmt-state';
+  const PAGE_GUARD = '__NOCODB_MARKDOWN_TABLE_PAGE_V3__';
+
+  const TEST_MODE = globalThis.__NOCODB_MARKDOWN_TABLE_TEST_MODE__ === true;
+  if (!TEST_MODE) {
+    if (globalThis[PAGE_GUARD] === 'ready') return;
+    globalThis[PAGE_GUARD] = 'loading';
+  }
 
   /** @type {Map<HTMLElement, EditorSession>} */
   const sessions = new Map();
-  /** @type {WeakMap<HTMLElement, number>} */
-  const retryCounts = new WeakMap();
+  /** @type {WeakMap<HTMLElement, {attempts: number, timer: number}>} */
+  const discoveryStates = new WeakMap();
 
   /**
    * @typedef {'left'|'center'|'right'} Alignment
@@ -143,7 +158,7 @@
         outline-offset: 2px;
       }
 
-      .tm-nmt-toolbar-v2 {
+      .tm-nmt-toolbar-v3 {
         min-height: 38px;
         display: flex;
         align-items: center;
@@ -155,22 +170,22 @@
         background: var(--nc-bg-gray-light, #f7f7f8);
       }
 
-      .tm-nmt-toolbar-left-v2,
-      .tm-nmt-toolbar-right-v2 {
+      .tm-nmt-toolbar-left-v3,
+      .tm-nmt-toolbar-right-v3 {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
         gap: 5px;
       }
 
-      .tm-nmt-title-v2 {
+      .tm-nmt-title-v3 {
         font-size: 12px;
         font-weight: 650;
         color: var(--nc-content-gray-subtle, #525866);
         user-select: none;
       }
 
-      .tm-nmt-status-v2 {
+      .tm-nmt-status-v3 {
         min-height: 18px;
         padding: 3px 8px;
         border-bottom: 1px solid var(--nc-border-gray-light, rgba(0, 0, 0, 0.08));
@@ -179,13 +194,13 @@
         font-size: 12px;
       }
 
-      .tm-nmt-status-v2:empty {
+      .tm-nmt-status-v3:empty {
         display: none;
       }
 
-      .tm-nmt-button-v2,
-      .tm-nmt-mini-button-v2,
-      .tm-nmt-align-select-v2 {
+      .tm-nmt-button-v3,
+      .tm-nmt-mini-button-v3,
+      .tm-nmt-align-select-v3 {
         border: 1px solid var(--nc-border-gray-medium, rgba(0, 0, 0, 0.16));
         border-radius: 6px;
         background: var(--nc-bg-default, #fff);
@@ -193,7 +208,7 @@
         font: inherit;
       }
 
-      .tm-nmt-button-v2 {
+      .tm-nmt-button-v3 {
         min-height: 27px;
         padding: 4px 9px;
         font-size: 12px;
@@ -202,38 +217,38 @@
         user-select: none;
       }
 
-      .tm-nmt-button-v2:hover,
-      .tm-nmt-mini-button-v2:hover,
-      .tm-nmt-align-select-v2:hover {
+      .tm-nmt-button-v3:hover,
+      .tm-nmt-mini-button-v3:hover,
+      .tm-nmt-align-select-v3:hover {
         background: var(--nc-bg-gray-medium, #efeff1);
       }
 
-      .tm-nmt-button-v2:disabled,
-      .tm-nmt-mini-button-v2:disabled,
-      .tm-nmt-align-select-v2:disabled {
+      .tm-nmt-button-v3:disabled,
+      .tm-nmt-mini-button-v3:disabled,
+      .tm-nmt-align-select-v3:disabled {
         opacity: 0.45;
         cursor: not-allowed;
       }
 
-      .tm-nmt-button-primary-v2 {
+      .tm-nmt-button-primary-v3 {
         border-color: var(--nc-primary, #6c5ce7);
         background: var(--nc-primary, #6c5ce7);
         color: #fff;
       }
 
-      .tm-nmt-button-danger-v2,
-      .tm-nmt-mini-danger-v2 {
+      .tm-nmt-button-danger-v3,
+      .tm-nmt-mini-danger-v3 {
         color: #b42318;
       }
 
-      .tm-nmt-scroll-v2 {
+      .tm-nmt-scroll-v3 {
         width: 100%;
         max-width: 100%;
         overflow: auto;
         max-height: min(62vh, 620px);
       }
 
-      .tm-nmt-table-v2 {
+      .tm-nmt-table-v3 {
         width: 100%;
         min-width: 360px;
         border-collapse: collapse;
@@ -241,8 +256,8 @@
         background: var(--nc-bg-default, #fff);
       }
 
-      .tm-nmt-table-v2 th,
-      .tm-nmt-table-v2 td {
+      .tm-nmt-table-v3 th,
+      .tm-nmt-table-v3 td {
         min-width: 96px;
         padding: 8px 10px;
         border-right: 1px solid var(--nc-border-gray-light, rgba(0, 0, 0, 0.10));
@@ -252,26 +267,26 @@
         overflow-wrap: anywhere;
       }
 
-      .tm-nmt-table-v2 tr > :last-child {
+      .tm-nmt-table-v3 tr > :last-child {
         border-right: 0;
       }
 
-      .tm-nmt-table-v2 tbody tr:last-child > * {
+      .tm-nmt-table-v3 tbody tr:last-child > * {
         border-bottom: 0;
       }
 
-      .tm-nmt-table-v2 thead th {
+      .tm-nmt-table-v3 thead th {
         font-weight: 650;
         background: var(--nc-bg-gray-light, #f7f7f8);
       }
 
-      .tm-nmt-empty-v2 {
+      .tm-nmt-empty-v3 {
         padding: 18px !important;
         text-align: center;
         color: var(--nc-content-gray-subtle, #777);
       }
 
-      .tm-nmt-cell-input-v2 {
+      .tm-nmt-cell-input-v3 {
         width: 100%;
         min-width: 84px;
         min-height: 31px;
@@ -285,14 +300,14 @@
         line-height: 1.35;
       }
 
-      .tm-nmt-cell-input-v2:focus,
-      .tm-nmt-align-select-v2:focus {
+      .tm-nmt-cell-input-v3:focus,
+      .tm-nmt-align-select-v3:focus {
         border-color: var(--nc-primary, #6c5ce7);
         box-shadow: 0 0 0 2px color-mix(in srgb, var(--nc-primary, #6c5ce7) 18%, transparent);
       }
 
-      .tm-nmt-column-actions-v2,
-      .tm-nmt-row-actions-v2 {
+      .tm-nmt-column-actions-v3,
+      .tm-nmt-row-actions-v3 {
         display: flex;
         align-items: center;
         justify-content: center;
@@ -300,12 +315,12 @@
         gap: 3px;
       }
 
-      .tm-nmt-column-actions-v2 {
+      .tm-nmt-column-actions-v3 {
         padding: 5px !important;
         background: var(--nc-bg-gray-light, #f7f7f8);
       }
 
-      .tm-nmt-mini-button-v2 {
+      .tm-nmt-mini-button-v3 {
         min-width: 25px;
         height: 25px;
         padding: 0 6px;
@@ -314,22 +329,43 @@
         cursor: pointer;
       }
 
-      .tm-nmt-align-select-v2 {
+      .tm-nmt-align-select-v3 {
         height: 25px;
         padding: 0 4px;
         font-size: 11px;
         cursor: pointer;
       }
 
-      .tm-nmt-actions-cell-v2 {
+      .tm-nmt-actions-cell-v3 {
         width: 120px;
         min-width: 120px !important;
         background: var(--nc-bg-gray-light, #f7f7f8);
       }
 
-      .tm-nmt-align-left-v2 { text-align: left; }
-      .tm-nmt-align-center-v2 { text-align: center; }
-      .tm-nmt-align-right-v2 { text-align: right; }
+      .tm-nmt-align-left-v3 { text-align: left; }
+      .tm-nmt-align-center-v3 { text-align: center; }
+      .tm-nmt-align-right-v3 { text-align: right; }
+
+      .tm-nmt-toast-v3 {
+        position: fixed;
+        right: 22px;
+        bottom: 22px;
+        z-index: 100000;
+        max-width: min(420px, calc(100vw - 44px));
+        padding: 10px 13px;
+        border: 1px solid rgba(0, 0, 0, 0.14);
+        border-radius: 8px;
+        background: rgba(31, 41, 55, 0.96);
+        color: #fff;
+        font-size: 13px;
+        line-height: 1.45;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+        pointer-events: none;
+      }
+
+      .tm-nmt-toast-v3.is-error {
+        background: rgba(180, 35, 24, 0.97);
+      }
     `;
     document.head.appendChild(style);
   }
@@ -544,32 +580,137 @@
     };
   }
 
-  function findTiptapEditor(editorDom) {
-    let component = editorDom && editorDom.__vueParentComponent;
+  function unwrapEditorCandidate(value) {
+    let candidate = value;
+    const seen = new Set();
+
+    for (let depth = 0; depth < 8 && candidate && !seen.has(candidate); depth += 1) {
+      seen.add(candidate);
+
+      if (
+        candidate?.view?.state?.schema &&
+        candidate?.state?.schema &&
+        candidate?.commands &&
+        typeof candidate?.chain === 'function'
+      ) {
+        return candidate;
+      }
+
+      let next = null;
+      try {
+        if (candidate && typeof candidate === 'object' && 'value' in candidate) next = candidate.value;
+      } catch (_) {}
+      if (!next) {
+        try {
+          if (candidate && typeof candidate === 'object' && '_value' in candidate) next = candidate._value;
+        } catch (_) {}
+      }
+      if (!next) {
+        try {
+          if (candidate && typeof candidate === 'object' && candidate.editor) next = candidate.editor;
+        } catch (_) {}
+      }
+
+      if (!next || next === candidate) break;
+      candidate = next;
+    }
+
+    return null;
+  }
+
+  function findEditorInComponent(startComponent) {
+    let component = startComponent;
     const seen = new Set();
 
     while (component && !seen.has(component)) {
       seen.add(component);
-      const sources = [component.setupState, component.ctx, component.exposed, component.proxy];
+
+      const sources = [
+        component,
+        component.setupState,
+        component.devtoolsRawSetupState,
+        component.ctx,
+        component.exposed,
+        component.proxy,
+        component.proxy?.$,
+        component.proxy?.$?.setupState,
+      ];
 
       for (const source of sources) {
         if (!source) continue;
-        let candidate = null;
-        try {
-          candidate = source.editor;
-        } catch (_) {}
-
-        if (candidate && typeof candidate === 'object' && 'value' in candidate && candidate.value) {
-          candidate = candidate.value;
+        for (const key of ['editor', 'editorRef', 'tiptap', 'tiptapEditor']) {
+          let value = null;
+          try {
+            value = source[key];
+          } catch (_) {}
+          const editor = unwrapEditorCandidate(value);
+          if (editor) return editor;
         }
-
-        if (candidate?.view && candidate?.state && candidate?.schema && candidate?.commands) return candidate;
       }
 
       component = component.parent;
     }
 
     return null;
+  }
+
+  function findTiptapEditor(editorDom) {
+    if (!(editorDom instanceof HTMLElement)) return null;
+
+    let element = editorDom;
+    const seenComponents = new Set();
+
+    for (let depth = 0; element && depth < 18; depth += 1, element = element.parentElement) {
+      const directCandidates = [
+        element.editor,
+        element.tiptap,
+        element.__editor,
+        element.__tiptapEditor,
+      ];
+
+      for (const value of directCandidates) {
+        const editor = unwrapEditorCandidate(value);
+        if (editor) return editor;
+      }
+
+      const componentCandidates = [
+        element.__vueParentComponent,
+        element.__vue_app__?._instance,
+      ];
+
+      for (const component of componentCandidates) {
+        if (!component || seenComponents.has(component)) continue;
+        seenComponents.add(component);
+        const editor = findEditorInComponent(component);
+        if (editor) return editor;
+      }
+
+      if (element.matches?.('.ant-modal-content, .nc-rich-text')) {
+        // Continue a few levels above these wrappers, but avoid walking the entire document.
+      }
+    }
+
+    return null;
+  }
+
+  function setEditorConnectionState(editorDom, state) {
+    if (!(editorDom instanceof HTMLElement)) return;
+    editorDom.setAttribute(STATE_ATTR, state);
+    if (state === 'ready') editorDom.setAttribute(READY_ATTR, '1');
+    else editorDom.removeAttribute(READY_ATTR);
+  }
+
+  function showToast(message, kind = 'error') {
+    if (!message || !document.body) return;
+
+    const old = document.querySelector('.tm-nmt-toast-v3');
+    if (old) old.remove();
+
+    const toast = document.createElement('div');
+    toast.className = `tm-nmt-toast-v3${kind === 'error' ? ' is-error' : ''}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    window.setTimeout(() => toast.remove(), 4200);
   }
 
   function languageAttrsForNodeType(nodeType, baseAttrs = {}) {
@@ -600,7 +741,7 @@
   function makeButton(label, title, onClick, extraClass = '', disabled = false) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `tm-nmt-button-v2 ${extraClass}`.trim();
+    button.className = `tm-nmt-button-v3 ${extraClass}`.trim();
     button.textContent = label;
     button.title = title || label;
     button.disabled = disabled;
@@ -623,7 +764,7 @@
   function makeMiniButton(label, title, onClick, options = {}) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `tm-nmt-mini-button-v2${options.danger ? ' tm-nmt-mini-danger-v2' : ''}`;
+    button.className = `tm-nmt-mini-button-v3${options.danger ? ' tm-nmt-mini-danger-v3' : ''}`;
     button.textContent = label;
     button.title = title;
     button.setAttribute('aria-label', title);
@@ -646,7 +787,7 @@
 
   function makeAlignmentSelect(value, onChange) {
     const select = document.createElement('select');
-    select.className = 'tm-nmt-align-select-v2';
+    select.className = 'tm-nmt-align-select-v3';
     select.title = '列对齐方式';
 
     [
@@ -673,7 +814,7 @@
   function makeCellInput(value, onInput) {
     const input = document.createElement('input');
     input.type = 'text';
-    input.className = 'tm-nmt-cell-input-v2';
+    input.className = 'tm-nmt-cell-input-v3';
     input.value = value;
 
     input.addEventListener('pointerdown', (event) => event.stopPropagation());
@@ -687,9 +828,9 @@
   }
 
   function alignmentClass(alignment) {
-    if (alignment === 'center') return 'tm-nmt-align-center-v2';
-    if (alignment === 'right') return 'tm-nmt-align-right-v2';
-    return 'tm-nmt-align-left-v2';
+    if (alignment === 'center') return 'tm-nmt-align-center-v3';
+    if (alignment === 'right') return 'tm-nmt-align-right-v3';
+    return 'tm-nmt-align-left-v3';
   }
 
   function canInsertRow(model) {
@@ -732,7 +873,7 @@
 
   function renderReadOnlyTable(model, container) {
     const table = document.createElement('table');
-    table.className = 'tm-nmt-table-v2';
+    table.className = 'tm-nmt-table-v3';
 
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
@@ -749,7 +890,7 @@
     if (!model.rows.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.className = 'tm-nmt-empty-v2';
+      td.className = 'tm-nmt-empty-v3';
       td.colSpan = model.headers.length;
       td.textContent = '暂无数据行';
       tr.appendChild(td);
@@ -800,17 +941,17 @@
       dom.dataset.nocodbMarkdownTableId = stored.id || 'legacy';
 
       const toolbar = document.createElement('div');
-      toolbar.className = 'tm-nmt-toolbar-v2';
+      toolbar.className = 'tm-nmt-toolbar-v3';
 
       const toolbarLeft = document.createElement('div');
-      toolbarLeft.className = 'tm-nmt-toolbar-left-v2';
+      toolbarLeft.className = 'tm-nmt-toolbar-left-v3';
       const title = document.createElement('span');
-      title.className = 'tm-nmt-title-v2';
+      title.className = 'tm-nmt-title-v3';
       title.textContent = 'Markdown 表格';
       toolbarLeft.appendChild(title);
 
       const toolbarRight = document.createElement('div');
-      toolbarRight.className = 'tm-nmt-toolbar-right-v2';
+      toolbarRight.className = 'tm-nmt-toolbar-right-v3';
       const editable = session.tiptap.isEditable !== false && session.editorDom.getAttribute('contenteditable') !== 'false';
 
       if (!editing) {
@@ -903,7 +1044,7 @@
               setStatus('保存失败：NocoDB 拒绝了本次表格更新。');
               rerender();
             }
-          }, 'tm-nmt-button-primary-v2'),
+          }, 'tm-nmt-button-primary-v3'),
         );
       }
 
@@ -911,25 +1052,25 @@
       dom.appendChild(toolbar);
 
       const status = document.createElement('div');
-      status.className = 'tm-nmt-status-v2';
+      status.className = 'tm-nmt-status-v3';
       status.textContent = statusMessage;
       dom.appendChild(status);
 
       const scroll = document.createElement('div');
-      scroll.className = 'tm-nmt-scroll-v2';
+      scroll.className = 'tm-nmt-scroll-v3';
 
       if (!editing || !draft) {
         renderReadOnlyTable(stored.model, scroll);
       } else {
         const table = document.createElement('table');
-        table.className = 'tm-nmt-table-v2';
+        table.className = 'tm-nmt-table-v3';
 
         const thead = document.createElement('thead');
         const actionRow = document.createElement('tr');
 
         draft.headers.forEach((_, columnIndex) => {
           const th = document.createElement('th');
-          th.className = 'tm-nmt-column-actions-v2';
+          th.className = 'tm-nmt-column-actions-v3';
           th.append(
             makeMiniButton('←+', '在左侧插入列', () => {
               if (!insertColumn(draft, columnIndex)) setStatus('已达到列数或单元格数量上限。');
@@ -956,7 +1097,7 @@
         });
 
         const actionHeader = document.createElement('th');
-        actionHeader.className = 'tm-nmt-actions-cell-v2';
+        actionHeader.className = 'tm-nmt-actions-cell-v3';
         actionHeader.textContent = '行操作';
         actionRow.appendChild(actionHeader);
         thead.appendChild(actionRow);
@@ -971,7 +1112,7 @@
           headerRow.appendChild(th);
         });
         const headerAction = document.createElement('th');
-        headerAction.className = 'tm-nmt-actions-cell-v2';
+        headerAction.className = 'tm-nmt-actions-cell-v3';
         headerAction.textContent = '表头';
         headerRow.appendChild(headerAction);
         thead.appendChild(headerRow);
@@ -981,12 +1122,12 @@
         if (!draft.rows.length) {
           const tr = document.createElement('tr');
           const td = document.createElement('td');
-          td.className = 'tm-nmt-empty-v2';
+          td.className = 'tm-nmt-empty-v3';
           td.colSpan = draft.headers.length;
           td.textContent = '暂无数据行，可点击“新增行”。';
           tr.appendChild(td);
           const actions = document.createElement('td');
-          actions.className = 'tm-nmt-actions-cell-v2';
+          actions.className = 'tm-nmt-actions-cell-v3';
           tr.appendChild(actions);
           tbody.appendChild(tr);
         } else {
@@ -1002,9 +1143,9 @@
             });
 
             const actions = document.createElement('td');
-            actions.className = 'tm-nmt-actions-cell-v2';
+            actions.className = 'tm-nmt-actions-cell-v3';
             const actionGroup = document.createElement('div');
-            actionGroup.className = 'tm-nmt-row-actions-v2';
+            actionGroup.className = 'tm-nmt-row-actions-v3';
             actionGroup.append(
               makeMiniButton('↑+', '在上方插入行', () => {
                 if (!insertRow(draft, rowIndex)) setStatus('已达到行数或单元格数量上限。');
@@ -1164,24 +1305,56 @@
     }
 
     sessions.set(editorDom, session);
-    retryCounts.delete(editorDom);
+    const discovery = discoveryStates.get(editorDom);
+    if (discovery?.timer) window.clearTimeout(discovery.timer);
+    discoveryStates.delete(editorDom);
+    setEditorConnectionState(editorDom, 'ready');
     return session;
   }
 
-  function ensureSession(editorDom) {
+  function clearDiscovery(editorDom) {
+    const state = discoveryStates.get(editorDom);
+    if (state?.timer) window.clearTimeout(state.timer);
+    discoveryStates.delete(editorDom);
+  }
+
+  function scheduleSessionDiscovery(editorDom, reset = false) {
+    if (!(editorDom instanceof HTMLElement) || !editorDom.isConnected) return;
+
+    const current = discoveryStates.get(editorDom);
+    if (reset && current?.timer) window.clearTimeout(current.timer);
+    if (!reset && current?.timer) return;
+
+    const attempts = reset ? 0 : (current?.attempts || 0);
+    if (attempts >= DISCOVERY_RETRY_LIMIT) {
+      clearDiscovery(editorDom);
+      setEditorConnectionState(editorDom, 'unavailable');
+      return;
+    }
+
+    setEditorConnectionState(editorDom, 'connecting');
+    const timer = window.setTimeout(() => {
+      discoveryStates.set(editorDom, { attempts: attempts + 1, timer: 0 });
+      const session = ensureSession(editorDom, false);
+      if (!session) scheduleSessionDiscovery(editorDom, false);
+    }, DISCOVERY_RETRY_DELAY);
+
+    discoveryStates.set(editorDom, { attempts, timer });
+  }
+
+  function ensureSession(editorDom, scheduleRetry = true) {
     if (!(editorDom instanceof HTMLElement) || !editorDom.isConnected) return null;
 
     const current = sessions.get(editorDom);
-    if (current && !current.destroyed) return current;
+    if (current && !current.destroyed) {
+      setEditorConnectionState(editorDom, 'ready');
+      return current;
+    }
 
     const tiptap = findTiptapEditor(editorDom);
     if (tiptap) return installSession(editorDom, tiptap);
 
-    const retryCount = retryCounts.get(editorDom) || 0;
-    if (retryCount < DISCOVERY_RETRY_LIMIT) {
-      retryCounts.set(editorDom, retryCount + 1);
-      window.setTimeout(() => ensureSession(editorDom), DISCOVERY_RETRY_DELAY);
-    }
+    if (scheduleRetry) scheduleSessionDiscovery(editorDom, false);
     return null;
   }
 
@@ -1196,7 +1369,9 @@
     } catch (_) {}
 
     sessions.delete(session.editorDom);
-    retryCounts.delete(session.editorDom);
+    clearDiscovery(session.editorDom);
+    session.editorDom.removeAttribute(READY_ATTR);
+    session.editorDom.removeAttribute(STATE_ATTR);
   }
 
   function getEventEditor(event) {
@@ -1204,6 +1379,42 @@
     if (target && target.nodeType === Node.TEXT_NODE) target = target.parentElement;
     if (!(target instanceof HTMLElement)) return null;
     return target.closest(EDITOR_SELECTOR);
+  }
+
+  function queueTableInsert(editorDom, model) {
+    let attempts = 0;
+
+    const tryInsert = () => {
+      if (!editorDom.isConnected) {
+        showToast('Markdown 表格转换失败：Rich Text 编辑器已经关闭。');
+        return;
+      }
+
+      const session = ensureSession(editorDom, false);
+      if (session) {
+        editorDom.focus({ preventScroll: true });
+        const inserted = insertTableCodeBlock(session, model);
+        if (!inserted) {
+          setEditorConnectionState(editorDom, 'insert-failed');
+          console.warn('[NocoDB Markdown Table] 已连接 Tiptap，但代码块插入失败。');
+          showToast('Markdown 表格转换失败：NocoDB 拒绝插入表格代码块。');
+        }
+        return;
+      }
+
+      attempts += 1;
+      if (attempts >= PASTE_RETRY_LIMIT) {
+        setEditorConnectionState(editorDom, 'unavailable');
+        console.warn('[NocoDB Markdown Table] 无法取得当前 Rich Text 的 Tiptap 实例。');
+        showToast('Markdown 表格未插入：脚本无法连接当前 NocoDB Rich Text，请刷新页面后重试。');
+        return;
+      }
+
+      scheduleSessionDiscovery(editorDom, attempts === 1);
+      window.setTimeout(tryInsert, PASTE_RETRY_DELAY);
+    };
+
+    tryInsert();
   }
 
   function onPaste(event) {
@@ -1219,21 +1430,21 @@
     const model = parseMarkdownTable(text);
     if (!model) return;
 
-    const session = ensureSession(editorDom);
-    if (!session) return;
-
-    const inserted = insertTableCodeBlock(session, model);
-    if (!inserted) return;
-
+    // 一旦确认是 Markdown 表格，就必须立刻阻止 NocoDB 默认粘贴。
+    // 否则 CE Rich Text 会先把不受支持的 table 压平成连续普通文字。
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
+
+    queueTableInsert(editorDom, model);
   }
 
   function discoverEditorsWithin(node) {
     if (!(node instanceof HTMLElement)) return;
-    if (node.matches(EDITOR_SELECTOR)) ensureSession(node);
-    node.querySelectorAll?.(EDITOR_SELECTOR).forEach(ensureSession);
+    if (node.matches(EDITOR_SELECTOR) && !ensureSession(node)) scheduleSessionDiscovery(node, true);
+    node.querySelectorAll?.(EDITOR_SELECTOR).forEach((editor) => {
+      if (!ensureSession(editor)) scheduleSessionDiscovery(editor, true);
+    });
   }
 
   function cleanupDisconnectedSessions() {
@@ -1245,7 +1456,9 @@
   function startDiscoveryObserver() {
     if (!document.body) return;
 
-    document.querySelectorAll(EDITOR_SELECTOR).forEach(ensureSession);
+    document.querySelectorAll(EDITOR_SELECTOR).forEach((editor) => {
+      if (!ensureSession(editor)) scheduleSessionDiscovery(editor, true);
+    });
 
     const observer = new MutationObserver((mutations) => {
       let shouldCleanup = false;
@@ -1272,7 +1485,7 @@
     splitMarkdownRow,
   };
 
-  if (globalThis.__NOCODB_MARKDOWN_TABLE_TEST_MODE__ === true) {
+  if (TEST_MODE) {
     globalThis.__NOCODB_MARKDOWN_TABLE_TEST_API__ = TEST_API;
     return;
   }
@@ -1281,7 +1494,7 @@
   document.addEventListener('paste', onPaste, true);
   document.addEventListener('focusin', (event) => {
     const editor = getEventEditor(event);
-    if (editor) ensureSession(editor);
+    if (editor && !ensureSession(editor)) scheduleSessionDiscovery(editor, true);
   }, true);
 
   if (document.readyState === 'loading') {
@@ -1289,4 +1502,55 @@
   } else {
     startDiscoveryObserver();
   }
-})();
+
+  globalThis[PAGE_GUARD] = 'ready';
+}
+
+function launchNocodbMarkdownTableInPageContext() {
+  const source = `;(${nocodbMarkdownTablePageMain.toString()})();`;
+  const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+
+  try {
+    if (pageWindow?.["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] === 'ready') return;
+  } catch (_) {}
+
+  try {
+    if (pageWindow && typeof pageWindow.eval === 'function') {
+      pageWindow.eval(source);
+      if (pageWindow["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] === 'ready') return;
+    }
+  } catch (error) {
+    console.warn('[NocoDB Markdown Table] page eval 注入失败，尝试 Function 注入。', error);
+  }
+
+  try {
+    if (pageWindow && typeof pageWindow.Function === 'function') {
+      pageWindow.Function(source)();
+      if (pageWindow["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] === 'ready') return;
+    }
+  } catch (error) {
+    console.warn('[NocoDB Markdown Table] page Function 注入失败，尝试 script 注入。', error);
+  }
+
+  try {
+    const script = document.createElement('script');
+    script.textContent = source;
+    (document.documentElement || document.head || document.body).appendChild(script);
+    script.remove();
+    window.setTimeout(() => {
+      try {
+        if (pageWindow?.["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] !== 'ready') {
+          console.error('[NocoDB Markdown Table] 页面主环境注入未完成，可能被 CSP 阻止。');
+        }
+      } catch (_) {}
+    }, 500);
+  } catch (error) {
+    console.error('[NocoDB Markdown Table] 无法进入网页主环境。', error);
+  }
+}
+
+if (globalThis.__NOCODB_MARKDOWN_TABLE_TEST_MODE__ === true) {
+  nocodbMarkdownTablePageMain();
+} else {
+  launchNocodbMarkdownTableInPageContext();
+}
