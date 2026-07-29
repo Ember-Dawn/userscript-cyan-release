@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      3.1.0
+// @version      3.1.1
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -176,7 +176,7 @@ function nocodbMarkdownTablePageMain() {
         border-collapse: separate;
         border-spacing: 0;
         table-layout: auto;
-        border: 1px solid var(--nc-border-gray-medium, rgba(31, 41, 55, 0.28));
+        border: 1px solid color-mix(in srgb, var(--nc-border-gray-medium, #d1d5db) 68%, var(--nc-content-gray, #1f2937) 32%);
         border-radius: 8px;
         overflow: hidden;
         background: var(--nc-bg-default, #fff);
@@ -191,8 +191,8 @@ function nocodbMarkdownTablePageMain() {
       .tm-nmt-table-v31 td {
         min-width: 96px;
         padding: 8px 10px;
-        border-right: 1px solid var(--nc-border-gray-light, rgba(31, 41, 55, 0.18));
-        border-bottom: 1px solid var(--nc-border-gray-light, rgba(31, 41, 55, 0.18));
+        border-right: 1px solid color-mix(in srgb, var(--nc-border-gray-light, #e5e7eb) 72%, var(--nc-content-gray, #1f2937) 28%);
+        border-bottom: 1px solid color-mix(in srgb, var(--nc-border-gray-light, #e5e7eb) 72%, var(--nc-content-gray, #1f2937) 28%);
         vertical-align: top;
         text-align: left;
         white-space: pre-wrap;
@@ -210,7 +210,7 @@ function nocodbMarkdownTablePageMain() {
       .tm-nmt-table-v31 thead th {
         font-weight: 650;
         background: var(--nc-bg-gray-light, #f5f5f6);
-        border-bottom-color: var(--nc-border-gray-medium, rgba(31, 41, 55, 0.26));
+        border-bottom-color: color-mix(in srgb, var(--nc-border-gray-medium, #d1d5db) 62%, var(--nc-content-gray, #1f2937) 38%);
       }
 
       .tm-nmt-table-v31 tbody tr:hover > td {
