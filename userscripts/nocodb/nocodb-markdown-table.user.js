@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      3.0.0
-// @description  在页面主环境接入 NocoDB Rich Text，自动转换并内嵌编辑 Markdown 表格
+// @version      3.1.0
+// @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
 // @grant        unsafeWindow
@@ -26,7 +26,7 @@
  *   ```nocodb-table
  *   [[NOCODB_MARKDOWN_TABLE:v1:7f3a91c4b2de]]
  *   | 姓名 | 年龄 | 城市 |
- *   | --- | ---: | --- |
+ *   | --- | --- | --- |
  *   | 小明 | 25 | 北京 |
  *   ```
  *
@@ -38,38 +38,34 @@
  * 旧格式 [[NOCODB_MARKDOWN_TABLE_V1]] 仍然可以读取；旧表格在第一次保存时
  * 自动升级为新标记与 nocodb-table 语言。
  *
- * 二、渲染架构
+ * 二、界面原则
  * -----------------------------------------------------------------------------
- * 旧版使用编辑器外部的 absolute overlay，容易与 TOC 的左侧占位、滚动坐标、
- * ProseMirror DOM 重建和鼠标事件发生冲突。
+ * - 浏览状态只显示表格本身；
+ * - 鼠标移入时，右上角才显示铅笔编辑按钮；
+ * - 双击任意单元格也可以进入编辑状态；
+ * - 编辑状态顶部仅保留“新增行 / 新增列 / 取消 / 保存”；
+ * - 列操作收进对应表头的三点菜单；
+ * - 行操作收进对应数据行的三点菜单；
+ * - 所有内容统一左对齐，不再保存或编辑对齐信息；
+ * - 保存成功使用短暂 Toast，不常驻状态栏。
  *
- * 当前版本在网页主 JavaScript 环境中接入 Vue/Tiptap，并使用自定义
- * ProseMirror codeBlock NodeView：
- *
- * - 文档模型里仍然是可持久化的 codeBlock；
- * - 只有带内部标记的 codeBlock 被替换为可视化表格；
- * - 表格 DOM 直接位于 ProseMirror 正文排版流中；
- * - 普通代码块继续使用 NocoDB 原有 NodeView；
- * - 不再创建浮层，不再计算 top/left，不监听滚动或 resize；
- * - 表格编辑通过 transaction 替换原 codeBlock 内容，继续触发 NocoDB 自身保存。
- *
- * 三、性能原则
+ * 三、渲染架构与性能
  * -----------------------------------------------------------------------------
  * - 油猴外壳只负责把主体注入网页主环境；
  * - 页面只注册一个 paste 事件；
  * - 全局 MutationObserver 只发现新增或移除的 Rich Text 编辑器；
- * - 不扫描正文寻找代码块，不轮询，不监听滚动，不做坐标测量；
- * - 浏览状态只渲染普通 table；点击“编辑表格”后才创建 input/select；
- * - 表格更新仅替换对应的一个 codeBlock 节点；
- * - Rich Text 弹窗出现或获得焦点时提前连接 Tiptap；
- * - 已识别为表格的粘贴会立即阻止 NocoDB 默认处理，避免被压平成普通文字。
+ * - 不扫描正文代码块，不轮询，不监听滚动，不做坐标测量；
+ * - 使用 ProseMirror codeBlock NodeView，在正文排版流中显示表格；
+ * - 浏览状态只渲染普通 table，编辑状态才创建 input 和菜单；
+ * - 表格更新仅替换对应的一个 codeBlock 节点。
  *
  * 四、格式边界
  * -----------------------------------------------------------------------------
  * - 支持标准矩形 Markdown 表格；
- * - 识别阶段兼容 1 个及以上连字符的分隔行，保存时统一为 ---；
+ * - 识别阶段兼容 1 个及以上连字符的分隔行；
+ * - 原有 :---、:---:、---: 对齐标记可以读取，但保存时统一输出 ---；
  * - 支持首尾竖线可有可无；
- * - 支持 \\| 转义和简单行内代码中的竖线；
+ * - 支持 \| 转义和简单行内代码中的竖线；
  * - 不支持跨行/跨列合并；
  * - 不支持单元格内真实换行或多段落；
  * - 单次自动转换最多 200 行、40 列、4000 个单元格、100000 个字符。
@@ -87,8 +83,8 @@ function nocodbMarkdownTablePageMain() {
   const LEGACY_MARKER = '[[NOCODB_MARKDOWN_TABLE_V1]]';
   const NEW_MARKER_PATTERN = /^\[\[NOCODB_MARKDOWN_TABLE:v1:([A-Za-z0-9_-]{6,64})\]\]$/;
 
-  const STYLE_ID = 'tm-nocodb-markdown-table-style-v3';
-  const NODEVIEW_CLASS = 'tm-nocodb-markdown-table-v3';
+  const STYLE_ID = 'tm-nocodb-markdown-table-style-v31';
+  const NODEVIEW_CLASS = 'tm-nocodb-markdown-table-v31';
 
   const MAX_SOURCE_CHARS = 100000;
   const MAX_COLUMNS = 40;
@@ -100,7 +96,7 @@ function nocodbMarkdownTablePageMain() {
   const PASTE_RETRY_DELAY = 50;
   const READY_ATTR = 'data-tm-nmt-ready';
   const STATE_ATTR = 'data-tm-nmt-state';
-  const PAGE_GUARD = '__NOCODB_MARKDOWN_TABLE_PAGE_V3__';
+  const PAGE_GUARD = '__NOCODB_MARKDOWN_TABLE_PAGE_V31__';
 
   const TEST_MODE = globalThis.__NOCODB_MARKDOWN_TABLE_TEST_MODE__ === true;
   if (!TEST_MODE) {
@@ -114,8 +110,7 @@ function nocodbMarkdownTablePageMain() {
   const discoveryStates = new WeakMap();
 
   /**
-   * @typedef {'left'|'center'|'right'} Alignment
-   * @typedef {{ headers: string[], rows: string[][], alignments: Alignment[] }} TableModel
+   * @typedef {{ headers: string[], rows: string[][] }} TableModel
    * @typedef {{ id: string|null, legacy: boolean, markerLine: string, model: TableModel, sourceHash: string }} StoredTable
    * @typedef {{
    *   editorDom: HTMLElement,
@@ -136,16 +131,12 @@ function nocodbMarkdownTablePageMain() {
     style.id = STYLE_ID;
     style.textContent = `
       .${NODEVIEW_CLASS} {
+        position: relative;
         width: 100%;
         max-width: 100%;
         margin: 10px 0;
         box-sizing: border-box;
-        overflow: hidden;
-        border: 1px solid var(--nc-border-gray-medium, rgba(0, 0, 0, 0.16));
-        border-radius: 9px;
-        background: var(--nc-bg-default, #fff);
         color: var(--nc-content-gray, #1f2937);
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.07);
       }
 
       .${NODEVIEW_CLASS},
@@ -154,205 +145,306 @@ function nocodbMarkdownTablePageMain() {
       }
 
       .${NODEVIEW_CLASS}.ProseMirror-selectednode {
-        outline: 2px solid color-mix(in srgb, var(--nc-primary, #6c5ce7) 45%, transparent);
-        outline-offset: 2px;
+        outline: 2px solid color-mix(in srgb, var(--nc-primary, #6c5ce7) 42%, transparent);
+        outline-offset: 3px;
+        border-radius: 9px;
       }
 
-      .tm-nmt-toolbar-v3 {
-        min-height: 38px;
+      .${NODEVIEW_CLASS}.is-editing {
+        overflow: visible;
+        border: 1px solid var(--nc-border-gray-medium, rgba(31, 41, 55, 0.24));
+        border-radius: 9px;
+        background: var(--nc-bg-default, #fff);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+      }
+
+      .tm-nmt-scroll-v31 {
+        width: 100%;
+        max-width: 100%;
+        overflow: auto;
+        max-height: min(66vh, 680px);
+        border-radius: 8px;
+      }
+
+      .${NODEVIEW_CLASS}.is-editing .tm-nmt-scroll-v31 {
+        border-radius: 0 0 8px 8px;
+      }
+
+      .tm-nmt-table-v31 {
+        width: 100%;
+        min-width: 360px;
+        border-collapse: separate;
+        border-spacing: 0;
+        table-layout: auto;
+        border: 1px solid var(--nc-border-gray-medium, rgba(31, 41, 55, 0.28));
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--nc-bg-default, #fff);
+      }
+
+      .${NODEVIEW_CLASS}.is-editing .tm-nmt-table-v31 {
+        border: 0;
+        border-radius: 0;
+      }
+
+      .tm-nmt-table-v31 th,
+      .tm-nmt-table-v31 td {
+        min-width: 96px;
+        padding: 8px 10px;
+        border-right: 1px solid var(--nc-border-gray-light, rgba(31, 41, 55, 0.18));
+        border-bottom: 1px solid var(--nc-border-gray-light, rgba(31, 41, 55, 0.18));
+        vertical-align: top;
+        text-align: left;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .tm-nmt-table-v31 tr > :last-child {
+        border-right: 0;
+      }
+
+      .tm-nmt-table-v31 tbody tr:last-child > * {
+        border-bottom: 0;
+      }
+
+      .tm-nmt-table-v31 thead th {
+        font-weight: 650;
+        background: var(--nc-bg-gray-light, #f5f5f6);
+        border-bottom-color: var(--nc-border-gray-medium, rgba(31, 41, 55, 0.26));
+      }
+
+      .tm-nmt-table-v31 tbody tr:hover > td {
+        background: color-mix(in srgb, var(--nc-bg-gray-light, #f5f5f6) 58%, transparent);
+      }
+
+      .tm-nmt-empty-v31 {
+        padding: 18px !important;
+        text-align: center !important;
+        color: var(--nc-content-gray-subtle, #777);
+      }
+
+      .tm-nmt-edit-trigger-v31 {
+        position: absolute;
+        top: 7px;
+        right: 7px;
+        z-index: 4;
+        width: 30px;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 1px solid rgba(31, 41, 55, 0.20);
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.96);
+        color: #374151;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
+        cursor: pointer;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(-2px);
+        transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+      }
+
+      .${NODEVIEW_CLASS}:hover .tm-nmt-edit-trigger-v31,
+      .${NODEVIEW_CLASS}:focus-within .tm-nmt-edit-trigger-v31 {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+      }
+
+      .tm-nmt-edit-trigger-v31:hover {
+        background: #f3f4f6;
+      }
+
+      .tm-nmt-edit-trigger-v31 svg {
+        width: 15px;
+        height: 15px;
+        pointer-events: none;
+      }
+
+      .tm-nmt-toolbar-v31 {
+        min-height: 43px;
         display: flex;
         align-items: center;
         justify-content: space-between;
         flex-wrap: wrap;
         gap: 8px;
-        padding: 6px 8px;
-        border-bottom: 1px solid var(--nc-border-gray-light, rgba(0, 0, 0, 0.10));
+        padding: 7px 8px;
+        border-bottom: 1px solid var(--nc-border-gray-medium, rgba(31, 41, 55, 0.18));
         background: var(--nc-bg-gray-light, #f7f7f8);
+        border-radius: 8px 8px 0 0;
       }
 
-      .tm-nmt-toolbar-left-v3,
-      .tm-nmt-toolbar-right-v3 {
+      .tm-nmt-toolbar-group-v31 {
         display: flex;
         align-items: center;
         flex-wrap: wrap;
-        gap: 5px;
+        gap: 6px;
       }
 
-      .tm-nmt-title-v3 {
-        font-size: 12px;
-        font-weight: 650;
-        color: var(--nc-content-gray-subtle, #525866);
-        user-select: none;
-      }
-
-      .tm-nmt-status-v3 {
-        min-height: 18px;
-        padding: 3px 8px;
-        border-bottom: 1px solid var(--nc-border-gray-light, rgba(0, 0, 0, 0.08));
-        background: var(--nc-bg-default, #fff);
-        color: var(--nc-content-gray-subtle, #666);
-        font-size: 12px;
-      }
-
-      .tm-nmt-status-v3:empty {
-        display: none;
-      }
-
-      .tm-nmt-button-v3,
-      .tm-nmt-mini-button-v3,
-      .tm-nmt-align-select-v3 {
-        border: 1px solid var(--nc-border-gray-medium, rgba(0, 0, 0, 0.16));
+      .tm-nmt-button-v31,
+      .tm-nmt-menu-button-v31 {
+        border: 1px solid var(--nc-border-gray-medium, rgba(31, 41, 55, 0.20));
         border-radius: 6px;
         background: var(--nc-bg-default, #fff);
         color: inherit;
         font: inherit;
-      }
-
-      .tm-nmt-button-v3 {
-        min-height: 27px;
-        padding: 4px 9px;
-        font-size: 12px;
-        line-height: 1.2;
         cursor: pointer;
         user-select: none;
       }
 
-      .tm-nmt-button-v3:hover,
-      .tm-nmt-mini-button-v3:hover,
-      .tm-nmt-align-select-v3:hover {
-        background: var(--nc-bg-gray-medium, #efeff1);
+      .tm-nmt-button-v31 {
+        min-height: 29px;
+        padding: 4px 10px;
+        font-size: 12px;
+        line-height: 1.2;
       }
 
-      .tm-nmt-button-v3:disabled,
-      .tm-nmt-mini-button-v3:disabled,
-      .tm-nmt-align-select-v3:disabled {
+      .tm-nmt-button-v31:hover,
+      .tm-nmt-menu-button-v31:hover {
+        background: var(--nc-bg-gray-medium, #ececee);
+      }
+
+      .tm-nmt-button-v31:disabled,
+      .tm-nmt-menu-button-v31:disabled {
         opacity: 0.45;
         cursor: not-allowed;
       }
 
-      .tm-nmt-button-primary-v3 {
+      .tm-nmt-button-primary-v31 {
         border-color: var(--nc-primary, #6c5ce7);
         background: var(--nc-primary, #6c5ce7);
         color: #fff;
       }
 
-      .tm-nmt-button-danger-v3,
-      .tm-nmt-mini-danger-v3 {
-        color: #b42318;
+      .tm-nmt-button-primary-v31:hover {
+        filter: brightness(0.96);
       }
 
-      .tm-nmt-scroll-v3 {
+      .tm-nmt-cell-input-v31 {
         width: 100%;
-        max-width: 100%;
-        overflow: auto;
-        max-height: min(62vh, 620px);
-      }
-
-      .tm-nmt-table-v3 {
-        width: 100%;
-        min-width: 360px;
-        border-collapse: collapse;
-        table-layout: auto;
-        background: var(--nc-bg-default, #fff);
-      }
-
-      .tm-nmt-table-v3 th,
-      .tm-nmt-table-v3 td {
-        min-width: 96px;
-        padding: 8px 10px;
-        border-right: 1px solid var(--nc-border-gray-light, rgba(0, 0, 0, 0.10));
-        border-bottom: 1px solid var(--nc-border-gray-light, rgba(0, 0, 0, 0.10));
-        vertical-align: top;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-      }
-
-      .tm-nmt-table-v3 tr > :last-child {
-        border-right: 0;
-      }
-
-      .tm-nmt-table-v3 tbody tr:last-child > * {
-        border-bottom: 0;
-      }
-
-      .tm-nmt-table-v3 thead th {
-        font-weight: 650;
-        background: var(--nc-bg-gray-light, #f7f7f8);
-      }
-
-      .tm-nmt-empty-v3 {
-        padding: 18px !important;
-        text-align: center;
-        color: var(--nc-content-gray-subtle, #777);
-      }
-
-      .tm-nmt-cell-input-v3 {
-        width: 100%;
-        min-width: 84px;
-        min-height: 31px;
+        min-width: 72px;
+        min-height: 32px;
         padding: 5px 7px;
-        border: 1px solid var(--nc-border-gray-medium, rgba(0, 0, 0, 0.18));
+        border: 1px solid var(--nc-border-gray-medium, rgba(31, 41, 55, 0.22));
         border-radius: 5px;
         outline: none;
         background: var(--nc-bg-default, #fff);
         color: inherit;
         font: inherit;
         line-height: 1.35;
+        text-align: left;
       }
 
-      .tm-nmt-cell-input-v3:focus,
-      .tm-nmt-align-select-v3:focus {
+      .tm-nmt-cell-input-v31:focus {
         border-color: var(--nc-primary, #6c5ce7);
         box-shadow: 0 0 0 2px color-mix(in srgb, var(--nc-primary, #6c5ce7) 18%, transparent);
       }
 
-      .tm-nmt-column-actions-v3,
-      .tm-nmt-row-actions-v3 {
-        display: flex;
+      .tm-nmt-header-cell-v31 {
+        position: relative;
+        padding-right: 43px !important;
+      }
+
+      .tm-nmt-header-cell-v31 .tm-nmt-cell-input-v31 {
+        font-weight: 650;
+      }
+
+      .tm-nmt-menu-button-v31 {
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
-        flex-wrap: wrap;
-        gap: 3px;
+        padding: 0;
+        font-size: 17px;
+        line-height: 1;
       }
 
-      .tm-nmt-column-actions-v3 {
-        padding: 5px !important;
-        background: var(--nc-bg-gray-light, #f7f7f8);
+      .tm-nmt-header-menu-button-v31 {
+        position: absolute;
+        top: 50%;
+        right: 8px;
+        transform: translateY(-50%);
       }
 
-      .tm-nmt-mini-button-v3 {
-        min-width: 25px;
-        height: 25px;
-        padding: 0 6px;
-        font-size: 11px;
-        line-height: 23px;
+      .tm-nmt-menu-v31 {
+        position: absolute;
+        z-index: 30;
+        min-width: 142px;
+        padding: 5px;
+        border: 1px solid rgba(31, 41, 55, 0.18);
+        border-radius: 7px;
+        background: var(--nc-bg-default, #fff);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+      }
+
+      .tm-nmt-column-menu-v31 {
+        top: calc(50% + 19px);
+        right: 7px;
+      }
+
+      .tm-nmt-row-menu-v31 {
+        top: calc(50% + 18px);
+        right: 5px;
+      }
+
+      .tm-nmt-menu-item-v31 {
+        width: 100%;
+        min-height: 31px;
+        display: flex;
+        align-items: center;
+        padding: 5px 9px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 12px;
+        text-align: left;
         cursor: pointer;
       }
 
-      .tm-nmt-align-select-v3 {
-        height: 25px;
-        padding: 0 4px;
-        font-size: 11px;
-        cursor: pointer;
+      .tm-nmt-menu-item-v31:hover {
+        background: var(--nc-bg-gray-medium, #ececee);
       }
 
-      .tm-nmt-actions-cell-v3 {
-        width: 120px;
-        min-width: 120px !important;
+      .tm-nmt-menu-item-v31.is-danger {
+        color: #b42318;
+      }
+
+      .tm-nmt-menu-item-v31:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .tm-nmt-row-action-cell-v31 {
+        position: relative;
+        width: 42px;
+        min-width: 42px !important;
+        padding: 6px !important;
+        text-align: center !important;
         background: var(--nc-bg-gray-light, #f7f7f8);
       }
 
-      .tm-nmt-align-left-v3 { text-align: left; }
-      .tm-nmt-align-center-v3 { text-align: center; }
-      .tm-nmt-align-right-v3 { text-align: right; }
+      .tm-nmt-row-action-cell-v31 .tm-nmt-menu-button-v31 {
+        opacity: 0.35;
+        transition: opacity 100ms ease;
+      }
 
-      .tm-nmt-toast-v3 {
+      .tm-nmt-table-v31 tr:hover .tm-nmt-row-action-cell-v31 .tm-nmt-menu-button-v31,
+      .tm-nmt-row-action-cell-v31:focus-within .tm-nmt-menu-button-v31 {
+        opacity: 1;
+      }
+
+      .tm-nmt-toast-v31 {
         position: fixed;
         right: 22px;
         bottom: 22px;
         z-index: 100000;
         max-width: min(420px, calc(100vw - 44px));
-        padding: 10px 13px;
+        padding: 9px 12px;
         border: 1px solid rgba(0, 0, 0, 0.14);
         border-radius: 8px;
         background: rgba(31, 41, 55, 0.96);
@@ -363,7 +455,7 @@ function nocodbMarkdownTablePageMain() {
         pointer-events: none;
       }
 
-      .tm-nmt-toast-v3.is-error {
+      .tm-nmt-toast-v31.is-error {
         background: rgba(180, 35, 24, 0.97);
       }
     `;
@@ -374,7 +466,6 @@ function nocodbMarkdownTablePageMain() {
     return {
       headers: [...model.headers],
       rows: model.rows.map((row) => [...row]),
-      alignments: [...model.alignments],
     };
   }
 
@@ -456,12 +547,8 @@ function nocodbMarkdownTablePageMain() {
     return cells;
   }
 
-  function parseAlignment(cell) {
-    const value = cell.trim();
-    if (!/^:?-{1,}:?$/.test(value)) return null;
-    if (value.startsWith(':') && value.endsWith(':')) return 'center';
-    if (value.endsWith(':')) return 'right';
-    return 'left';
+  function isValidSeparatorCell(cell) {
+    return /^:?-{1,}:?$/.test(cell.trim());
   }
 
   function normalizeSourceLines(source) {
@@ -487,9 +574,7 @@ function nocodbMarkdownTablePageMain() {
     const headers = splitMarkdownRow(lines[0]);
     const separator = splitMarkdownRow(lines[1]);
     if (headers.length < 2 || headers.length > MAX_COLUMNS || separator.length !== headers.length) return null;
-
-    const alignments = separator.map(parseAlignment);
-    if (alignments.some((alignment) => alignment === null)) return null;
+    if (separator.some((cell) => !isValidSeparatorCell(cell))) return null;
 
     const rows = [];
     for (const line of lines.slice(2)) {
@@ -501,11 +586,7 @@ function nocodbMarkdownTablePageMain() {
     const cellCount = headers.length * (rows.length + 1);
     if (rows.length > MAX_BODY_ROWS || cellCount > MAX_CELLS) return null;
 
-    return {
-      headers,
-      rows,
-      alignments: /** @type {Alignment[]} */ (alignments),
-    };
+    return { headers, rows };
   }
 
   function escapeCell(value) {
@@ -517,15 +598,9 @@ function nocodbMarkdownTablePageMain() {
       .trim();
   }
 
-  function alignmentMarker(alignment) {
-    if (alignment === 'center') return ':---:';
-    if (alignment === 'right') return '---:';
-    return '---';
-  }
-
   function serializeMarkdownTable(model) {
     const header = `| ${model.headers.map(escapeCell).join(' | ')} |`;
-    const separator = `| ${model.alignments.map(alignmentMarker).join(' | ')} |`;
+    const separator = `| ${model.headers.map(() => '---').join(' | ')} |`;
     const rows = model.rows.map((row) => `| ${row.map(escapeCell).join(' | ')} |`);
     return [header, separator, ...rows].join('\n');
   }
@@ -684,10 +759,6 @@ function nocodbMarkdownTablePageMain() {
         const editor = findEditorInComponent(component);
         if (editor) return editor;
       }
-
-      if (element.matches?.('.ant-modal-content, .nc-rich-text')) {
-        // Continue a few levels above these wrappers, but avoid walking the entire document.
-      }
     }
 
     return null;
@@ -700,17 +771,17 @@ function nocodbMarkdownTablePageMain() {
     else editorDom.removeAttribute(READY_ATTR);
   }
 
-  function showToast(message, kind = 'error') {
+  function showToast(message, kind = 'success', duration = 1800) {
     if (!message || !document.body) return;
 
-    const old = document.querySelector('.tm-nmt-toast-v3');
+    const old = document.querySelector('.tm-nmt-toast-v31');
     if (old) old.remove();
 
     const toast = document.createElement('div');
-    toast.className = `tm-nmt-toast-v3${kind === 'error' ? ' is-error' : ''}`;
+    toast.className = `tm-nmt-toast-v31${kind === 'error' ? ' is-error' : ''}`;
     toast.textContent = message;
     document.body.appendChild(toast);
-    window.setTimeout(() => toast.remove(), 4200);
+    window.setTimeout(() => toast.remove(), duration);
   }
 
   function languageAttrsForNodeType(nodeType, baseAttrs = {}) {
@@ -738,83 +809,82 @@ function nocodbMarkdownTablePageMain() {
     };
   }
 
+  function stopPointerEvent(event, preventDefault = true) {
+    if (preventDefault) event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
   function makeButton(label, title, onClick, extraClass = '', disabled = false) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `tm-nmt-button-v3 ${extraClass}`.trim();
+    button.className = `tm-nmt-button-v31 ${extraClass}`.trim();
     button.textContent = label;
     button.title = title || label;
     button.disabled = disabled;
 
-    button.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-    });
+    button.addEventListener('pointerdown', (event) => stopPointerEvent(event));
     button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      stopPointerEvent(event);
       if (!button.disabled) onClick();
     });
 
     return button;
   }
 
-  function makeMiniButton(label, title, onClick, options = {}) {
+  function makeEditTrigger(onClick) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `tm-nmt-mini-button-v3${options.danger ? ' tm-nmt-mini-danger-v3' : ''}`;
-    button.textContent = label;
-    button.title = title;
-    button.setAttribute('aria-label', title);
-    button.disabled = Boolean(options.disabled);
+    button.className = 'tm-nmt-edit-trigger-v31';
+    button.title = '编辑表格';
+    button.setAttribute('aria-label', '编辑表格');
+    button.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M10.9 2.1a1.4 1.4 0 0 1 2 2L5.2 11.8l-2.7.7.7-2.7 7.7-7.7Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="m9.9 3.1 2 2" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+      </svg>`;
 
-    button.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-    });
+    button.addEventListener('pointerdown', (event) => stopPointerEvent(event));
     button.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-      if (!button.disabled) onClick();
+      stopPointerEvent(event);
+      onClick();
     });
-
     return button;
   }
 
-  function makeAlignmentSelect(value, onChange) {
-    const select = document.createElement('select');
-    select.className = 'tm-nmt-align-select-v3';
-    select.title = '列对齐方式';
-
-    [
-      ['left', '左对齐'],
-      ['center', '居中'],
-      ['right', '右对齐'],
-    ].forEach(([optionValue, label]) => {
-      const option = document.createElement('option');
-      option.value = optionValue;
-      option.textContent = label;
-      select.appendChild(option);
+  function makeMenuButton(title, onClick, extraClass = '') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `tm-nmt-menu-button-v31 ${extraClass}`.trim();
+    button.textContent = '⋮';
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.addEventListener('pointerdown', (event) => stopPointerEvent(event));
+    button.addEventListener('click', (event) => {
+      stopPointerEvent(event);
+      onClick();
     });
+    return button;
+  }
 
-    select.value = value;
-    select.addEventListener('pointerdown', (event) => event.stopPropagation());
-    select.addEventListener('click', (event) => event.stopPropagation());
-    select.addEventListener('change', (event) => {
-      event.stopPropagation();
-      onChange(/** @type {Alignment} */ (select.value));
+  function makeMenuItem(label, onClick, options = {}) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `tm-nmt-menu-item-v31${options.danger ? ' is-danger' : ''}`;
+    button.textContent = label;
+    button.disabled = Boolean(options.disabled);
+    button.addEventListener('pointerdown', (event) => stopPointerEvent(event));
+    button.addEventListener('click', (event) => {
+      stopPointerEvent(event);
+      if (!button.disabled) onClick();
     });
-    return select;
+    return button;
   }
 
   function makeCellInput(value, onInput) {
     const input = document.createElement('input');
     input.type = 'text';
-    input.className = 'tm-nmt-cell-input-v3';
+    input.className = 'tm-nmt-cell-input-v31';
     input.value = value;
 
     input.addEventListener('pointerdown', (event) => event.stopPropagation());
@@ -825,12 +895,6 @@ function nocodbMarkdownTablePageMain() {
       if (event.key === 'Enter') event.preventDefault();
     });
     return input;
-  }
-
-  function alignmentClass(alignment) {
-    if (alignment === 'center') return 'tm-nmt-align-center-v3';
-    if (alignment === 'right') return 'tm-nmt-align-right-v3';
-    return 'tm-nmt-align-left-v3';
   }
 
   function canInsertRow(model) {
@@ -858,7 +922,6 @@ function nocodbMarkdownTablePageMain() {
     if (!canInsertColumn(model)) return false;
     const safeIndex = Math.max(0, Math.min(index, model.headers.length));
     model.headers.splice(safeIndex, 0, '');
-    model.alignments.splice(safeIndex, 0, 'left');
     model.rows.forEach((row) => row.splice(safeIndex, 0, ''));
     return true;
   }
@@ -866,20 +929,26 @@ function nocodbMarkdownTablePageMain() {
   function deleteColumn(model, index) {
     if (model.headers.length <= 1 || index < 0 || index >= model.headers.length) return false;
     model.headers.splice(index, 1);
-    model.alignments.splice(index, 1);
     model.rows.forEach((row) => row.splice(index, 1));
     return true;
   }
 
-  function renderReadOnlyTable(model, container) {
+  function renderReadOnlyTable(model, container, onEdit, editable) {
     const table = document.createElement('table');
-    table.className = 'tm-nmt-table-v3';
+    table.className = 'tm-nmt-table-v31';
+
+    if (editable) {
+      table.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onEdit();
+      });
+    }
 
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
-    model.headers.forEach((header, columnIndex) => {
+    model.headers.forEach((header) => {
       const th = document.createElement('th');
-      th.className = alignmentClass(model.alignments[columnIndex]);
       th.textContent = header;
       headerRow.appendChild(th);
     });
@@ -890,7 +959,7 @@ function nocodbMarkdownTablePageMain() {
     if (!model.rows.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.className = 'tm-nmt-empty-v3';
+      td.className = 'tm-nmt-empty-v31';
       td.colSpan = model.headers.length;
       td.textContent = '暂无数据行';
       tr.appendChild(td);
@@ -898,9 +967,8 @@ function nocodbMarkdownTablePageMain() {
     } else {
       model.rows.forEach((row) => {
         const tr = document.createElement('tr');
-        row.forEach((cell, columnIndex) => {
+        row.forEach((cell) => {
           const td = document.createElement('td');
-          td.className = alignmentClass(model.alignments[columnIndex]);
           td.textContent = cell;
           tr.appendChild(td);
         });
@@ -919,7 +987,8 @@ function nocodbMarkdownTablePageMain() {
     let stored = initialStored;
     let editing = false;
     let draft = null;
-    let statusMessage = '';
+    let openColumnMenu = null;
+    let openRowMenu = null;
     let destroyed = false;
 
     const dom = document.createElement('div');
@@ -931,248 +1000,252 @@ function nocodbMarkdownTablePageMain() {
       dom.addEventListener(type, (event) => event.stopPropagation());
     });
 
-    function setStatus(message) {
-      statusMessage = message;
+    function isEditable() {
+      return session.tiptap.isEditable !== false && session.editorDom.getAttribute('contenteditable') !== 'false';
+    }
+
+    function enterEditing() {
+      if (!isEditable()) return;
+      editing = true;
+      draft = cloneModel(stored.model);
+      openColumnMenu = null;
+      openRowMenu = null;
+      rerender();
+    }
+
+    function cancelEditing() {
+      editing = false;
+      draft = null;
+      openColumnMenu = null;
+      openRowMenu = null;
+      rerender();
+    }
+
+    function alertLimit(message) {
+      showToast(message, 'error', 3000);
+    }
+
+    function saveEditing() {
+      if (!draft) return;
+
+      let position;
+      try {
+        position = getPos();
+      } catch (_) {
+        position = null;
+      }
+
+      if (!Number.isInteger(position)) {
+        showToast('保存失败：无法定位原表格代码块。', 'error', 3600);
+        return;
+      }
+
+      const state = editorView.state;
+      const liveNode = state.doc.nodeAt(position);
+      if (!liveNode || liveNode.type !== currentNode.type) {
+        showToast('保存失败：原表格代码块已发生变化。', 'error', 3600);
+        return;
+      }
+
+      const nextModel = cloneModel(draft);
+      const nextId = stored.id || createTableId();
+      const nextText = buildStoredText(nextModel, nextId);
+      const nextAttrs = languageAttrsForNodeType(liveNode.type, liveNode.attrs || {});
+
+      let nextNode;
+      try {
+        nextNode = liveNode.type.create(
+          nextAttrs,
+          nextText ? state.schema.text(nextText) : null,
+          liveNode.marks,
+        );
+      } catch (_) {
+        showToast('保存失败：无法创建新的代码块节点。', 'error', 3600);
+        return;
+      }
+
+      editing = false;
+      draft = null;
+      openColumnMenu = null;
+      openRowMenu = null;
+
+      try {
+        editorView.dispatch(
+          state.tr.replaceWith(position, position + liveNode.nodeSize, nextNode).scrollIntoView(),
+        );
+        showToast('已保存', 'success', 1600);
+      } catch (_) {
+        editing = true;
+        draft = nextModel;
+        showToast('保存失败：NocoDB 拒绝了本次表格更新。', 'error', 3600);
+        rerender();
+      }
+    }
+
+    function renderColumnMenu(th, columnIndex) {
+      const menu = document.createElement('div');
+      menu.className = 'tm-nmt-menu-v31 tm-nmt-column-menu-v31';
+      menu.append(
+        makeMenuItem('左侧插入列', () => {
+          if (!draft || !insertColumn(draft, columnIndex)) alertLimit('已达到列数或单元格数量上限。');
+          openColumnMenu = null;
+          rerender();
+        }, { disabled: !draft || !canInsertColumn(draft) }),
+        makeMenuItem('右侧插入列', () => {
+          if (!draft || !insertColumn(draft, columnIndex + 1)) alertLimit('已达到列数或单元格数量上限。');
+          openColumnMenu = null;
+          rerender();
+        }, { disabled: !draft || !canInsertColumn(draft) }),
+        makeMenuItem('删除此列', () => {
+          if (draft) deleteColumn(draft, columnIndex);
+          openColumnMenu = null;
+          rerender();
+        }, { danger: true, disabled: !draft || draft.headers.length <= 1 }),
+      );
+      th.appendChild(menu);
+    }
+
+    function renderRowMenu(cell, rowIndex) {
+      const menu = document.createElement('div');
+      menu.className = 'tm-nmt-menu-v31 tm-nmt-row-menu-v31';
+      menu.append(
+        makeMenuItem('上方插入行', () => {
+          if (!draft || !insertRow(draft, rowIndex)) alertLimit('已达到行数或单元格数量上限。');
+          openRowMenu = null;
+          rerender();
+        }, { disabled: !draft || !canInsertRow(draft) }),
+        makeMenuItem('下方插入行', () => {
+          if (!draft || !insertRow(draft, rowIndex + 1)) alertLimit('已达到行数或单元格数量上限。');
+          openRowMenu = null;
+          rerender();
+        }, { disabled: !draft || !canInsertRow(draft) }),
+        makeMenuItem('删除此行', () => {
+          if (draft) deleteRow(draft, rowIndex);
+          openRowMenu = null;
+          rerender();
+        }, { danger: true, disabled: !draft }),
+      );
+      cell.appendChild(menu);
+    }
+
+    function renderEditingTable(container) {
+      if (!draft) return;
+
+      const table = document.createElement('table');
+      table.className = 'tm-nmt-table-v31';
+
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+
+      draft.headers.forEach((header, columnIndex) => {
+        const th = document.createElement('th');
+        th.className = 'tm-nmt-header-cell-v31';
+        th.appendChild(makeCellInput(header, (value) => {
+          draft.headers[columnIndex] = value;
+        }));
+
+        th.appendChild(makeMenuButton('列操作', () => {
+          openColumnMenu = openColumnMenu === columnIndex ? null : columnIndex;
+          openRowMenu = null;
+          rerender();
+        }, 'tm-nmt-header-menu-button-v31'));
+
+        if (openColumnMenu === columnIndex) renderColumnMenu(th, columnIndex);
+        headerRow.appendChild(th);
+      });
+
+      const rowActionHeader = document.createElement('th');
+      rowActionHeader.className = 'tm-nmt-row-action-cell-v31';
+      rowActionHeader.setAttribute('aria-hidden', 'true');
+      headerRow.appendChild(rowActionHeader);
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      if (!draft.rows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.className = 'tm-nmt-empty-v31';
+        td.colSpan = draft.headers.length + 1;
+        td.textContent = '暂无数据行，可点击“新增行”。';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else {
+        draft.rows.forEach((row, rowIndex) => {
+          const tr = document.createElement('tr');
+          row.forEach((cell, columnIndex) => {
+            const td = document.createElement('td');
+            td.appendChild(makeCellInput(cell, (value) => {
+              draft.rows[rowIndex][columnIndex] = value;
+            }));
+            tr.appendChild(td);
+          });
+
+          const actionCell = document.createElement('td');
+          actionCell.className = 'tm-nmt-row-action-cell-v31';
+          actionCell.appendChild(makeMenuButton('行操作', () => {
+            openRowMenu = openRowMenu === rowIndex ? null : rowIndex;
+            openColumnMenu = null;
+            rerender();
+          }));
+          if (openRowMenu === rowIndex) renderRowMenu(actionCell, rowIndex);
+          tr.appendChild(actionCell);
+          tbody.appendChild(tr);
+        });
+      }
+
+      table.appendChild(tbody);
+      container.appendChild(table);
     }
 
     function rerender() {
       if (destroyed) return;
       dom.replaceChildren();
       dom.dataset.nocodbMarkdownTableId = stored.id || 'legacy';
-
-      const toolbar = document.createElement('div');
-      toolbar.className = 'tm-nmt-toolbar-v3';
-
-      const toolbarLeft = document.createElement('div');
-      toolbarLeft.className = 'tm-nmt-toolbar-left-v3';
-      const title = document.createElement('span');
-      title.className = 'tm-nmt-title-v3';
-      title.textContent = 'Markdown 表格';
-      toolbarLeft.appendChild(title);
-
-      const toolbarRight = document.createElement('div');
-      toolbarRight.className = 'tm-nmt-toolbar-right-v3';
-      const editable = session.tiptap.isEditable !== false && session.editorDom.getAttribute('contenteditable') !== 'false';
+      dom.classList.toggle('is-editing', editing);
 
       if (!editing) {
-        if (editable) {
-          toolbarRight.appendChild(makeButton('编辑表格', '编辑单元格、行和列', () => {
-            editing = true;
-            draft = cloneModel(stored.model);
-            setStatus('');
-            rerender();
-          }));
-        }
-      } else {
-        const model = draft;
-        toolbarRight.append(
-          makeButton('新增行', '在表格底部新增一行', () => {
-            if (!model || !insertRow(model, model.rows.length)) {
-              setStatus('已达到行数或单元格数量上限。');
-            } else {
-              setStatus('');
-            }
-            rerender();
-          }, '', !model || !canInsertRow(model)),
-          makeButton('新增列', '在表格右侧新增一列', () => {
-            if (!model || !insertColumn(model, model.headers.length)) {
-              setStatus('已达到列数或单元格数量上限。');
-            } else {
-              setStatus('');
-            }
-            rerender();
-          }, '', !model || !canInsertColumn(model)),
-          makeButton('取消', '放弃本次修改', () => {
-            editing = false;
-            draft = null;
-            setStatus('');
-            rerender();
-          }),
-          makeButton('保存', '保存并写回 NocoDB LongText', () => {
-            if (!draft) return;
-
-            let position;
-            try {
-              position = getPos();
-            } catch (_) {
-              position = null;
-            }
-
-            if (!Number.isInteger(position)) {
-              setStatus('保存失败：无法定位原表格代码块。');
-              rerender();
-              return;
-            }
-
-            const state = editorView.state;
-            const liveNode = state.doc.nodeAt(position);
-            if (!liveNode || liveNode.type !== currentNode.type) {
-              setStatus('保存失败：原表格代码块已发生变化。');
-              rerender();
-              return;
-            }
-
-            const nextModel = cloneModel(draft);
-            const nextId = stored.id || createTableId();
-            const nextText = buildStoredText(nextModel, nextId);
-            const nextAttrs = languageAttrsForNodeType(liveNode.type, liveNode.attrs || {});
-
-            let nextNode;
-            try {
-              nextNode = liveNode.type.create(
-                nextAttrs,
-                nextText ? state.schema.text(nextText) : null,
-                liveNode.marks,
-              );
-            } catch (_) {
-              setStatus('保存失败：无法创建新的代码块节点。');
-              rerender();
-              return;
-            }
-
-            editing = false;
-            draft = null;
-            statusMessage = '已写回 NocoDB。';
-
-            try {
-              editorView.dispatch(
-                state.tr.replaceWith(position, position + liveNode.nodeSize, nextNode).scrollIntoView(),
-              );
-            } catch (_) {
-              editing = true;
-              draft = nextModel;
-              setStatus('保存失败：NocoDB 拒绝了本次表格更新。');
-              rerender();
-            }
-          }, 'tm-nmt-button-primary-v3'),
-        );
+        if (isEditable()) dom.appendChild(makeEditTrigger(enterEditing));
+        const scroll = document.createElement('div');
+        scroll.className = 'tm-nmt-scroll-v31';
+        renderReadOnlyTable(stored.model, scroll, enterEditing, isEditable());
+        dom.appendChild(scroll);
+        return;
       }
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'tm-nmt-toolbar-v31';
+
+      const toolbarLeft = document.createElement('div');
+      toolbarLeft.className = 'tm-nmt-toolbar-group-v31';
+      toolbarLeft.append(
+        makeButton('新增行', '在表格底部新增一行', () => {
+          if (!draft || !insertRow(draft, draft.rows.length)) alertLimit('已达到行数或单元格数量上限。');
+          openColumnMenu = null;
+          openRowMenu = null;
+          rerender();
+        }, '', !draft || !canInsertRow(draft)),
+        makeButton('新增列', '在表格右侧新增一列', () => {
+          if (!draft || !insertColumn(draft, draft.headers.length)) alertLimit('已达到列数或单元格数量上限。');
+          openColumnMenu = null;
+          openRowMenu = null;
+          rerender();
+        }, '', !draft || !canInsertColumn(draft)),
+      );
+
+      const toolbarRight = document.createElement('div');
+      toolbarRight.className = 'tm-nmt-toolbar-group-v31';
+      toolbarRight.append(
+        makeButton('取消', '放弃本次修改', cancelEditing),
+        makeButton('保存', '保存并写回 NocoDB LongText', saveEditing, 'tm-nmt-button-primary-v31'),
+      );
 
       toolbar.append(toolbarLeft, toolbarRight);
       dom.appendChild(toolbar);
 
-      const status = document.createElement('div');
-      status.className = 'tm-nmt-status-v3';
-      status.textContent = statusMessage;
-      dom.appendChild(status);
-
       const scroll = document.createElement('div');
-      scroll.className = 'tm-nmt-scroll-v3';
-
-      if (!editing || !draft) {
-        renderReadOnlyTable(stored.model, scroll);
-      } else {
-        const table = document.createElement('table');
-        table.className = 'tm-nmt-table-v3';
-
-        const thead = document.createElement('thead');
-        const actionRow = document.createElement('tr');
-
-        draft.headers.forEach((_, columnIndex) => {
-          const th = document.createElement('th');
-          th.className = 'tm-nmt-column-actions-v3';
-          th.append(
-            makeMiniButton('←+', '在左侧插入列', () => {
-              if (!insertColumn(draft, columnIndex)) setStatus('已达到列数或单元格数量上限。');
-              else setStatus('');
-              rerender();
-            }, { disabled: !canInsertColumn(draft) }),
-            makeMiniButton('+→', '在右侧插入列', () => {
-              if (!insertColumn(draft, columnIndex + 1)) setStatus('已达到列数或单元格数量上限。');
-              else setStatus('');
-              rerender();
-            }, { disabled: !canInsertColumn(draft) }),
-            makeMiniButton('×', '删除当前列', () => {
-              deleteColumn(draft, columnIndex);
-              setStatus('');
-              rerender();
-            }, { danger: true, disabled: draft.headers.length <= 1 }),
-            makeAlignmentSelect(draft.alignments[columnIndex], (alignment) => {
-              draft.alignments[columnIndex] = alignment;
-              setStatus('');
-              rerender();
-            }),
-          );
-          actionRow.appendChild(th);
-        });
-
-        const actionHeader = document.createElement('th');
-        actionHeader.className = 'tm-nmt-actions-cell-v3';
-        actionHeader.textContent = '行操作';
-        actionRow.appendChild(actionHeader);
-        thead.appendChild(actionRow);
-
-        const headerRow = document.createElement('tr');
-        draft.headers.forEach((header, columnIndex) => {
-          const th = document.createElement('th');
-          th.className = alignmentClass(draft.alignments[columnIndex]);
-          th.appendChild(makeCellInput(header, (value) => {
-            draft.headers[columnIndex] = value;
-          }));
-          headerRow.appendChild(th);
-        });
-        const headerAction = document.createElement('th');
-        headerAction.className = 'tm-nmt-actions-cell-v3';
-        headerAction.textContent = '表头';
-        headerRow.appendChild(headerAction);
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
-
-        const tbody = document.createElement('tbody');
-        if (!draft.rows.length) {
-          const tr = document.createElement('tr');
-          const td = document.createElement('td');
-          td.className = 'tm-nmt-empty-v3';
-          td.colSpan = draft.headers.length;
-          td.textContent = '暂无数据行，可点击“新增行”。';
-          tr.appendChild(td);
-          const actions = document.createElement('td');
-          actions.className = 'tm-nmt-actions-cell-v3';
-          tr.appendChild(actions);
-          tbody.appendChild(tr);
-        } else {
-          draft.rows.forEach((row, rowIndex) => {
-            const tr = document.createElement('tr');
-            row.forEach((cell, columnIndex) => {
-              const td = document.createElement('td');
-              td.className = alignmentClass(draft.alignments[columnIndex]);
-              td.appendChild(makeCellInput(cell, (value) => {
-                draft.rows[rowIndex][columnIndex] = value;
-              }));
-              tr.appendChild(td);
-            });
-
-            const actions = document.createElement('td');
-            actions.className = 'tm-nmt-actions-cell-v3';
-            const actionGroup = document.createElement('div');
-            actionGroup.className = 'tm-nmt-row-actions-v3';
-            actionGroup.append(
-              makeMiniButton('↑+', '在上方插入行', () => {
-                if (!insertRow(draft, rowIndex)) setStatus('已达到行数或单元格数量上限。');
-                else setStatus('');
-                rerender();
-              }, { disabled: !canInsertRow(draft) }),
-              makeMiniButton('+↓', '在下方插入行', () => {
-                if (!insertRow(draft, rowIndex + 1)) setStatus('已达到行数或单元格数量上限。');
-                else setStatus('');
-                rerender();
-              }, { disabled: !canInsertRow(draft) }),
-              makeMiniButton('×', '删除当前行', () => {
-                deleteRow(draft, rowIndex);
-                setStatus('');
-                rerender();
-              }, { danger: true }),
-            );
-            actions.appendChild(actionGroup);
-            tr.appendChild(actions);
-            tbody.appendChild(tr);
-          });
-        }
-
-        table.appendChild(tbody);
-        scroll.appendChild(table);
-      }
-
+      scroll.className = 'tm-nmt-scroll-v31';
+      renderEditingTable(scroll);
       dom.appendChild(scroll);
     }
 
@@ -1185,14 +1258,20 @@ function nocodbMarkdownTablePageMain() {
         const nextStored = parseStoredText(nextNode.textContent || '');
         if (!nextStored) return false;
 
-        const changed = nextStored.sourceHash !== stored.sourceHash || nextStored.id !== stored.id || nextStored.legacy !== stored.legacy;
+        const changed =
+          nextStored.sourceHash !== stored.sourceHash ||
+          nextStored.id !== stored.id ||
+          nextStored.legacy !== stored.legacy;
+
         currentNode = nextNode;
         stored = nextStored;
 
         if (changed && editing) {
           editing = false;
           draft = null;
-          statusMessage = '表格内容已在外部更新，本次未保存的编辑已取消。';
+          openColumnMenu = null;
+          openRowMenu = null;
+          showToast('表格已在其他位置更新，未保存的编辑已取消。', 'error', 3600);
         }
 
         rerender();
@@ -1386,7 +1465,7 @@ function nocodbMarkdownTablePageMain() {
 
     const tryInsert = () => {
       if (!editorDom.isConnected) {
-        showToast('Markdown 表格转换失败：Rich Text 编辑器已经关闭。');
+        showToast('Markdown 表格转换失败：Rich Text 编辑器已经关闭。', 'error', 3600);
         return;
       }
 
@@ -1397,7 +1476,7 @@ function nocodbMarkdownTablePageMain() {
         if (!inserted) {
           setEditorConnectionState(editorDom, 'insert-failed');
           console.warn('[NocoDB Markdown Table] 已连接 Tiptap，但代码块插入失败。');
-          showToast('Markdown 表格转换失败：NocoDB 拒绝插入表格代码块。');
+          showToast('Markdown 表格转换失败：NocoDB 拒绝插入表格代码块。', 'error', 4000);
         }
         return;
       }
@@ -1406,7 +1485,7 @@ function nocodbMarkdownTablePageMain() {
       if (attempts >= PASTE_RETRY_LIMIT) {
         setEditorConnectionState(editorDom, 'unavailable');
         console.warn('[NocoDB Markdown Table] 无法取得当前 Rich Text 的 Tiptap 实例。');
-        showToast('Markdown 表格未插入：脚本无法连接当前 NocoDB Rich Text，请刷新页面后重试。');
+        showToast('Markdown 表格未插入：脚本无法连接当前 NocoDB Rich Text，请刷新页面后重试。', 'error', 4200);
         return;
       }
 
@@ -1424,14 +1503,12 @@ function nocodbMarkdownTablePageMain() {
     if (!editorDom) return;
 
     const target = event.target instanceof HTMLElement ? event.target : null;
-    if (target?.closest('pre, code, input, textarea, select, .' + NODEVIEW_CLASS)) return;
+    if (target?.closest(`pre, code, input, textarea, select, .${NODEVIEW_CLASS}`)) return;
 
     const text = event.clipboardData?.getData('text/plain') || '';
     const model = parseMarkdownTable(text);
     if (!model) return;
 
-    // 一旦确认是 Markdown 表格，就必须立刻阻止 NocoDB 默认粘贴。
-    // 否则 CE Rich Text 会先把不受支持的 table 压平成连续普通文字。
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
@@ -1511,13 +1588,13 @@ function launchNocodbMarkdownTableInPageContext() {
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
 
   try {
-    if (pageWindow?.["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] === 'ready') return;
+    if (pageWindow?.['__NOCODB_MARKDOWN_TABLE_PAGE_V31__'] === 'ready') return;
   } catch (_) {}
 
   try {
     if (pageWindow && typeof pageWindow.eval === 'function') {
       pageWindow.eval(source);
-      if (pageWindow["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] === 'ready') return;
+      if (pageWindow['__NOCODB_MARKDOWN_TABLE_PAGE_V31__'] === 'ready') return;
     }
   } catch (error) {
     console.warn('[NocoDB Markdown Table] page eval 注入失败，尝试 Function 注入。', error);
@@ -1526,7 +1603,7 @@ function launchNocodbMarkdownTableInPageContext() {
   try {
     if (pageWindow && typeof pageWindow.Function === 'function') {
       pageWindow.Function(source)();
-      if (pageWindow["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] === 'ready') return;
+      if (pageWindow['__NOCODB_MARKDOWN_TABLE_PAGE_V31__'] === 'ready') return;
     }
   } catch (error) {
     console.warn('[NocoDB Markdown Table] page Function 注入失败，尝试 script 注入。', error);
@@ -1539,7 +1616,7 @@ function launchNocodbMarkdownTableInPageContext() {
     script.remove();
     window.setTimeout(() => {
       try {
-        if (pageWindow?.["__NOCODB_MARKDOWN_TABLE_PAGE_V3__"] !== 'ready') {
+        if (pageWindow?.['__NOCODB_MARKDOWN_TABLE_PAGE_V31__'] !== 'ready') {
           console.error('[NocoDB Markdown Table] 页面主环境注入未完成，可能被 CSP 阻止。');
         }
       } catch (_) {}
