@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
-// @version      1.0.2
+// @version      1.0.3
 // @description  在 NocoDB LongText Rich Text 弹窗中复制或下载当前编辑器内容为 Markdown
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -53,7 +53,7 @@
  * - H1-H6、普通段落、粗体、斜体、删除线、下划线、行内代码；
  * - 引用、无序列表、有序列表、任务列表、代码块、分隔线；
  * - 链接、图片、普通 HTML 表格、NocoDB Markdown 表格 NodeView；
- * - 普通正文中的手动换行导出为 Markdown 反斜杠硬换行；表格单元格中的换行保留为 <br>。
+ * - 普通正文中的手动换行导出为 Markdown 标准硬换行（行尾两个空格）；表格单元格中的换行保留为 <br>。
  *
  * 五、性能原则
  * -----------------------------------------------------------------------------
@@ -91,6 +91,7 @@
 
   const STYLE_ID = 'tm-rmd-export-style-v1';
   const TABLE_NODE_SELECTOR = '[data-nocodb-markdown-table-id]';
+  const HARD_BREAK_TOKEN = '\uE000TM_RMD_HARD_BREAK\uE001';
   const TABLE_EDITING_SELECTOR = `${TABLE_NODE_SELECTOR}.is-editing`;
   const NOCODB_TABLE_MARKER_PATTERN = /^\[\[(?:NOCODB_MARKDOWN_TABLE:v1:[A-Za-z0-9_-]{6,64}|NOCODB_MARKDOWN_TABLE_V1)\]\]\s*(?:\n|$)/;
   const states = new Map();
@@ -590,7 +591,7 @@
     if (!(node instanceof HTMLElement) || shouldIgnoreElement(node)) return '';
 
     const tag = node.tagName.toLowerCase();
-    if (tag === 'br') return options.tableCell ? '<br>' : '\\' + '\n';
+    if (tag === 'br') return options.tableCell ? '<br>' : `${HARD_BREAK_TOKEN}\n`;
     if (tag === 'img') return serializeImage(node);
 
     const content = serializeInlineChildren(node, options);
@@ -861,9 +862,11 @@
   }
 
   function normalizeMarkdown(value) {
+    // 先用不可见占位符保护正文硬换行，避免清理行尾空格时把 Markdown 的两个空格删除。
     const lines = normalizeText(value).split('\n').map((line) => line.replace(/[\t ]+$/g, ''));
     const normalized = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-    return normalized ? `${normalized}\n` : '';
+    const restored = normalized.split(HARD_BREAK_TOKEN).join('  ');
+    return restored ? `${restored}\n` : '';
   }
 
   injectStyle();
