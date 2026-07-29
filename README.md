@@ -53,6 +53,7 @@ userscript-cyan-release/
 | NocoDB 彩虹标题 | [`nocodb-rainbow-headings.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-rainbow-headings.user.js) | 为 Rich Text 标题应用不同颜色。 |
 | NocoDB 文件夹 | [`nocodb-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js) | 为 NocoDB 表格提供文件夹式组织和 WebDAV 同步。 |
 | NocoDB LongText 字体改色 | [`nocodb-longtext-color.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-longtext-color.user.js) | 为特定富文本内容应用颜色。 |
+| NocoDB Markdown 表格 | [`nocodb-markdown-table.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js) | 自动识别 Markdown 表格，并提供表格渲染、单元格编辑及行列增删。 |
 | NocoDB Rich Text 大纲 | [`nocodb-richtext-outline.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js) | 在 Rich Text 弹窗旁显示标题大纲。 |
 
 ### YouTube
