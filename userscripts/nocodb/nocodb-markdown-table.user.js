@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      3.1.1
+// @version      3.1.2
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -47,7 +47,8 @@
  * - 列操作收进对应表头的三点菜单；
  * - 行操作收进对应数据行的三点菜单；
  * - 所有内容统一左对齐，不再保存或编辑对齐信息；
- * - 保存成功使用短暂 Toast，不常驻状态栏。
+ * - 保存成功使用短暂 Toast，不常驻状态栏；
+ * - 编辑时点击当前表格以外的位置会自动保存；未修改时直接退出编辑。
  *
  * 三、渲染架构与性能
  * -----------------------------------------------------------------------------
@@ -989,6 +990,7 @@ function nocodbMarkdownTablePageMain() {
     let draft = null;
     let openColumnMenu = null;
     let openRowMenu = null;
+    let outsidePointerDownHandler = null;
     let destroyed = false;
 
     const dom = document.createElement('div');
@@ -1004,6 +1006,32 @@ function nocodbMarkdownTablePageMain() {
       return session.tiptap.isEditable !== false && session.editorDom.getAttribute('contenteditable') !== 'false';
     }
 
+    function stopOutsideAutoSave() {
+      if (!outsidePointerDownHandler) return;
+      document.removeEventListener('pointerdown', outsidePointerDownHandler, true);
+      outsidePointerDownHandler = null;
+    }
+
+    function startOutsideAutoSave() {
+      if (outsidePointerDownHandler || destroyed) return;
+
+      outsidePointerDownHandler = (event) => {
+        if (!editing || destroyed) return;
+        const target = event.target;
+        if (target instanceof Node && dom.contains(target)) return;
+
+        const saved = saveEditing();
+        if (saved) return;
+
+        // 保存失败时保留编辑状态，并阻止关闭弹窗、切换记录等外部操作。
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+      };
+
+      document.addEventListener('pointerdown', outsidePointerDownHandler, true);
+    }
+
     function enterEditing() {
       if (!isEditable()) return;
       editing = true;
@@ -1011,9 +1039,11 @@ function nocodbMarkdownTablePageMain() {
       openColumnMenu = null;
       openRowMenu = null;
       rerender();
+      startOutsideAutoSave();
     }
 
     function cancelEditing() {
+      stopOutsideAutoSave();
       editing = false;
       draft = null;
       openColumnMenu = null;
@@ -1026,7 +1056,18 @@ function nocodbMarkdownTablePageMain() {
     }
 
     function saveEditing() {
-      if (!draft) return;
+      if (!draft) return true;
+
+      // 没有实际修改时只退出编辑，不产生无意义的 ProseMirror transaction。
+      if (modelHash(draft) === modelHash(stored.model)) {
+        stopOutsideAutoSave();
+        editing = false;
+        draft = null;
+        openColumnMenu = null;
+        openRowMenu = null;
+        rerender();
+        return true;
+      }
 
       let position;
       try {
@@ -1037,14 +1078,14 @@ function nocodbMarkdownTablePageMain() {
 
       if (!Number.isInteger(position)) {
         showToast('保存失败：无法定位原表格代码块。', 'error', 3600);
-        return;
+        return false;
       }
 
       const state = editorView.state;
       const liveNode = state.doc.nodeAt(position);
       if (!liveNode || liveNode.type !== currentNode.type) {
         showToast('保存失败：原表格代码块已发生变化。', 'error', 3600);
-        return;
+        return false;
       }
 
       const nextModel = cloneModel(draft);
@@ -1061,9 +1102,10 @@ function nocodbMarkdownTablePageMain() {
         );
       } catch (_) {
         showToast('保存失败：无法创建新的代码块节点。', 'error', 3600);
-        return;
+        return false;
       }
 
+      stopOutsideAutoSave();
       editing = false;
       draft = null;
       openColumnMenu = null;
@@ -1074,11 +1116,14 @@ function nocodbMarkdownTablePageMain() {
           state.tr.replaceWith(position, position + liveNode.nodeSize, nextNode).scrollIntoView(),
         );
         showToast('已保存', 'success', 1600);
+        return true;
       } catch (_) {
         editing = true;
         draft = nextModel;
+        startOutsideAutoSave();
         showToast('保存失败：NocoDB 拒绝了本次表格更新。', 'error', 3600);
         rerender();
+        return false;
       }
     }
 
@@ -1267,6 +1312,7 @@ function nocodbMarkdownTablePageMain() {
         stored = nextStored;
 
         if (changed && editing) {
+          stopOutsideAutoSave();
           editing = false;
           draft = null;
           openColumnMenu = null;
@@ -1291,6 +1337,7 @@ function nocodbMarkdownTablePageMain() {
       },
       destroy() {
         if (destroyed) return;
+        stopOutsideAutoSave();
         destroyed = true;
         session.tableNodeViewCount = Math.max(0, session.tableNodeViewCount - 1);
       },
