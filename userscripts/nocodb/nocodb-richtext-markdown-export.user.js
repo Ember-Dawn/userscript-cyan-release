@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
-// @version      1.0.0
+// @version      1.0.1
 // @description  在 NocoDB LongText Rich Text 弹窗中复制或下载当前编辑器内容为 Markdown
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -43,7 +43,8 @@
  * 三、按钮位置
  * -----------------------------------------------------------------------------
  * - 通过 aria-label/title 查找现有“切换 TOC”按钮，不依赖 TOC 脚本的版本类名；
- * - 两个导出按钮采用绝对定位，依次放在 TOC 按钮右侧；
+ * - 两个导出按钮挂到 TOC 按钮的同级容器中，并采用相同的绝对定位参照；
+ * - 脚本只设置按钮自身的位置，不修改 expanded-cell-input 等编辑器容器的布局样式；
  * - 如果 TOC 按钮尚未挂载，脚本会等待后续 DOM 变化，不会把按钮放到关闭按钮附近。
  *
  * 四、支持的主要格式
@@ -77,7 +78,6 @@
   };
 
   const CLASS = {
-    rootReady: 'tm-rmd-export-ready-v1',
     button: 'tm-rmd-export-button-v1',
     copyButton: 'tm-rmd-export-copy-v1',
     downloadButton: 'tm-rmd-export-download-v1',
@@ -103,11 +103,6 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      .${CLASS.rootReady} {
-        position: relative !important;
-        overflow: visible !important;
-      }
-
       .${CLASS.button} {
         position: absolute;
         z-index: 31;
@@ -257,10 +252,12 @@
 
   function positionButtons(state) {
     if (!state || state.destroyed) return false;
-    const { root, tocButton, copyButton, downloadButton } = state;
-    if (!(root instanceof HTMLElement) || !(tocButton instanceof HTMLElement)) return false;
-    if (!root.contains(tocButton) || !isElementVisible(tocButton)) return false;
+    const { root, host, tocButton, copyButton, downloadButton } = state;
+    if (!(root instanceof HTMLElement) || !(host instanceof HTMLElement) || !(tocButton instanceof HTMLElement)) return false;
+    if (!root.contains(tocButton) || tocButton.parentElement !== host || !isElementVisible(tocButton)) return false;
 
+    // 三个按钮位于同一个父容器中，并共享相同的绝对定位参照。
+    // 只读取 TOC 按钮自身的 offset，不改写宿主容器的 position、overflow 或宽度。
     const top = tocButton.offsetTop;
     const copyLeft = tocButton.offsetLeft + tocButton.offsetWidth + CONFIG.buttonGap;
     const downloadLeft = copyLeft + CONFIG.buttonSize + CONFIG.buttonGap;
@@ -281,7 +278,6 @@
     try { state.tocMutationObserver?.disconnect(); } catch (_) {}
     try { state.copyButton?.remove(); } catch (_) {}
     try { state.downloadButton?.remove(); } catch (_) {}
-    try { state.root?.classList.remove(CLASS.rootReady); } catch (_) {}
     states.delete(state.root);
   }
 
@@ -293,7 +289,11 @@
 
     const existing = states.get(root);
     if (existing && !existing.destroyed) {
-      if (existing.editor !== editor || existing.tocButton !== tocButton) {
+      if (
+        existing.editor !== editor ||
+        existing.tocButton !== tocButton ||
+        existing.host !== tocButton.parentElement
+      ) {
         destroyState(existing);
       } else {
         positionButtons(existing);
@@ -301,10 +301,12 @@
       }
     }
 
-    root.classList.add(CLASS.rootReady);
+    const host = tocButton.parentElement;
+    if (!(host instanceof HTMLElement) || !root.contains(host)) return null;
 
     const state = {
       root,
+      host,
       editor,
       tocButton,
       copyButton: null,
@@ -321,7 +323,7 @@
       handleDownload(state, button);
     });
 
-    root.append(state.copyButton, state.downloadButton);
+    host.append(state.copyButton, state.downloadButton);
     states.set(root, state);
 
     if (typeof ResizeObserver === 'function') {
