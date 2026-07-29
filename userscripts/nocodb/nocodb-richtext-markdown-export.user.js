@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
-// @version      1.0.1
+// @version      1.0.2
 // @description  在 NocoDB LongText Rich Text 弹窗中复制或下载当前编辑器内容为 Markdown
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -45,14 +45,15 @@
  * - 通过 aria-label/title 查找现有“切换 TOC”按钮，不依赖 TOC 脚本的版本类名；
  * - 两个导出按钮挂到 TOC 按钮的同级容器中，并采用相同的绝对定位参照；
  * - 脚本只设置按钮自身的位置，不修改 expanded-cell-input 等编辑器容器的布局样式；
- * - 如果 TOC 按钮尚未挂载，脚本会等待后续 DOM 变化，不会把按钮放到关闭按钮附近。
+ * - 如果 TOC 按钮尚未挂载，脚本会等待后续 DOM 变化，不会把按钮放到关闭按钮附近；
+ * - 下载用的临时链接挂在当前 Rich Text 弹窗内部，避免程序化点击触发弹窗关闭。
  *
  * 四、支持的主要格式
  * -----------------------------------------------------------------------------
  * - H1-H6、普通段落、粗体、斜体、删除线、下划线、行内代码；
  * - 引用、无序列表、有序列表、任务列表、代码块、分隔线；
  * - 链接、图片、普通 HTML 表格、NocoDB Markdown 表格 NodeView；
- * - 表格单元格中的竖线会转义，换行会转换为 <br>。
+ * - 普通正文中的手动换行导出为 Markdown 反斜杠硬换行；表格单元格中的换行保留为 <br>。
  *
  * 五、性能原则
  * -----------------------------------------------------------------------------
@@ -414,7 +415,7 @@
     try {
       const markdown = getExportMarkdown(state);
       const filename = buildDownloadFilename(state);
-      downloadText(markdown, filename);
+      downloadText(markdown, filename, state.root);
       flashButton(button, 'success');
       showToast(`已下载：${filename}`);
     } catch (error) {
@@ -457,15 +458,31 @@
     }
   }
 
-  function downloadText(text, filename) {
+  function downloadText(text, filename, host) {
     const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
+    if (!(host instanceof HTMLElement) || !host.isConnected) {
+      URL.revokeObjectURL(url);
+      throw new Error('当前 Rich Text 编辑器已经关闭。');
+    }
+    const downloadHost = host;
+
     anchor.href = url;
     anchor.download = filename;
     anchor.style.display = 'none';
-    document.body.appendChild(anchor);
+
+    // 下载链接必须位于当前 Rich Text 弹窗内部，避免 NocoDB 将程序化点击
+    // 识别为“点击弹窗外部”并关闭编辑器。这里只阻止冒泡，不阻止默认下载行为。
+    const stopDownloadClick = (event) => {
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    };
+    anchor.addEventListener('click', stopDownloadClick, true);
+
+    downloadHost.appendChild(anchor);
     anchor.click();
+    anchor.removeEventListener('click', stopDownloadClick, true);
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
@@ -573,7 +590,7 @@
     if (!(node instanceof HTMLElement) || shouldIgnoreElement(node)) return '';
 
     const tag = node.tagName.toLowerCase();
-    if (tag === 'br') return options.tableCell ? '<br>' : '<br>';
+    if (tag === 'br') return options.tableCell ? '<br>' : '\\' + '\n';
     if (tag === 'img') return serializeImage(node);
 
     const content = serializeInlineChildren(node, options);
