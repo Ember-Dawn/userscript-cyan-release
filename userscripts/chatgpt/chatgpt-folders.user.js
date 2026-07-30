@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.4.0
-// @description  ChatGPT 普通聊天文件夹管理：v0.4.0；增加 Safari 单例保护、按账号本地隔离、稳定远程文件映射、WebDAV ETag 冲突保护与远端更新检查。
+// @version      0.4.1
+// @description  ChatGPT 普通聊天文件夹管理：v0.4.1；修复 Nextcloud 412、同步基线、账号切换串档、重复迁移与待上传状态持久化。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -15,6 +15,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // ==/UserScript==
@@ -22,7 +23,7 @@
 /*
 ================================================================================
 ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
-适用版本：v0.4.0 附近
+适用版本：v0.4.1 附近
 ================================================================================
 
 这是一个用于 ChatGPT 网页端普通聊天的 Tampermonkey 用户脚本。它在 ChatGPT 左侧侧边栏中增加一个“文件夹”区域，用于本地管理聊天链接。它不是 ChatGPT 官方 Project 功能，也不会修改 ChatGPT 后端数据；它只保存“聊天标题 + 链接 + conversation id + 文件夹结构 + 部分 UI 设置”。
@@ -373,8 +374,8 @@ pd25520@uga.edu + 5a54db9a-3236-461a-85c3-f1fbb9d03231
 WebDAV 文件不存在时：
 
 1. GET 当前账号 JSON。
-2. 200：读取。
-3. 404：自动创建父目录，必要时 MKCOL 逐级创建，然后 PUT 初始 JSON。
+2. 200：先拉取并建立 ETag 基线。
+3. 404：首次推送时创建父目录并使用 If-None-Match 创建 JSON。
 4. 401 / 403：提示认证失败或无权限。
 5. 409：通常父目录不存在，尝试创建目录后再 PUT。
 
@@ -729,8 +730,8 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
 - 文件夹内聊天点击：优先走 ChatGPT 原生 SPA 点击。
 - WebDAV：只填文件夹路径，脚本自动生成账号 JSON 文件名。
 - 账号文件名：邮箱安全化 + accountId 前 8 位，例如 pd25520_at_uga_edu-5a54db9a.json。
-- 本地不做复杂多账号 profile。
-- WebDAV 远程文件负责账号隔离。
+- 本地按 ChatGPT 账号隔离 profile。
+- WebDAV 远程文件与本地 profile 共同按账号隔离。
 - 脚本不保存完整聊天内容。
 - 脚本不修改 ChatGPT 后端。
 - 通过最长约 90 秒的稀疏有限重试，降低书签打开 ChatGPT 首页时偶发未挂载的概率。
@@ -750,13 +751,14 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.4.0';
+  const VERSION = '0.4.1';
   const STORAGE_KEY = 'cgfm.v2.currentProfile'; // v0.3.x legacy migration source
   const REVISION_KEY = 'cgfm.v2.revision'; // v0.3.x legacy migration source
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
   const DEVICE_ID_KEY = 'cgfm.v3.deviceId';
+  const LEGACY_MIGRATION_OWNER_KEY = 'cgfm.v3.legacyMigrationOwner';
   const RUNTIME_LOCK_ATTR = 'data-cgfm-runtime-active';
   const LEGACY_STORAGE_KEY = 'cgfm.v1.state';
   const LAST_ACCOUNT_KEY = 'cgfm.v1.lastAccount';
@@ -822,6 +824,8 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
   let lastSeenStorageRevision = '';
   let localUnsavedChanges = false;
   let storageSyncBound = false;
+  let storageSyncListenerId = null;
+  let storageSyncListenerKey = '';
   let crossTabApplyTimer = null;
   let transientDragAnchor = null;
   let transientDragOriginalDraggable = null;
@@ -832,6 +836,7 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
   let webdavOperation = null;
   let lastRemoteCheckAt = 0;
   let accountSwitching = false;
+  let accountGeneration = 0;
   const DEVICE_ID = getOrCreateDeviceId();
 
   // ---------------------------------------------------------------------------
@@ -904,48 +909,71 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
       conversations: {},
       settings: {
         ui: { sectionCollapsed: false, sidebarWidthEnabled: false, sidebarWidthPx: DEFAULT_SIDEBAR_WIDTH_PX },
-        webdav: { enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false }
+        webdav: { enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false, pendingPush: false, baselineReady: false, syncTarget: '' }
       }
     };
   }
 
   function loadState(info) {
     const accountInfo = info || currentAccount || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account' };
+    const stableKey = accountStableKey(accountInfo);
     const accountKey = activeProfileStorageKey(accountInfo);
     const direct = gmGet(accountKey, '');
     if (direct) {
       try {
         const parsed = typeof direct === 'string' ? JSON.parse(direct) : direct;
+        if (!gmGet(LEGACY_MIGRATION_OWNER_KEY, '') && isStrongAccountInfo(accountInfo) && (gmGet(STORAGE_KEY, '') || gmGet(LEGACY_STORAGE_KEY, ''))) {
+          // v0.4.0 may already have copied the legacy profile before this marker existed.
+          gmSet(LEGACY_MIGRATION_OWNER_KEY, stableKey);
+        }
         return normalizeLoadedProfile(parsed, accountInfo.label || 'ChatGPT account');
       } catch (err) {
         console.warn(APP_NAME, 'failed to parse account profile', err);
       }
     }
 
-    // v0.3.x migration: copy, never delete, the former single current profile into
-    // the first confidently identified account-specific storage slot.
-    const oldDirect = gmGet(STORAGE_KEY, '');
-    if (oldDirect) {
-      try {
-        const parsed = typeof oldDirect === 'string' ? JSON.parse(oldDirect) : oldDirect;
-        const migrated = normalizeLoadedProfile(parsed, accountInfo.label || 'ChatGPT account');
-        migrated.id = accountStableKey(accountInfo);
-        migrated.label = accountInfo.label || migrated.label;
-        gmSet(accountKey, JSON.stringify(migrated));
-        return migrated;
-      } catch (err) {
-        console.warn(APP_NAME, 'failed to migrate v0.3 profile', err);
+    // Migrate legacy single-profile data once, and only after a strong account identity
+    // (email or accountId) has been detected. The legacy source is copied, never deleted.
+    const migrationOwner = String(gmGet(LEGACY_MIGRATION_OWNER_KEY, '') || '');
+    const canMigrate = isStrongAccountInfo(accountInfo) && (!migrationOwner || migrationOwner === stableKey);
+    if (canMigrate) {
+      const oldDirect = gmGet(STORAGE_KEY, '');
+      if (oldDirect) {
+        try {
+          const parsed = typeof oldDirect === 'string' ? JSON.parse(oldDirect) : oldDirect;
+          const migrated = normalizeLoadedProfile(parsed, accountInfo.label || 'ChatGPT account');
+          migrated.id = stableKey;
+          migrated.label = accountInfo.label || migrated.label;
+          migrated.settings.webdav.pendingPush = true;
+          migrated.settings.webdav.baselineReady = false;
+          migrated.settings.webdav.remoteEtag = '';
+          migrated.settings.webdav.syncTarget = '';
+          gmSet(accountKey, JSON.stringify(migrated));
+          gmSet(LEGACY_MIGRATION_OWNER_KEY, stableKey);
+          return migrated;
+        } catch (err) {
+          console.warn(APP_NAME, 'failed to migrate v0.3 profile', err);
+        }
       }
-    }
 
-    const legacy = gmGet(LEGACY_STORAGE_KEY, '');
-    if (legacy) {
-      try {
-        const parsed = typeof legacy === 'string' ? JSON.parse(legacy) : legacy;
-        const migrated = chooseMigrationProfile(parsed, accountInfo) || (parsed && (parsed.profile || parsed));
-        return normalizeLoadedProfile(migrated, accountInfo.label);
-      } catch (err) {
-        console.warn(APP_NAME, 'failed to migrate legacy state; starting empty', err);
+      const legacy = gmGet(LEGACY_STORAGE_KEY, '');
+      if (legacy) {
+        try {
+          const parsed = typeof legacy === 'string' ? JSON.parse(legacy) : legacy;
+          const source = chooseMigrationProfile(parsed, accountInfo) || (parsed && (parsed.profile || parsed));
+          const migrated = normalizeLoadedProfile(source, accountInfo.label);
+          migrated.id = stableKey;
+          migrated.label = accountInfo.label || migrated.label;
+          migrated.settings.webdav.pendingPush = true;
+          migrated.settings.webdav.baselineReady = false;
+          migrated.settings.webdav.remoteEtag = '';
+          migrated.settings.webdav.syncTarget = '';
+          gmSet(accountKey, JSON.stringify(migrated));
+          gmSet(LEGACY_MIGRATION_OWNER_KEY, stableKey);
+          return migrated;
+        } catch (err) {
+          console.warn(APP_NAME, 'failed to migrate legacy state; starting empty', err);
+        }
       }
     }
     return makeEmptyState(accountInfo.label);
@@ -968,7 +996,10 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     p.settings = p.settings && typeof p.settings === 'object' ? p.settings : {};
     delete p.selectedFolderId; // 兼容旧数据：选中高亮不再属于持久化 profile。
     p.settings.ui = Object.assign({ sectionCollapsed: false, sidebarWidthEnabled: false, sidebarWidthPx: DEFAULT_SIDEBAR_WIDTH_PX }, p.settings.ui || {});
-    p.settings.webdav = Object.assign({ enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false }, p.settings.webdav || {});
+    p.settings.webdav = Object.assign({ enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false, pendingPush: false, baselineReady: false, syncTarget: '' }, p.settings.webdav || {});
+    if (!p.settings.webdav.pendingPush && (/conflict|push failed|pushing/i.test(String(p.settings.webdav.lastStatus || '')) || /PUT failed with HTTP 412/i.test(String(p.settings.webdav.lastError || '')))) {
+      p.settings.webdav.pendingPush = true;
+    }
     if (!p.folders[ROOT_ID]) p.folders[ROOT_ID] = { id: ROOT_ID, name: 'root', parentId: '', childFolderIds: [], chatIds: [], color: DEFAULT_FOLDER_COLOR, collapsed: false, createdAt: nowIso(), updatedAt: nowIso() };
 
     for (const fid of Object.keys(p.folders)) {
@@ -1144,6 +1175,8 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
 
     state = normalized;
     if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
+    dirtySincePush = !!((state.settings.webdav || {}).pendingPush);
+    syncStatus = (state.settings.webdav || {}).conflict ? 'error' : 'off';
     lastSeenStorageRevision = getProfileStorageRevision(state) || rev || lastSeenStorageRevision;
     localUnsavedChanges = false;
     if (pendingPersistTimer) {
@@ -1185,6 +1218,8 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     localUnsavedChanges = true;
     pendingPersistReason = reason || pendingPersistReason || 'change';
     if (options.webdav) {
+      const w = p.settings.webdav || (p.settings.webdav = {});
+      w.pendingPush = true;
       dirtySincePush = true;
       updateSyncStatusIcon();
     }
@@ -1310,6 +1345,15 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     return !!(info && (info.accountId || info.email));
   }
 
+  function teardownCrossTabStorageSync() {
+    if (storageSyncListenerId != null && typeof GM_removeValueChangeListener === 'function') {
+      try { GM_removeValueChangeListener(storageSyncListenerId); } catch (_) {}
+    }
+    storageSyncListenerId = null;
+    storageSyncListenerKey = '';
+    storageSyncBound = false;
+  }
+
   function stopWebdavTimers() {
     if (pendingWebdavTimer) clearTimeout(pendingWebdavTimer);
     pendingWebdavTimer = null;
@@ -1325,10 +1369,12 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
         if (localUnsavedChanges) persistNow({ webdav: false });
         if (dirtySincePush) {
           console.warn(APP_NAME, 'account switched with unsynchronized local changes; automatic upload paused');
-          toast('检测到 ChatGPT 账号切换；旧账号存在未同步修改，已暂停自动上传。');
+          toast('检测到 ChatGPT 账号切换；旧账号存在未同步修改，已保留待上传状态。');
         }
       }
       stopWebdavTimers();
+      teardownCrossTabStorageSync();
+      accountGeneration += 1;
       currentAccount = info;
       lockedAccountKey = accountStableKey(info);
       rememberAccountInfo(info);
@@ -1337,10 +1383,10 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
       state.id = lockedAccountKey;
       state.label = info.label || state.label || 'ChatGPT account';
       selectedFolderId = ROOT_ID;
-      dirtySincePush = false;
+      dirtySincePush = !!((state.settings.webdav || {}).pendingPush);
       localUnsavedChanges = false;
+      syncStatus = (state.settings.webdav || {}).conflict ? 'error' : 'off';
       lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
-      storageSyncBound = false;
       setupCrossTabStorageSync();
       restartPeriodicBackup();
       if (!initial) {
@@ -2647,7 +2693,7 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
       copy.settings.webdav.password = '';
     }
     const acct = currentAccount || getCurrentAccountInfo() || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account' };
-    return { app: APP_NAME, version: VERSION, exportedAt: nowIso(), account: { id: acct.id, label: acct.label || 'ChatGPT account' }, sync: { revision: Number((p.settings.webdav || {}).remoteRevision || 0) + 1, updatedAt: nowIso(), deviceId: DEVICE_ID }, profile: copy };
+    return { app: APP_NAME, version: VERSION, exportedAt: nowIso(), account: { id: acct.id, key: accountStableKey(acct), label: acct.label || 'ChatGPT account' }, sync: { revision: Number((p.settings.webdav || {}).remoteRevision || 0) + 1, updatedAt: nowIso(), deviceId: DEVICE_ID }, profile: copy };
   }
 
   function exportJson() {
@@ -2785,9 +2831,47 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     return match ? match[1].trim() : '';
   }
 
-  async function putDavJson(settings, body, options) {
+  function captureWebdavContext(settings) {
+    const fileName = currentWebdavFileName();
+    const folder = normalizeWebdavFolderUrl(settings && settings.url);
+    return {
+      generation: accountGeneration,
+      accountKey: lockedAccountKey || accountStableKey(currentAccount),
+      accountId: currentAccount && currentAccount.id || '',
+      fileName,
+      fileUrl: folder ? folder + fileName : '',
+      target: folder ? folder + fileName : ''
+    };
+  }
+
+  function assertWebdavContext(ctx) {
+    if (!ctx || ctx.generation !== accountGeneration || ctx.accountKey !== lockedAccountKey) {
+      const err = new Error('ChatGPT 账号已切换，已忽略旧账号的 WebDAV 响应。');
+      err.isStaleAccount = true;
+      throw err;
+    }
+  }
+
+  function validateRemoteAccount(data, ctx) {
+    const remote = data && data.account;
+    if (!remote || typeof remote !== 'object') return;
+    if (remote.key && String(remote.key) !== String(ctx.accountKey)) {
+      throw new Error('远程 JSON 属于另一个 ChatGPT 账号，已停止同步。');
+    }
+    if (!remote.key && remote.id && ctx.accountId && String(remote.id) !== String(ctx.accountId)) {
+      throw new Error('远程 JSON 的账号标识与当前 ChatGPT 账号不一致，已停止同步。');
+    }
+  }
+
+  function parseRemotePayload(res, ctx) {
+    const data = JSON.parse((res && res.responseText) || '{}');
+    validateRemoteAccount(data, ctx);
+    return data;
+  }
+
+  async function putDavJson(settings, body, options, ctx) {
     const opts = Object.assign({ force: false, createOnly: false }, options || {});
-    const fileUrl = effectiveWebdavFileUrl(settings);
+    const fileUrl = ctx && ctx.fileUrl || effectiveWebdavFileUrl(settings);
     if (!fileUrl) throw new Error('Missing WebDAV folder URL');
     const headers = { 'Content-Type': 'application/json;charset=utf-8' };
     if (opts.createOnly) headers['If-None-Match'] = '*';
@@ -2806,21 +2890,39 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     }
   }
 
-  async function getDavJson(settings) {
-    const fileUrl = effectiveWebdavFileUrl(settings);
+  async function getDavJson(settings, ctx) {
+    const fileUrl = ctx && ctx.fileUrl || effectiveWebdavFileUrl(settings);
     if (!fileUrl) throw new Error('Missing WebDAV folder URL');
     return davRequest('GET', fileUrl, null, settings);
   }
 
-  async function headDavJson(settings) {
-    const fileUrl = effectiveWebdavFileUrl(settings);
+  async function headDavJson(settings, ctx) {
+    const fileUrl = ctx && ctx.fileUrl || effectiveWebdavFileUrl(settings);
     if (!fileUrl) throw new Error('Missing WebDAV folder URL');
     try { return await davRequest('HEAD', fileUrl, null, settings); }
     catch (err) {
       // Some WebDAV servers disable HEAD; a GET remains compatible.
-      if (err && (err.status === 405 || err.status === 501)) return getDavJson(settings);
+      if (err && (err.status === 405 || err.status === 501)) return getDavJson(settings, ctx);
       throw err;
     }
+  }
+
+
+  async function refreshRemoteBaseline(settings, ctx, expectedRevision) {
+    assertWebdavContext(ctx);
+    let res = await headDavJson(settings, ctx);
+    let etag = responseHeader(res, 'ETag');
+    if (!etag) {
+      res = await getDavJson(settings, ctx);
+      etag = responseHeader(res, 'ETag');
+    }
+    assertWebdavContext(ctx);
+    if (!etag) throw new Error('服务器未返回 ETag，无法安全建立同步基线。');
+    settings.remoteEtag = etag;
+    settings.remoteRevision = Number(expectedRevision || settings.remoteRevision || 0);
+    settings.baselineReady = true;
+    settings.syncTarget = ctx.target;
+    return etag;
   }
 
 
@@ -2892,8 +2994,9 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
   function computeSyncStatus() {
     const w = getProfile().settings.webdav || {};
     if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) return 'off';
-    if (syncStatus === 'syncing' || syncStatus === 'error') return syncStatus;
-    if (dirtySincePush) return 'dirty';
+    if (syncStatus === 'syncing') return syncStatus;
+    if (w.conflict || syncStatus === 'error' || /failed|conflict/i.test(String(w.lastStatus || ''))) return 'error';
+    if (dirtySincePush || w.pendingPush) return 'dirty';
     return 'idle';
   }
 
@@ -3018,7 +3121,9 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
   function saveSettingsModal() {
     const p = getProfile();
     const byId = modalById;
-    const w = Object.assign({}, p.settings.webdav || {});
+    const oldW = p.settings.webdav || {};
+    const oldTarget = normalizeWebdavFolderUrl(oldW.url) + currentWebdavFileName();
+    const w = Object.assign({}, oldW);
     w.enabled = !!byId('cgfm-dav-enabled').checked;
     w.url = byId('cgfm-dav-url').value.trim();
     w.username = byId('cgfm-dav-username').value;
@@ -3029,6 +3134,17 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     const fileMap = readRemoteFileMap();
     fileMap[accountStableKey(currentAccount)] = requestedFile;
     gmSet(ACCOUNT_FILE_MAP_KEY, JSON.stringify(fileMap));
+    const newTarget = normalizeWebdavFolderUrl(w.url) + requestedFile;
+    if (oldTarget !== newTarget) {
+      w.remoteEtag = '';
+      w.remoteRevision = 0;
+      w.baselineReady = false;
+      w.syncTarget = '';
+      w.conflict = false;
+      w.lastError = '';
+      w.lastStatus = '';
+      w.lastRemoteCheckAt = '';
+    }
     p.settings.webdav = w;
     p.settings.ui.sidebarWidthEnabled = !!byId('cgfm-sidebar-width-enabled').checked;
     p.settings.ui.sidebarWidthPx = clamp(Number(byId('cgfm-sidebar-width-range').value || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX);
@@ -3095,61 +3211,83 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     const w = p.settings.webdav || {};
     if (!manual && !w.enabled) return;
     if (!normalizeWebdavFolderUrl(w.url)) { if (manual) toast('请先填写 WebDAV 文件夹地址。'); return; }
+    const ctx = captureWebdavContext(w);
     try {
       await withWebdavOperation('push', async () => {
+        assertWebdavContext(ctx);
         setSyncStatus('syncing');
         w.lastStatus = 'pushing...';
-        if (!w.remoteEtag && !force) {
+        let remoteExists = false;
+        if (!force) {
           try {
-            const existing = await getDavJson(w);
-            w.remoteEtag = responseHeader(existing, 'ETag') || '';
-            w.remoteRevision = Number((JSON.parse(existing.responseText || '{}').sync || {}).revision || 0);
-            const conflict = new Error('远程文件已存在，但本设备尚未建立同步基线。请先拉取。');
-            conflict.isConflict = true; conflict.status = 412;
-            throw conflict;
+            const existing = await getDavJson(w, ctx);
+            assertWebdavContext(ctx);
+            remoteExists = true;
+            const data = parseRemotePayload(existing, ctx);
+            const currentEtag = responseHeader(existing, 'ETag');
+            const remoteSync = data.sync || {};
+            if (!w.baselineReady || !w.remoteEtag || w.syncTarget !== ctx.target) {
+              const conflict = new Error('远程文件已存在，但本设备尚未建立同步基线。请先拉取。');
+              conflict.isConflict = true;
+              conflict.status = 412;
+              throw conflict;
+            }
+            if (currentEtag && currentEtag !== w.remoteEtag) {
+              const isOwnPreviousPush = String(remoteSync.deviceId || '') === DEVICE_ID && Number(remoteSync.revision || 0) === Number(w.remoteRevision || 0);
+              if (isOwnPreviousPush) w.remoteEtag = currentEtag;
+              else {
+                const conflict = new Error('远程文件已被另一台设备更新。');
+                conflict.isConflict = true;
+                conflict.status = 412;
+                throw conflict;
+              }
+            }
           } catch (preflightErr) {
             if (!(preflightErr && preflightErr.status === 404)) throw preflightErr;
           }
         }
+
         const payload = exportPayload(p);
         const body = JSON.stringify(payload, null, 2);
         let res;
-        try {
-          res = await putDavJson(w, body, { force: !!force });
-        } catch (err) {
-          if (err && err.status === 404) res = await putDavJson(w, body, { createOnly: true });
-          else throw err;
-        }
-        w.remoteEtag = responseHeader(res, 'ETag') || w.remoteEtag || '';
-        w.remoteRevision = Number(payload.sync && payload.sync.revision || w.remoteRevision || 0);
+        if (!remoteExists && !force) res = await putDavJson(w, body, { createOnly: true }, ctx);
+        else res = await putDavJson(w, body, { force: !!force }, ctx);
+        assertWebdavContext(ctx);
+        await refreshRemoteBaseline(w, ctx, payload.sync && payload.sync.revision);
         w.lastPushAt = nowIso();
         w.lastStatus = 'push OK ' + res.status + ' at ' + shortTime(w.lastPushAt);
         w.lastError = '';
         w.conflict = false;
+        w.pendingPush = false;
         dirtySincePush = false;
         setSyncStatus('idle');
         schedulePersist('webdav-push-ok', { webdav: false, touch: false });
-        if (manual) toast('WebDAV 推送完成：' + currentWebdavFileName());
+        if (manual) toast('WebDAV 推送完成：' + ctx.fileName);
       });
     } catch (err) {
+      if (err && err.isStaleAccount) return;
       w.lastError = safeError(err);
       w.lastStatus = err && (err.isConflict || err.status === 412) ? 'conflict' : 'push failed';
       w.conflict = !!(err && (err.isConflict || err.status === 412));
+      w.pendingPush = true;
+      dirtySincePush = true;
       setSyncStatus('error');
       schedulePersist('webdav-push-fail', { webdav: false, touch: false });
-      const msg = w.conflict ? '远程文件已被另一台设备更新，已阻止覆盖。请先拉取或导出本地数据。' : ('WebDAV 推送失败：' + w.lastError);
+      const msg = w.conflict ? '远程文件已被更新或本设备尚未建立基线，已阻止覆盖。请先拉取。' : ('WebDAV 推送失败：' + w.lastError);
       if (manual) toast(msg); else console.warn(APP_NAME, msg, err);
     }
   }
 
-  async function applyRemoteResponse(res, manual) {
+  async function applyRemoteResponse(res, manual, ctx) {
+    assertWebdavContext(ctx);
     const p = getProfile();
     const w = p.settings.webdav || {};
-    const data = JSON.parse(res.responseText || '{}');
+    const data = parseRemotePayload(res, ctx);
     const profile = data.profile || data;
     if (!profile || !profile.folders || !profile.conversations) throw new Error('远程 JSON 不是有效配置。');
     if (manual && !confirm('用远程 WebDAV JSON 替换当前账号的本地文件夹数据？不会删除 ChatGPT 原聊天。')) return false;
-    if (!manual && dirtySincePush) {
+    assertWebdavContext(ctx);
+    if (!manual && (dirtySincePush || localUnsavedChanges || w.pendingPush)) {
       w.conflict = true;
       setSyncStatus('error');
       toast('云端与本地均有修改，已暂停自动同步。');
@@ -3161,13 +3299,17 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     normalized.label = p.label;
     const remoteWebdav = normalized.settings.webdav || {};
     normalized.settings.webdav = Object.assign({}, remoteWebdav, currentWebdav, {
-      remoteEtag: responseHeader(res, 'ETag') || currentWebdav.remoteEtag || '',
-      remoteRevision: Number(data.sync && data.sync.revision || currentWebdav.remoteRevision || 0),
+      remoteEtag: responseHeader(res, 'ETag') || '',
+      remoteRevision: Number(data.sync && data.sync.revision || 0),
+      baselineReady: !!responseHeader(res, 'ETag'),
+      syncTarget: ctx.target,
+      pendingPush: false,
       lastPullAt: nowIso(),
       lastRemoteCheckAt: nowIso(),
       lastStatus: 'pull OK ' + res.status + ' at ' + shortTime(nowIso()),
       lastError: '', conflict: false
     });
+    assertWebdavContext(ctx);
     state = normalized;
     if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
     dirtySincePush = false;
@@ -3183,20 +3325,23 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     const p = getProfile();
     const w = p.settings.webdav || {};
     if (!normalizeWebdavFolderUrl(w.url)) { if (manual) toast('请先填写 WebDAV 文件夹地址。'); return; }
+    const ctx = captureWebdavContext(w);
     try {
       await withWebdavOperation('pull', async () => {
         setSyncStatus('syncing');
-        const res = await getDavJson(w);
-        const applied = await applyRemoteResponse(res, manual);
-        if (manual && applied) toast('WebDAV 拉取完成：' + currentWebdavFileName());
+        const res = await getDavJson(w, ctx);
+        assertWebdavContext(ctx);
+        const applied = await applyRemoteResponse(res, manual, ctx);
+        if (manual && applied) toast('WebDAV 拉取完成：' + ctx.fileName);
       });
     } catch (err) {
+      if (err && err.isStaleAccount) return;
       w.lastError = safeError(err);
       w.lastStatus = 'pull failed';
       setSyncStatus('error');
       schedulePersist('webdav-pull-fail', { webdav: false, touch: false });
       if (manual) {
-        if (err && err.status === 404) toast('远程文件不存在：' + currentWebdavFileName() + '。首次推送可创建该文件。');
+        if (err && err.status === 404) toast('远程文件不存在：' + ctx.fileName + '。首次推送可创建该文件。');
         else toast('WebDAV 拉取失败：' + w.lastError);
       }
     }
@@ -3208,26 +3353,45 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
     if (!w.enabled || !normalizeWebdavFolderUrl(w.url) || webdavOperation) return;
     if (Date.now() - lastRemoteCheckAt < 15000) return;
     lastRemoteCheckAt = Date.now();
+    const ctx = captureWebdavContext(w);
     try {
       await withWebdavOperation('check', async () => {
-        const res = await headDavJson(w);
+        const res = await headDavJson(w, ctx);
+        assertWebdavContext(ctx);
         const etag = responseHeader(res, 'ETag');
         w.lastRemoteCheckAt = nowIso();
         if (!etag) return;
-        if (!w.remoteEtag) { w.remoteEtag = etag; schedulePersist('webdav-etag-baseline', { webdav: false, touch: false }); return; }
+        if (!w.baselineReady || !w.remoteEtag || w.syncTarget !== ctx.target) {
+          if (dirtySincePush || localUnsavedChanges || w.pendingPush) {
+            w.conflict = true;
+            w.lastStatus = 'conflict';
+            w.lastError = '远程文件存在，但本地有未同步数据；请先手动拉取或导出本地数据。';
+            setSyncStatus('error');
+            schedulePersist('webdav-baseline-conflict', { webdav: false, touch: false });
+            if (showToast) toast(w.lastError);
+            return;
+          }
+          const full = res.responseText ? res : await getDavJson(w, ctx);
+          await applyRemoteResponse(full, false, ctx);
+          if (showToast) toast('已建立同步基线并拉取云端文件夹。');
+          return;
+        }
         if (etag === w.remoteEtag) return;
-        if (dirtySincePush || localUnsavedChanges) {
+        if (dirtySincePush || localUnsavedChanges || w.pendingPush) {
           w.conflict = true;
+          w.lastStatus = 'conflict';
+          w.lastError = '检测到云端新版本，但本地也有修改。';
           setSyncStatus('error');
+          schedulePersist('webdav-remote-conflict', { webdav: false, touch: false });
           if (showToast) toast('检测到云端新版本，但本地也有修改；已停止自动覆盖。');
           return;
         }
-        const full = (res.responseText ? res : await getDavJson(w));
-        await applyRemoteResponse(full, false);
+        const full = res.responseText ? res : await getDavJson(w, ctx);
+        await applyRemoteResponse(full, false, ctx);
         if (showToast) toast('已自动同步云端文件夹更新。');
       });
     } catch (err) {
-      if (err && err.status === 404) return;
+      if (err && (err.status === 404 || err.isStaleAccount)) return;
       console.warn(APP_NAME, 'remote update check failed:', reason || '', err);
     }
   }
@@ -3297,28 +3461,26 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
   // ---------------------------------------------------------------------------
 
   function setupCrossTabStorageSync() {
-    if (storageSyncBound) return;
+    const revisionKey = activeRevisionStorageKey();
+    if (storageSyncBound && storageSyncListenerKey === revisionKey) return;
+    teardownCrossTabStorageSync();
     storageSyncBound = true;
+    storageSyncListenerKey = revisionKey;
     const current = currentStorageRevisionInfo();
     if (current.revision) lastSeenStorageRevision = current.revision;
 
-    // Some userscript managers or old installations may not expose this API even if
-    // the grant is present. The feature must degrade silently; it must never block mount().
     if (typeof GM_addValueChangeListener !== 'function') {
       console.info(APP_NAME, 'GM_addValueChangeListener is unavailable; multi-tab sync disabled.');
       return;
     }
 
     try {
-      // Performance-first design: listen only to the tiny revision key. The large
-      // STORAGE_KEY is read and parsed only after a newer revision is observed.
-      GM_addValueChangeListener(activeRevisionStorageKey(), (_key, _oldValue, newValue, remote) => {
-        if (!remote) return; // Ignore this tab's own write.
+      storageSyncListenerId = GM_addValueChangeListener(revisionKey, (_key, _oldValue, newValue, remote) => {
+        if (!remote || revisionKey !== activeRevisionStorageKey()) return;
         const meta = parseRevisionMeta(newValue);
         const rev = meta.revision;
         const writer = meta.writer;
         if (!rev || writer === TAB_ID || !isRevisionNewer(rev, lastSeenStorageRevision)) return;
-
         if (crossTabApplyTimer) clearTimeout(crossTabApplyTimer);
         crossTabApplyTimer = setTimeout(() => {
           crossTabApplyTimer = null;
@@ -3326,6 +3488,7 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
         }, 300);
       });
     } catch (err) {
+      storageSyncListenerId = null;
       console.warn(APP_NAME, 'GM_addValueChangeListener failed; multi-tab sync disabled.', err);
     }
   }
@@ -3476,6 +3639,7 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
   function boot() {
     try {
       ensureActiveProfile();
+      dirtySincePush = !!(((state || {}).settings || {}).webdav || {}).pendingPush;
       lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
       setupCrossTabStorageSync();
       bindSidebarToggleWatcher();
@@ -3487,7 +3651,7 @@ v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
       idle(() => { try { ensureSettingsModal(); } catch (_) {} });
       restartPeriodicBackup();
       setTimeout(() => checkRemoteUpdate(false, 'boot'), 1800);
-      window.addEventListener('beforeunload', () => flushPendingPersist(false));
+      window.addEventListener('beforeunload', () => { flushPendingPersist(false); teardownCrossTabStorageSync(); });
       window.addEventListener('pagehide', () => flushPendingPersist(false));
       window.addEventListener('focus', () => { scheduleResumeRecovery('focus'); setTimeout(() => checkRemoteUpdate(true, 'focus'), 500); }, { passive: true });
       window.addEventListener('pageshow', () => { scheduleResumeRecovery('pageshow'); setTimeout(() => checkRemoteUpdate(false, 'pageshow'), 700); }, { passive: true });
