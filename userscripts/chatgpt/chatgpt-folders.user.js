@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.5.0
-// @description  ChatGPT 普通聊天文件夹管理：v0.5.0；远端 JSON 初始化、事务式 GET→PUT 同步、一次性 ETag 与远端 revision 校验。
+// @version      0.5.1
+// @description  ChatGPT 普通聊天文件夹管理：v0.5.1；文件夹树使用自然高度，与 ChatGPT 侧边栏共用外层滚动条。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -23,7 +23,7 @@
 /*
 ================================================================================
 ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
-适用版本：v0.5.0 附近
+适用版本：v0.5.1 附近
 ================================================================================
 
 这是一个用于 ChatGPT 网页端普通聊天的 Tampermonkey 用户脚本。它在 ChatGPT 左侧侧边栏中增加一个“文件夹”区域，用于本地管理聊天链接。它不是 ChatGPT 官方 Project 功能，也不会修改 ChatGPT 后端数据；它只保存“聊天标题 + 链接 + conversation id + 文件夹结构 + 部分 UI 设置”。
@@ -741,6 +741,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - v0.3.15 起兼容 ChatGPT 最近列表中 draggable="false" 的 /c/ 对话：只在用户按下该具体对话时临时改为 draggable=true，dragend / mouseup / click / timeout 后恢复，不扫描、不注入、不监听 mousemove。
 - v0.3.18 起文件夹灰色选中高亮仅保留在当前页面内存；刷新或重启后清除，不写入本地 / WebDAV，也不跨标签同步。
 - 性能优先，避免高频监听和大规模 DOM 注入。
+- v0.5.1 起文件夹树不再设置独立 max-height / overflow:auto；树按内容自然增高，并与 ChatGPT 原生侧边栏共用外层滚动条。设置弹窗与浮层菜单仍保留自己的最大高度和滚动。
 
 ================================================================================
 */
@@ -751,7 +752,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.5.0';
+  const VERSION = '0.5.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1410,7 +1411,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
       #cgfm-root .cgfm-sync-syncing { color:#2563eb; }
       #cgfm-root .cgfm-sync-syncing::before { border-top-color:transparent; animation:cgfm-spin .75s linear infinite; }
       @keyframes cgfm-spin { to { transform:rotate(360deg); } }
-      #cgfm-root .cgfm-tree { max-height:min(48vh, 420px); overflow:auto; padding:2px 4px 6px 0; contain: content; }
+      #cgfm-root .cgfm-tree { height:auto; max-height:none; overflow:visible; padding:2px 4px 6px 0; }
       #cgfm-root .cgfm-folder-children[hidden] { display:none !important; }
       #cgfm-root .cgfm-empty { color:var(--cgfm-muted); padding:7px 12px 11px 16px; font-size:12px; line-height:1.45; }
       #cgfm-root .cgfm-folder-row, #cgfm-root .cgfm-chat-row { display:flex; align-items:center; min-height:32px; gap:4px; padding:2px 6px 2px calc(8px + var(--depth, 0) * 20px); border-radius:9px; margin:1px 8px; position:relative; color:var(--cgfm-text); }
