@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.0.0
-// @description  NocoDB folder tree with low-overhead WebDAV auto-sync, ETag conflict protection, and daily snapshots
+// @version      11.1.0
+// @description  Compact NocoDB folder toolbar with guided WebDAV first sync, live feedback, conflict protection, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
 // @match        *://*/dashboard/*
@@ -25,7 +25,7 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.0.0';
+    const SCRIPT_VERSION = '11.1.0';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
@@ -242,9 +242,11 @@
         remoteExists: null,
         remoteContentHash: '',
         pendingHash: '',
+        autoSyncArmed: false,
         lastCheckAt: 0,
         lastPushAt: 0,
         lastPullAt: 0,
+        lastSuccessAt: 0,
         lastContentCheckAt: 0,
         lastDailyBackupDate: '',
         lastBackupCleanupDate: '',
@@ -263,16 +265,29 @@
             remoteSize: normalizeString(source.remoteSize),
             remoteContentHash: normalizeString(source.remoteContentHash),
             pendingHash: normalizeString(source.pendingHash),
+            autoSyncArmed: Boolean(source.autoSyncArmed),
             lastCheckAt: Number(source.lastCheckAt) || 0,
             lastPushAt: Number(source.lastPushAt) || 0,
             lastPullAt: Number(source.lastPullAt) || 0,
+            lastSuccessAt: Number(source.lastSuccessAt) || 0,
             lastContentCheckAt: Number(source.lastContentCheckAt) || 0,
             status: normalizeString(source.status) || 'idle',
             message: normalizeString(source.message)
         };
     };
 
-    let syncState = normalizeSyncState(loadStoredJson(SYNC_STATE_KEY, defaultSyncState));
+    const storedSyncState = loadStoredJson(SYNC_STATE_KEY, defaultSyncState);
+    let syncState = normalizeSyncState(storedSyncState);
+    if (typeof storedSyncState?.autoSyncArmed === 'undefined') {
+        syncState.autoSyncArmed = Boolean(
+            syncState.remoteContentHash ||
+            syncState.remoteEtag ||
+            syncState.remoteLastModified ||
+            syncState.remoteSize ||
+            syncState.remoteExists !== null ||
+            syncState.lastCheckAt
+        );
+    }
     let syncConflict = loadStoredJson(CONFLICT_KEY, null);
 
     const persistSyncState = () => GM_setValue(SYNC_STATE_KEY, JSON.stringify(syncState));
@@ -280,6 +295,9 @@
         if (syncConflict) GM_setValue(CONFLICT_KEY, JSON.stringify(syncConflict));
         else GM_setValue(CONFLICT_KEY, '');
     };
+
+    const hasWebDAVEndpoint = () => Boolean(config.webdav.enabled && config.webdav.url);
+    const isAutoSyncReady = () => Boolean(hasWebDAVEndpoint() && syncState.autoSyncArmed);
 
     const getActive = () => {
         const currentBaseId = getBaseId();
@@ -334,6 +352,18 @@
         (Array.isArray(base.folders) && base.folders.length > 0) || Object.keys(base.map || {}).length > 0
     );
 
+    const getInitialSyncDecision = (localCloudData, remoteCloudData) => {
+        const localHash = cloudContentHash(localCloudData);
+        const remoteHash = cloudContentHash(remoteCloudData);
+        if (localHash === remoteHash) return 'same';
+        const localHasData = hasStructuralData(localCloudData);
+        const remoteHasData = hasStructuralData(remoteCloudData);
+        if (!localHasData && remoteHasData) return 'pull-cloud';
+        if (localHasData && !remoteHasData) return 'push-local';
+        if (localHasData && remoteHasData) return 'choose';
+        return 'same';
+    };
+
     const applyCloudData = cloudData => {
         const previousBases = config.bases;
         const nextBases = {};
@@ -378,8 +408,9 @@
             syncState.pendingHash = cloudContentHash(buildCloudData(config));
             persistSyncState();
         }
-        if (structural && schedulePush && config.webdav.enabled) scheduleWebDAVPush();
+        if (structural && schedulePush && isAutoSyncReady()) scheduleWebDAVPush();
         updateSyncIndicator();
+        updateSettingsSyncFeedback();
     }
 
     const scheduleWebDAVPush = () => {
@@ -400,8 +431,10 @@
     const setSyncStatus = (status, message = '') => {
         syncState.status = status;
         syncState.message = message;
+        if (status === 'ok') syncState.lastSuccessAt = Date.now();
         persistSyncState();
         updateSyncIndicator();
+        updateSettingsSyncFeedback();
     };
 
     const parseHeaders = rawHeaders => {
@@ -679,6 +712,7 @@
 
     const setConflict = async ({ reason, remoteMetadata = null, localPayload = null }) => {
         const payload = localPayload || buildCloudPayload();
+        const initialSync = reason === 'initial-sync-both-have-data';
         syncConflict = {
             createdAt: new Date().toISOString(),
             reason,
@@ -686,8 +720,16 @@
             remoteMetadata: remoteMetadata || null
         };
         persistConflict();
-        setSyncStatus('conflict', '远端和本地都发生了变化，已暂停自动覆盖。');
-        await backupLocalSnapshot('nocodb-folders-conflict-local', payload);
+        setSyncStatus(
+            'conflict',
+            initialSync
+                ? '首次同步发现本机与云端都有不同数据，请选择保留哪一版。'
+                : '远端和本地都发生了变化，已暂停自动覆盖。'
+        );
+        await backupLocalSnapshot(
+            initialSync ? 'nocodb-folders-initial-sync-local' : 'nocodb-folders-conflict-local',
+            payload
+        );
         showSyncPanel();
     };
 
@@ -698,7 +740,7 @@
     };
 
     const performPull = async ({ reason = 'pull', force = false } = {}) => {
-        if (!config.webdav.enabled || !config.webdav.url) return false;
+        if (!hasWebDAVEndpoint()) return false;
         if (syncConflict && !force) return false;
         setSyncStatus('syncing', `正在拉取：${reason}`);
 
@@ -706,7 +748,7 @@
             const response = await gmFetch(config.webdav.url, { method: 'GET', headers: getAuthHeaders(false) });
             if (response.status === 404) {
                 updateStoredMetadata({ exists: false, etag: '', lastModified: '', size: '' });
-                setSyncStatus('idle', '远端文件尚不存在；首次修改后会自动创建。');
+                setSyncStatus('idle', '远端文件尚不存在；若本机已有文件夹数据，将自动创建云端文件。');
                 return false;
             }
             if (!response.ok) throw new Error(`WebDAV GET failed: HTTP ${response.status}`);
@@ -717,21 +759,49 @@
             const localCloudData = buildCloudData(config);
             const localHash = cloudContentHash(localCloudData);
             const hadBaseline = Boolean(syncState.remoteContentHash || storedMetadataToken());
+            const metadata = {
+                exists: true,
+                etag: response.headers.etag || '',
+                lastModified: response.headers['last-modified'] || '',
+                size: response.headers['content-length'] || ''
+            };
 
-            if (syncState.pendingHash && localHash !== remoteHash && !force) {
-                const metadata = {
-                    exists: true,
-                    etag: response.headers.etag || '',
-                    lastModified: response.headers['last-modified'] || '',
-                    size: response.headers['content-length'] || ''
-                };
-                await setConflict({ reason: 'pull-with-local-pending-changes', remoteMetadata: metadata });
-                return false;
+            if (!hadBaseline && !force) {
+                const decision = getInitialSyncDecision(localCloudData, cloudData);
+                updateStoredMetadata(metadata);
+
+                if (decision === 'same') {
+                    syncState.remoteContentHash = remoteHash;
+                    syncState.pendingHash = '';
+                    syncState.lastContentCheckAt = Date.now();
+                    persistSyncState();
+                    clearConflict();
+                    setSyncStatus('ok', '本机与 WebDAV 内容一致，已建立同步基线。');
+                    return true;
+                }
+
+                if (decision === 'choose') {
+                    await setConflict({
+                        reason: 'initial-sync-both-have-data',
+                        remoteMetadata: metadata,
+                        localPayload: buildCloudPayload()
+                    });
+                    return false;
+                }
+
+                if (decision === 'push-local') {
+                    syncState.remoteContentHash = remoteHash;
+                    syncState.pendingHash = localHash;
+                    syncState.lastContentCheckAt = Date.now();
+                    persistSyncState();
+                    return performPush({ reason: 'initial-local-only' });
+                }
+                // pull-cloud continues into the normal apply path below.
             }
 
-            if (!hadBaseline && hasStructuralData(localCloudData) && localHash !== remoteHash) {
-                // One-time upgrade safety: preserve the pre-V11 local snapshot before adopting cloud state.
-                await backupLocalSnapshot('nocodb-folders-v11-migration-local');
+            if (syncState.pendingHash && localHash !== remoteHash && !force) {
+                await setConflict({ reason: 'pull-with-local-pending-changes', remoteMetadata: metadata });
+                return false;
             }
 
             applyCloudData(cloudData);
@@ -739,14 +809,9 @@
             syncState.pendingHash = '';
             syncState.lastPullAt = Date.now();
             syncState.lastContentCheckAt = Date.now();
-            updateStoredMetadata({
-                exists: true,
-                etag: response.headers.etag || '',
-                lastModified: response.headers['last-modified'] || '',
-                size: response.headers['content-length'] || ''
-            });
+            updateStoredMetadata(metadata);
             clearConflict();
-            setSyncStatus('ok', '已从 WebDAV 同步最新文件夹数据。');
+            setSyncStatus('ok', '已从 WebDAV 拉取最新文件夹数据。');
             return true;
         } catch (error) {
             console.error('[NocoDB Folder] Pull failed:', error);
@@ -756,7 +821,7 @@
     };
 
     const performPush = async ({ reason = 'push', force = false } = {}) => {
-        if (!config.webdav.enabled || !config.webdav.url) return false;
+        if (!hasWebDAVEndpoint()) return false;
         if (syncConflict && !force) return false;
 
         const payload = buildCloudPayload();
@@ -863,7 +928,8 @@
     };
 
     const checkRemoteUpdate = async ({ reason = 'poll', force = false } = {}) => {
-        if (!config.webdav.enabled || !config.webdav.url || syncConflict) return false;
+        if (!hasWebDAVEndpoint() || syncConflict) return false;
+        if (!force && !syncState.autoSyncArmed) return false;
         if (!force && document.visibilityState !== 'visible') return false;
         if (!force && Date.now() - syncState.lastCheckAt < MIN_REMOTE_CHECK_INTERVAL_MS) return false;
 
@@ -882,9 +948,17 @@
                     await setConflict({ reason: 'remote-deleted-during-local-pending', remoteMetadata: metadata });
                     return false;
                 }
+                const localCloudData = buildCloudData(config);
+                const localHash = cloudContentHash(localCloudData);
+                const localHasData = hasStructuralData(localCloudData);
                 updateStoredMetadata(metadata);
+                if (!oldToken && localHasData) {
+                    syncState.pendingHash = localHash;
+                    persistSyncState();
+                    return performPush({ reason: 'initial-local-only' });
+                }
                 if (syncState.pendingHash) return performPush({ reason: 'remote-missing' });
-                setSyncStatus('idle', '远端文件尚不存在。');
+                setSyncStatus('idle', '远端文件尚不存在；本机也没有可上传的文件夹结构。');
                 return false;
             }
 
@@ -919,6 +993,7 @@
 
     const resolveConflictUseCloud = async () => {
         syncState.pendingHash = '';
+        syncState.autoSyncArmed = true;
         persistSyncState();
         clearConflict();
         return performPull({ reason: 'conflict-use-cloud', force: true });
@@ -937,6 +1012,7 @@
         const localPayload = syncConflict.localPayload || buildCloudPayload();
         applyCloudData(extractCloudData(localPayload));
         syncState.pendingHash = localPayload.__meta?.contentHash || cloudContentHash(extractCloudData(localPayload));
+        syncState.autoSyncArmed = true;
         persistSyncState();
         clearConflict();
         return performPush({ reason: 'conflict-force-overwrite', force: true });
@@ -959,22 +1035,33 @@
         downloadJson(`nocodb-folders-conflict-${timestampForFilename()}.json`, payload);
     };
 
-    const resetRemoteBaselineIfEndpointChanged = (oldUrl, oldUser) => {
-        if (oldUrl === config.webdav.url && oldUser === config.webdav.user) return;
+    const resetRemoteBaselineIfEndpointChanged = (oldUrl, oldUser, oldPass) => {
+        if (
+            oldUrl === config.webdav.url &&
+            oldUser === config.webdav.user &&
+            oldPass === config.webdav.pass
+        ) return;
+        const localCloudData = buildCloudData(config);
         syncState.remoteEtag = '';
         syncState.remoteLastModified = '';
         syncState.remoteSize = '';
         syncState.remoteExists = null;
         syncState.remoteContentHash = '';
+        syncState.pendingHash = hasStructuralData(localCloudData) ? cloudContentHash(localCloudData) : '';
+        syncState.autoSyncArmed = false;
         syncState.lastCheckAt = 0;
+        syncState.lastContentCheckAt = 0;
+        syncState.lastSuccessAt = 0;
         clearConflict();
         persistSyncState();
     };
 
     const getSyncStatusText = () => {
+        if (syncConflict?.reason === 'initial-sync-both-have-data') return '首次同步：请选择本机或云端版本';
         if (syncConflict) return '冲突：自动覆盖已暂停';
         if (syncState.status === 'syncing') return syncState.message || '正在同步';
         if (syncState.status === 'error') return `错误：${syncState.message || '同步失败'}`;
+        if (config.webdav.enabled && !syncState.autoSyncArmed) return '等待点击 Save and Check Now 建立或验证同步';
         if (syncState.pendingHash) return '本地有待上传更改';
         if (syncState.status === 'ok') return syncState.message || '同步正常';
         return syncState.message || '等待同步';
@@ -983,7 +1070,10 @@
     const getSyncIcon = () => {
         const spinning = syncState.status === 'syncing';
         const className = spinning ? 'ndf-spin' : '';
-        const badgeClass = syncConflict ? 'ndf-sync-conflict' : syncState.status === 'error' ? 'ndf-sync-error' : syncState.pendingHash ? 'ndf-sync-pending' : 'ndf-sync-ok';
+        const badgeClass = syncConflict ? 'ndf-sync-conflict' :
+            syncState.status === 'error' ? 'ndf-sync-error' :
+                !syncState.autoSyncArmed ? 'ndf-sync-pending' :
+                    syncState.pendingHash ? 'ndf-sync-pending' : 'ndf-sync-ok';
         return `<span class="ndf-sync-icon-wrap ${badgeClass}"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" class="${className}"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></span>`;
     };
 
@@ -994,6 +1084,77 @@
         button.innerHTML = getSyncIcon();
         button.title = getSyncStatusText();
     }
+
+    const formatSyncTimestamp = timestamp => {
+        if (!timestamp) return 'Never';
+        try {
+            return new Date(timestamp).toLocaleString();
+        } catch (error) {
+            return 'Unknown';
+        }
+    };
+
+    const getSettingsButtonPresentation = panel => {
+        if (panel?.dataset.syncStage === 'saving') {
+            return { label: 'Saving…', tone: 'primary', busy: true };
+        }
+        if (syncConflict) return { label: 'Resolve Sync Conflict', tone: 'warning', busy: false };
+        if (syncState.status === 'syncing') {
+            const message = syncState.message || '';
+            if (message.includes('拉取')) return { label: 'Pulling from Cloud…', tone: 'primary', busy: true };
+            if (message.includes('上传')) return { label: 'Uploading…', tone: 'primary', busy: true };
+            return { label: 'Checking WebDAV…', tone: 'primary', busy: true };
+        }
+        if (syncState.status === 'error') return { label: 'Sync Failed — Retry', tone: 'error', busy: false };
+        if (config.webdav.enabled && !syncState.autoSyncArmed) {
+            return { label: 'Save and Check Now', tone: 'primary', busy: false };
+        }
+        if (syncState.status === 'ok') {
+            const message = syncState.message || '';
+            if (message.includes('上传')) return { label: 'Uploaded Successfully ✓', tone: 'success', busy: false };
+            if (message.includes('拉取')) return { label: 'Pulled Successfully ✓', tone: 'success', busy: false };
+            return { label: 'Up to Date ✓', tone: 'success', busy: false };
+        }
+        return { label: 'Save and Check Now', tone: 'primary', busy: false };
+    };
+
+    function updateSettingsSyncFeedback() {
+        const panel = document.querySelector('.ndf-settings-panel');
+        if (!panel) return;
+        const button = panel.querySelector('#btn-dav-force');
+        const status = panel.querySelector('#ndf-dav-status');
+        const lastSync = panel.querySelector('#ndf-dav-last-sync');
+        if (!button || !status || !lastSync) return;
+
+        const presentation = getSettingsButtonPresentation(panel);
+        button.disabled = presentation.busy;
+        button.classList.remove('ndf-btn-primary', 'ndf-btn-green', 'ndf-btn-red', 'ndf-btn-warning');
+        button.classList.add(
+            presentation.tone === 'success' ? 'ndf-btn-green' :
+                presentation.tone === 'error' ? 'ndf-btn-red' :
+                    presentation.tone === 'warning' ? 'ndf-btn-warning' : 'ndf-btn-primary'
+        );
+        button.innerHTML = `${presentation.busy ? '<span class="ndf-btn-spinner" aria-hidden="true"></span>' : ''}${escapeHtml(presentation.label)}`;
+
+        status.textContent = getSyncStatusText();
+        status.className = 'ndf-sync-feedback';
+        if (syncConflict) status.classList.add('ndf-feedback-warning');
+        else if (syncState.status === 'error') status.classList.add('ndf-feedback-error');
+        else if (syncState.status === 'ok') status.classList.add('ndf-feedback-ok');
+
+        lastSync.textContent = `Last successful sync: ${formatSyncTimestamp(syncState.lastSuccessAt)}`;
+        ['#inp-dav-enable', '#inp-dav-url', '#inp-dav-user', '#inp-dav-pass'].forEach(selector => {
+            const input = panel.querySelector(selector);
+            if (input) input.disabled = presentation.busy;
+        });
+    }
+
+    const setSettingsSavingState = saving => {
+        const panel = document.querySelector('.ndf-settings-panel');
+        if (!panel) return;
+        panel.dataset.syncStage = saving ? 'saving' : '';
+        updateSettingsSyncFeedback();
+    };
 
     const createModal = ({ title, bodyHtml, width = 380 }) => {
         document.querySelectorAll('.ndf-modal-overlay').forEach(node => node.remove());
@@ -1012,14 +1173,17 @@
     };
 
     function showSyncPanel() {
+        const initialSyncConflict = syncConflict?.reason === 'initial-sync-both-have-data';
         const conflictHtml = syncConflict ? `
             <div class="ndf-alert ndf-alert-warning">
-                <strong>检测到同步冲突</strong><br>
-                远端与本地都发生了变化。脚本没有覆盖任何一方，并已尝试把本地快照写入 WebDAV 的 backups 目录。
+                <strong>${initialSyncConflict ? '首次同步需要选择' : '检测到同步冲突'}</strong><br>
+                ${initialSyncConflict
+                    ? '本机与 WebDAV 都已有不同的文件夹数据。脚本没有合并或覆盖任何一方，请明确选择要采用的版本。'
+                    : '远端与本地都发生了变化。脚本没有覆盖任何一方，并已尝试把本地快照写入 WebDAV 的 backups 目录。'}
             </div>
-            <button class="ndf-btn ndf-btn-green" id="ndf-conflict-cloud">使用云端版本</button>
-            <button class="ndf-btn ndf-btn-red" id="ndf-conflict-local">用本地版本覆盖云端</button>
-            <button class="ndf-btn" id="ndf-conflict-export">导出本地冲突副本</button>
+            <button class="ndf-btn ndf-btn-green" id="ndf-conflict-cloud">${initialSyncConflict ? '采用云端版本（替换本机结构）' : '使用云端版本'}</button>
+            <button class="ndf-btn ndf-btn-red" id="ndf-conflict-local">${initialSyncConflict ? '上传本机版本（替换云端结构）' : '用本地版本覆盖云端'}</button>
+            <button class="ndf-btn" id="ndf-conflict-export">导出本地安全副本</button>
         ` : '';
         const { modal, close } = createModal({
             title: 'WebDAV 自动同步',
@@ -1032,24 +1196,35 @@
                     <div><span>每日快照</span><strong>保留约 ${DAILY_BACKUP_RETENTION_DAYS} 天</strong></div>
                 </div>
                 ${conflictHtml}
-                <button class="ndf-btn ndf-btn-primary" id="ndf-sync-check">立即检查并同步</button>
-                <button class="ndf-btn" id="ndf-sync-pull">手动拉取云端</button>
-                <button class="ndf-btn" id="ndf-sync-push">上传本地待处理更改</button>
+                ${syncConflict ? '' : `
+                    <button class="ndf-btn ndf-btn-primary" id="ndf-sync-check">立即检查并同步</button>
+                    <button class="ndf-btn" id="ndf-sync-pull">手动拉取云端</button>
+                    <button class="ndf-btn" id="ndf-sync-push">上传本地待处理更改</button>
+                `}
             `
         });
 
-        modal.querySelector('#ndf-sync-check').onclick = async () => {
-            await enqueueSync(() => checkRemoteUpdate({ reason: 'manual-check', force: true }));
-            close();
-        };
-        modal.querySelector('#ndf-sync-pull').onclick = async () => {
-            await enqueueSync(() => performPull({ reason: 'manual-pull' }));
-            close();
-        };
-        modal.querySelector('#ndf-sync-push').onclick = async () => {
-            await enqueueSync(() => performPush({ reason: 'manual-push' }));
-            close();
-        };
+        if (!syncConflict) {
+            const armManualSync = () => {
+                syncState.autoSyncArmed = true;
+                persistSyncState();
+            };
+            modal.querySelector('#ndf-sync-check').onclick = async () => {
+                armManualSync();
+                await enqueueSync(() => checkRemoteUpdate({ reason: 'manual-check', force: true }));
+                close();
+            };
+            modal.querySelector('#ndf-sync-pull').onclick = async () => {
+                armManualSync();
+                await enqueueSync(() => performPull({ reason: 'manual-pull' }));
+                close();
+            };
+            modal.querySelector('#ndf-sync-push').onclick = async () => {
+                armManualSync();
+                await enqueueSync(() => performPush({ reason: 'manual-push' }));
+                close();
+            };
+        }
         if (syncConflict) {
             modal.querySelector('#ndf-conflict-cloud').onclick = async () => { await enqueueSync(resolveConflictUseCloud); close(); };
             modal.querySelector('#ndf-conflict-local').onclick = async () => { await enqueueSync(resolveConflictOverwriteCloud); close(); };
@@ -1068,8 +1243,10 @@
     style.textContent = `
         :root { --ndf-base-pad: 12px; }
         #ndf-folder-toolbar-container { margin: 8px 0; border-bottom: 1px dashed #ddd; }
-        .ndf-folder-toolbar { padding: 4px 12px; display:flex; align-items:center; }
-        .ndf-add-folder-btn { cursor:pointer; font-size:13px; color:#3366ff; font-weight:700; display:flex; align-items:center; gap:4px; }
+        .ndf-folder-toolbar { padding:4px 12px; display:flex; align-items:center; gap:8px; }
+        .ndf-add-folder-btn { width:28px; height:28px; flex:0 0 28px; padding:0; border:0; border-radius:6px; background:transparent; cursor:pointer; color:#3366ff; display:inline-flex; align-items:center; justify-content:center; }
+        .ndf-add-folder-btn:hover { background:#f0f5ff; color:#1677ff; }
+        .ndf-add-folder-btn:focus-visible { outline:2px solid #91caff; outline-offset:1px; }
         .ndf-toolbar-right { margin-left:auto; display:flex; align-items:center; gap:12px; color:#666; }
         .ndf-action-btn { cursor:pointer; opacity:.72; transition:.2s; display:flex; align-items:center; justify-content:center; }
         .ndf-action-btn:hover { opacity:1; color:#1677ff; transform:scale(1.08); }
@@ -1123,12 +1300,23 @@
         .ndf-modal-title { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; font-size:15px; font-weight:700; border-bottom:1px solid #eee; }
         .ndf-modal-close { border:0; background:transparent; font-size:22px; line-height:1; cursor:pointer; color:#777; }
         .ndf-modal-body { padding:16px; }
-        .ndf-btn { width:100%; box-sizing:border-box; border:1px solid #d9d9d9; background:#fff; color:#333; border-radius:5px; padding:8px 10px; margin-top:8px; cursor:pointer; font-size:12px; }
+        .ndf-btn { width:100%; box-sizing:border-box; border:1px solid #d9d9d9; background:#fff; color:#333; border-radius:5px; padding:8px 10px; margin-top:8px; cursor:pointer; font-size:12px; display:flex; align-items:center; justify-content:center; gap:7px; }
         .ndf-btn:hover { background:#f5f5f5; }
+        .ndf-btn:disabled { cursor:not-allowed; opacity:.68; }
         .ndf-btn-primary { color:#fff; background:#1677ff; border-color:#1677ff; }
         .ndf-btn-primary:hover { background:#0958d9; }
         .ndf-btn-green { color:#fff; background:#52c41a; border-color:#52c41a; }
+        .ndf-btn-green:hover { background:#389e0d; }
         .ndf-btn-red { color:#fff; background:#ff4d4f; border-color:#ff4d4f; }
+        .ndf-btn-red:hover { background:#cf1322; }
+        .ndf-btn-warning { color:#613400; background:#ffd666; border-color:#ffc53d; }
+        .ndf-btn-warning:hover { background:#ffc53d; }
+        .ndf-btn-spinner { width:13px; height:13px; border:2px solid rgba(255,255,255,.5); border-top-color:currentColor; border-radius:50%; animation:ndf-spin .8s linear infinite; }
+        .ndf-sync-feedback { margin-top:9px; padding:8px 9px; border-radius:5px; background:#f5f5f5; color:#555; font-size:11px; line-height:1.45; overflow-wrap:anywhere; }
+        .ndf-feedback-ok { background:#f6ffed; color:#237804; border:1px solid #b7eb8f; }
+        .ndf-feedback-error { background:#fff2f0; color:#a8071a; border:1px solid #ffccc7; }
+        .ndf-feedback-warning { background:#fffbe6; color:#874d00; border:1px solid #ffe58f; }
+        .ndf-sync-last { margin-top:5px; color:#888; font-size:10px; line-height:1.4; }
         .ndf-alert { padding:10px; border-radius:6px; font-size:12px; line-height:1.5; margin-bottom:8px; }
         .ndf-alert-warning { background:#fffbe6; border:1px solid #ffe58f; }
         .ndf-sync-summary { display:grid; gap:8px; font-size:12px; margin-bottom:10px; }
@@ -1329,8 +1517,10 @@
                 <input type="text" class="ndf-setting-input" id="inp-dav-url" placeholder="Full JSON file URL" value="${escapeHtml(config.webdav.url)}">
                 <input type="text" class="ndf-setting-input" id="inp-dav-user" placeholder="Username" value="${escapeHtml(config.webdav.user)}">
                 <input type="password" class="ndf-setting-input" id="inp-dav-pass" placeholder="Password" value="${escapeHtml(config.webdav.pass)}">
-                <div style="font-size:11px;color:#777;line-height:1.5;margin:4px 0 8px">Only folder structure and table mappings are synchronized. Collapse state and appearance stay local to each device.</div>
+                <div style="font-size:11px;color:#777;line-height:1.5;margin:4px 0 8px">Only folder structure and table mappings are synchronized. Collapse state and appearance stay local to each device. Enabling WebDAV alone does not connect; click the button below to start or verify synchronization.</div>
                 <button class="ndf-btn ndf-btn-primary" id="btn-dav-force" type="button">Save and Check Now</button>
+                <div class="ndf-sync-feedback" id="ndf-dav-status" role="status" aria-live="polite">${escapeHtml(getSyncStatusText())}</div>
+                <div class="ndf-sync-last" id="ndf-dav-last-sync">Last successful sync: ${escapeHtml(formatSyncTimestamp(syncState.lastSuccessAt))}</div>
             </div>
         `;
         document.body.appendChild(panel);
@@ -1360,31 +1550,56 @@
         const davToggle = panel.querySelector('#inp-dav-enable');
         davToggle.onchange = e => {
             config.webdav.enabled = e.target.checked;
+            syncState.autoSyncArmed = false;
+            persistSyncState();
             panel.querySelector('#dav-fields').style.display = config.webdav.enabled ? 'block' : 'none';
             saveLocalConfig({ structural: false, schedulePush: false });
-            updateSyncIndicator();
-            if (config.webdav.enabled) enqueueSync(() => checkRemoteUpdate({ reason: 'enabled', force: true }));
+            setSyncStatus(
+                'idle',
+                config.webdav.enabled
+                    ? 'WebDAV 已启用；保存连接信息后点击 Save and Check Now。'
+                    : 'WebDAV 已关闭。'
+            );
         };
 
         const saveWebDAVFields = () => {
             const oldUrl = config.webdav.url;
             const oldUser = config.webdav.user;
+            const oldPass = config.webdav.pass;
             config.webdav.url = normalizeString(panel.querySelector('#inp-dav-url').value);
             config.webdav.user = normalizeString(panel.querySelector('#inp-dav-user').value);
             config.webdav.pass = panel.querySelector('#inp-dav-pass').value;
-            resetRemoteBaselineIfEndpointChanged(oldUrl, oldUser);
+            resetRemoteBaselineIfEndpointChanged(oldUrl, oldUser, oldPass);
             saveLocalConfig({ structural: false, schedulePush: false });
         };
 
         panel.querySelector('#btn-dav-force').onclick = async () => {
+            if (syncConflict) {
+                showSyncPanel();
+                return;
+            }
+            setSettingsSavingState(true);
+            await new Promise(resolve => setTimeout(resolve, 0));
             saveWebDAVFields();
+            if (!config.webdav.url) {
+                setSettingsSavingState(false);
+                setSyncStatus('error', '请填写完整的 WebDAV JSON 文件 URL。');
+                return;
+            }
+            syncState.autoSyncArmed = true;
+            persistSyncState();
+            setSettingsSavingState(false);
             await enqueueSync(() => checkRemoteUpdate({ reason: 'settings-save', force: true }));
             updateSyncIndicator();
+            updateSettingsSyncFeedback();
         };
+
+        updateSettingsSyncFeedback();
 
         setTimeout(() => {
             const close = clickEvent => {
                 if (panel.contains(clickEvent.target)) return;
+                if (panel.dataset.syncStage === 'saving' || syncState.status === 'syncing') return;
                 if (config.webdav.enabled) saveWebDAVFields();
                 panel.remove();
                 document.removeEventListener('click', close);
@@ -1502,7 +1717,7 @@
                 toolbar.id = 'ndf-folder-toolbar-container';
                 toolbar.innerHTML = `
                     <div class="ndf-folder-toolbar">
-                        <span class="ndf-add-folder-btn" title="Create New Folder">${ICON_ADD} New Folder</span>
+                        <button type="button" class="ndf-add-folder-btn" title="Create New Folder" aria-label="Create New Folder">${ICON_ADD}</button>
                         <div class="ndf-toolbar-right">
                             <span class="ndf-action-btn" id="ndf-btn-import" title="Import Local Backup">${ICON_IMPORT}</span>
                             <span class="ndf-action-btn" id="ndf-btn-export" title="Export Local Backup">${ICON_EXPORT}</span>
@@ -1792,7 +2007,7 @@
     };
 
     const runFocusCheck = reason => {
-        if (!config.webdav.enabled || document.visibilityState !== 'visible') return;
+        if (!isAutoSyncReady() || document.visibilityState !== 'visible') return;
         enqueueSync(() => checkRemoteUpdate({ reason }));
     };
 
@@ -1803,7 +2018,7 @@
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') runFocusCheck('visible');
         });
-        if (config.webdav.enabled) enqueueSync(() => checkRemoteUpdate({ reason: 'startup', force: true }));
+        if (isAutoSyncReady()) enqueueSync(() => checkRemoteUpdate({ reason: 'startup', force: true }));
     };
 
     let currentActiveBaseId = getBaseId();
