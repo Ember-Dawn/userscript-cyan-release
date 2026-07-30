@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.3.18
-// @description  ChatGPT 普通聊天文件夹管理：v0.3.18；文件夹选中高亮仅在当前页面保留，并继续兼容最近列表中 draggable=false 的 GPT 对话。
+// @version      0.4.0
+// @description  ChatGPT 普通聊天文件夹管理：v0.4.0；增加 Safari 单例保护、按账号本地隔离、稳定远程文件映射、WebDAV ETag 冲突保护与远端更新检查。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -22,7 +22,7 @@
 /*
 ================================================================================
 ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
-适用版本：v0.3.18 附近
+适用版本：v0.4.0 附近
 ================================================================================
 
 这是一个用于 ChatGPT 网页端普通聊天的 Tampermonkey 用户脚本。它在 ChatGPT 左侧侧边栏中增加一个“文件夹”区域，用于本地管理聊天链接。它不是 ChatGPT 官方 Project 功能，也不会修改 ChatGPT 后端数据；它只保存“聊天标题 + 链接 + conversation id + 文件夹结构 + 部分 UI 设置”。
@@ -57,7 +57,7 @@ ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
 3. 文件夹 UI 独立根节点。
 4. 最近对话菜单只在用户点击三点按钮后进行短暂 Radix 菜单捕捉和注入。
 5. WebDAV 按 ChatGPT 账号生成不同远程 JSON 文件。
-6. 本地只保存当前数据，不做复杂多账号本地 profile。
+6. 本地按 ChatGPT 账号隔离 profile；远程 JSON 文件名按账号持久化映射。
 7. 同浏览器多标签页同步为事件驱动、可降级补丁，不使用轮询。
 
 历史上曾尝试过以下方案，但因为性能或兼容性问题已放弃：
@@ -636,7 +636,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
 十七、本地存储
 --------------------------------------------------------------------------------
 
-当前设计为“本地单一当前数据”，不做复杂多账号本地 profile。
+v0.4.0 起改为“按 ChatGPT 账号隔离本地 profile”。
 
 原因：
 
@@ -750,9 +750,14 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.3.18';
-  const STORAGE_KEY = 'cgfm.v2.currentProfile';
-  const REVISION_KEY = 'cgfm.v2.revision';
+  const VERSION = '0.4.0';
+  const STORAGE_KEY = 'cgfm.v2.currentProfile'; // v0.3.x legacy migration source
+  const REVISION_KEY = 'cgfm.v2.revision'; // v0.3.x legacy migration source
+  const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
+  const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
+  const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
+  const DEVICE_ID_KEY = 'cgfm.v3.deviceId';
+  const RUNTIME_LOCK_ATTR = 'data-cgfm-runtime-active';
   const LEGACY_STORAGE_KEY = 'cgfm.v1.state';
   const LAST_ACCOUNT_KEY = 'cgfm.v1.lastAccount';
   const CURRENT_PROFILE_ID = 'local_current';
@@ -767,6 +772,14 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
   const FOLDER_SORT_LOCALE = undefined;
   const folderCollator = new Intl.Collator(FOLDER_SORT_LOCALE, { numeric: true, sensitivity: 'base' });
   const TAB_ID = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+
+  // Safari userscript managers may inject the same script more than once during SPA
+  // restoration. A document-level lock prevents duplicate roots, listeners and timers.
+  if (document.documentElement.hasAttribute(RUNTIME_LOCK_ATTR)) {
+    console.info(APP_NAME, 'duplicate runtime blocked');
+    return;
+  }
+  document.documentElement.setAttribute(RUNTIME_LOCK_ATTR, VERSION);
 
   let state = null;
   let currentAccount = null;
@@ -813,6 +826,13 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
   let transientDragAnchor = null;
   let transientDragOriginalDraggable = null;
   let transientDragRestoreTimer = null;
+  let lockedAccountKey = '';
+  let pendingAccountKey = '';
+  let pendingAccountHits = 0;
+  let webdavOperation = null;
+  let lastRemoteCheckAt = 0;
+  let accountSwitching = false;
+  const DEVICE_ID = getOrCreateDeviceId();
 
   // ---------------------------------------------------------------------------
   // 1. Constants, small utilities and safe Tampermonkey storage wrappers
@@ -845,6 +865,24 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     catch (err) { console.warn(APP_NAME, 'GM_setValue failed', err); }
   }
 
+  function getOrCreateDeviceId() {
+    let id = String(gmGet(DEVICE_ID_KEY, '') || '');
+    if (!id) {
+      id = 'dev_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+      gmSet(DEVICE_ID_KEY, id);
+    }
+    return id;
+  }
+
+  function accountStableKey(info) {
+    const acct = info || currentAccount || readLastAccountInfo() || {};
+    const raw = cleanText(acct.accountId || acct.email || acct.id || 'acct_default');
+    return sanitizeFilePart(raw).slice(0, 120) || 'acct_default';
+  }
+
+  function activeProfileStorageKey(info) { return ACCOUNT_PROFILE_PREFIX + accountStableKey(info); }
+  function activeRevisionStorageKey(info) { return ACCOUNT_REVISION_PREFIX + accountStableKey(info); }
+
   // ---------------------------------------------------------------------------
   // 2. State, migration and folder data normalization
   // ---------------------------------------------------------------------------
@@ -866,36 +904,51 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
       conversations: {},
       settings: {
         ui: { sectionCollapsed: false, sidebarWidthEnabled: false, sidebarWidthPx: DEFAULT_SIDEBAR_WIDTH_PX },
-        webdav: { enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '' }
+        webdav: { enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false }
       }
     };
   }
 
-  function loadState() {
-    const direct = gmGet(STORAGE_KEY, '');
+  function loadState(info) {
+    const accountInfo = info || currentAccount || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account' };
+    const accountKey = activeProfileStorageKey(accountInfo);
+    const direct = gmGet(accountKey, '');
     if (direct) {
       try {
         const parsed = typeof direct === 'string' ? JSON.parse(direct) : direct;
-        return normalizeLoadedProfile(parsed, 'ChatGPT account');
+        return normalizeLoadedProfile(parsed, accountInfo.label || 'ChatGPT account');
       } catch (err) {
-        console.warn(APP_NAME, 'failed to parse current profile; trying legacy state', err);
+        console.warn(APP_NAME, 'failed to parse account profile', err);
       }
     }
 
-    // One-time compatibility migration from v0.2.x and earlier, which stored a profiles wrapper.
+    // v0.3.x migration: copy, never delete, the former single current profile into
+    // the first confidently identified account-specific storage slot.
+    const oldDirect = gmGet(STORAGE_KEY, '');
+    if (oldDirect) {
+      try {
+        const parsed = typeof oldDirect === 'string' ? JSON.parse(oldDirect) : oldDirect;
+        const migrated = normalizeLoadedProfile(parsed, accountInfo.label || 'ChatGPT account');
+        migrated.id = accountStableKey(accountInfo);
+        migrated.label = accountInfo.label || migrated.label;
+        gmSet(accountKey, JSON.stringify(migrated));
+        return migrated;
+      } catch (err) {
+        console.warn(APP_NAME, 'failed to migrate v0.3 profile', err);
+      }
+    }
+
     const legacy = gmGet(LEGACY_STORAGE_KEY, '');
     if (legacy) {
       try {
         const parsed = typeof legacy === 'string' ? JSON.parse(legacy) : legacy;
-        const info = getCurrentAccountInfo() || readLastAccountInfo();
-        const migrated = chooseMigrationProfile(parsed, info) || (parsed && (parsed.profile || parsed));
-        return normalizeLoadedProfile(migrated, info && info.label);
+        const migrated = chooseMigrationProfile(parsed, accountInfo) || (parsed && (parsed.profile || parsed));
+        return normalizeLoadedProfile(migrated, accountInfo.label);
       } catch (err) {
         console.warn(APP_NAME, 'failed to migrate legacy state; starting empty', err);
       }
     }
-
-    return makeEmptyState();
+    return makeEmptyState(accountInfo.label);
   }
 
   function normalizeLoadedProfile(data, label) {
@@ -915,7 +968,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     p.settings = p.settings && typeof p.settings === 'object' ? p.settings : {};
     delete p.selectedFolderId; // 兼容旧数据：选中高亮不再属于持久化 profile。
     p.settings.ui = Object.assign({ sectionCollapsed: false, sidebarWidthEnabled: false, sidebarWidthPx: DEFAULT_SIDEBAR_WIDTH_PX }, p.settings.ui || {});
-    p.settings.webdav = Object.assign({ enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '' }, p.settings.webdav || {});
+    p.settings.webdav = Object.assign({ enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false }, p.settings.webdav || {});
     if (!p.folders[ROOT_ID]) p.folders[ROOT_ID] = { id: ROOT_ID, name: 'root', parentId: '', childFolderIds: [], chatIds: [], color: DEFAULT_FOLDER_COLOR, collapsed: false, createdAt: nowIso(), updatedAt: nowIso() };
 
     for (const fid of Object.keys(p.folders)) {
@@ -1053,23 +1106,23 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
 
   function writeRevisionMeta(revision) {
     const meta = { revision: String(revision || ''), writerTabId: TAB_ID, writtenAt: nowIso() };
-    gmSet(REVISION_KEY, JSON.stringify(meta));
+    gmSet(activeRevisionStorageKey(), JSON.stringify(meta));
     return meta;
   }
 
   function currentStorageRevisionInfo() {
-    const meta = parseRevisionMeta(gmGet(REVISION_KEY, ''));
+    const meta = parseRevisionMeta(gmGet(activeRevisionStorageKey(), ''));
     if (meta.revision) return meta;
 
     // Backward-compatible fallback for profiles written by v0.3.13 or earlier.
     // This reads the large profile only when the small revision key is missing.
-    const stored = parseStoredProfileRaw(gmGet(STORAGE_KEY, ''));
+    const stored = parseStoredProfileRaw(gmGet(activeProfileStorageKey(), ''));
     if (!stored) return { revision: '', writer: '', writtenAt: '' };
     return { revision: getProfileStorageRevision(stored), writer: getProfileStorageWriter(stored), writtenAt: '' };
   }
 
   function currentStoredProfileInfo() {
-    const stored = parseStoredProfileRaw(gmGet(STORAGE_KEY, ''));
+    const stored = parseStoredProfileRaw(gmGet(activeProfileStorageKey(), ''));
     if (!stored) return { profile: null, revision: '', writer: '' };
     return { profile: stored, revision: getProfileStorageRevision(stored), writer: getProfileStorageWriter(stored) };
   }
@@ -1115,7 +1168,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
       if (reason === 'external-change') toast('另一个标签页有文件夹更新；完成当前编辑后会同步。');
       return false;
     }
-    return applyStoredProfileFromRaw(gmGet(STORAGE_KEY, ''), reason || 'newer-storage');
+    return applyStoredProfileFromRaw(gmGet(activeProfileStorageKey(), ''), reason || 'newer-storage');
   }
 
   function flushPendingPersist(webdav) {
@@ -1151,7 +1204,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
       // A newer state was written by another tab. Do not overwrite it with a stale
       // in-memory copy from this tab. In the normal single-editor workflow, adopting
       // the newer state is safer than keeping an old pending save alive.
-      applyStoredProfileFromRaw(gmGet(STORAGE_KEY, ''), 'newer-before-write');
+      applyStoredProfileFromRaw(gmGet(activeProfileStorageKey(), ''), 'newer-before-write');
       localUnsavedChanges = false;
       updateSyncStatusIcon();
       return;
@@ -1160,7 +1213,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     state.version = VERSION;
     const revision = markStorageRevision(state);
     lastSeenStorageRevision = revision;
-    gmSet(STORAGE_KEY, JSON.stringify(state));
+    gmSet(activeProfileStorageKey(), JSON.stringify(state));
     writeRevisionMeta(revision);
     localUnsavedChanges = false;
     if (options.webdav) scheduleAutoBackup(pendingPersistReason || 'change');
@@ -1253,18 +1306,79 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     return ids.length ? profiles[ids[0]] : null;
   }
 
-  function ensureActiveProfile() {
-    if (!state) state = loadState();
-    const detected = getCurrentAccountInfo();
-    const info = detected || currentAccount || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account' };
-    currentAccount = info;
-    if (detected) rememberAccountInfo(detected);
+  function isStrongAccountInfo(info) {
+    return !!(info && (info.accountId || info.email));
+  }
 
-    // v0.3.x: local storage keeps one current profile. ChatGPT account identity is only
-    // used to generate the remote WebDAV JSON filename.
-    state = normalizeProfile(state, CURRENT_PROFILE_ID, info.label || (state && state.label) || 'ChatGPT account');
-    state.id = CURRENT_PROFILE_ID;
-    state.label = info.label || state.label || 'ChatGPT account';
+  function stopWebdavTimers() {
+    if (pendingWebdavTimer) clearTimeout(pendingWebdavTimer);
+    pendingWebdavTimer = null;
+    if (periodicWebdavTimer) clearInterval(periodicWebdavTimer);
+    periodicWebdavTimer = null;
+  }
+
+  function activateAccount(info, initial) {
+    if (!info || !info.id || accountSwitching) return state;
+    accountSwitching = true;
+    try {
+      if (!initial && state) {
+        if (localUnsavedChanges) persistNow({ webdav: false });
+        if (dirtySincePush) {
+          console.warn(APP_NAME, 'account switched with unsynchronized local changes; automatic upload paused');
+          toast('检测到 ChatGPT 账号切换；旧账号存在未同步修改，已暂停自动上传。');
+        }
+      }
+      stopWebdavTimers();
+      currentAccount = info;
+      lockedAccountKey = accountStableKey(info);
+      rememberAccountInfo(info);
+      state = loadState(info);
+      state = normalizeProfile(state, lockedAccountKey, info.label || 'ChatGPT account');
+      state.id = lockedAccountKey;
+      state.label = info.label || state.label || 'ChatGPT account';
+      selectedFolderId = ROOT_ID;
+      dirtySincePush = false;
+      localUnsavedChanges = false;
+      lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
+      storageSyncBound = false;
+      setupCrossTabStorageSync();
+      restartPeriodicBackup();
+      if (!initial) {
+        queueRender();
+        applySidebarWidth();
+        setTimeout(() => checkRemoteUpdate(false, 'account-switch'), 800);
+      }
+      return state;
+    } finally {
+      accountSwitching = false;
+    }
+  }
+
+  function ensureActiveProfile() {
+    const detected = getCurrentAccountInfo();
+    if (!currentAccount) {
+      const first = detected || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account', email: '', accountId: '' };
+      return activateAccount(first, true);
+    }
+    if (detected && isStrongAccountInfo(detected)) {
+      const key = accountStableKey(detected);
+      if (key !== lockedAccountKey) {
+        if (pendingAccountKey === key) pendingAccountHits += 1;
+        else { pendingAccountKey = key; pendingAccountHits = 1; }
+        // Require two observations to avoid a transient hydration identity switching profiles.
+        if (pendingAccountHits >= 2) {
+          pendingAccountKey = '';
+          pendingAccountHits = 0;
+          return activateAccount(detected, false);
+        }
+      } else {
+        pendingAccountKey = '';
+        pendingAccountHits = 0;
+        currentAccount = detected;
+        rememberAccountInfo(detected);
+      }
+    }
+    if (!state) state = loadState(currentAccount);
     return state;
   }
 
@@ -1430,6 +1544,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     if (!parent) return false;
     sidebarEl = findSidebarParent() || parent;
     if (!rootEl) {
+      document.querySelectorAll('#cgfm-root').forEach(el => el.remove());
       rootEl = document.createElement('div');
       rootEl.id = 'cgfm-root';
       rootEl.setAttribute('data-cgfm-version', VERSION);
@@ -2532,7 +2647,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
       copy.settings.webdav.password = '';
     }
     const acct = currentAccount || getCurrentAccountInfo() || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account' };
-    return { app: APP_NAME, version: VERSION, exportedAt: nowIso(), account: { id: acct.id, label: acct.label || 'ChatGPT account' }, profile: copy };
+    return { app: APP_NAME, version: VERSION, exportedAt: nowIso(), account: { id: acct.id, label: acct.label || 'ChatGPT account' }, sync: { revision: Number((p.settings.webdav || {}).remoteRevision || 0) + 1, updatedAt: nowIso(), deviceId: DEVICE_ID }, profile: copy };
   }
 
   function exportJson() {
@@ -2603,12 +2718,30 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     return currentAccount || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account', email: '', accountId: '' };
   }
 
-  function currentWebdavFileName() {
-    const acct = getWebdavAccountInfo();
+  function readRemoteFileMap() {
+    try {
+      const raw = gmGet(ACCOUNT_FILE_MAP_KEY, '{}');
+      const map = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return map && typeof map === 'object' ? map : {};
+    } catch (_) { return {}; }
+  }
+
+  function defaultWebdavFileName(acct) {
     const emailPart = sanitizeEmailFilePart(acct.email || '');
-    const accountPart = sanitizeFilePart(String(acct.accountId || '').slice(0, 8));
+    const accountPart = acct.accountId ? sanitizeFilePart(String(acct.accountId).slice(0, 8)) : '';
     if (emailPart) return emailPart + (accountPart ? '-' + accountPart : '') + '.json';
     return sanitizeFilePart(acct.id || 'acct_default') + '.json';
+  }
+
+  function currentWebdavFileName() {
+    const acct = currentAccount || getWebdavAccountInfo();
+    const key = accountStableKey(acct);
+    const map = readRemoteFileMap();
+    if (map[key] && /\.json$/i.test(map[key])) return map[key];
+    const fileName = defaultWebdavFileName(acct);
+    map[key] = fileName;
+    gmSet(ACCOUNT_FILE_MAP_KEY, JSON.stringify(map));
+    return fileName;
   }
 
   function normalizeWebdavFolderUrl(raw) {
@@ -2646,36 +2779,50 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     catch (err) { if (!isIgnorableMkcolError(err)) throw err; }
   }
 
-  async function putDavJson(settings, body) {
+  function responseHeader(res, name) {
+    const raw = String((res && res.responseHeaders) || '');
+    const match = raw.match(new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':\\s*(.+)$', 'im'));
+    return match ? match[1].trim() : '';
+  }
+
+  async function putDavJson(settings, body, options) {
+    const opts = Object.assign({ force: false, createOnly: false }, options || {});
     const fileUrl = effectiveWebdavFileUrl(settings);
     if (!fileUrl) throw new Error('Missing WebDAV folder URL');
+    const headers = { 'Content-Type': 'application/json;charset=utf-8' };
+    if (opts.createOnly) headers['If-None-Match'] = '*';
+    else if (!opts.force && settings.remoteEtag) headers['If-Match'] = settings.remoteEtag;
     try {
-      return await davRequest('PUT', fileUrl, body, settings, { 'Content-Type': 'application/json;charset=utf-8' });
+      return await davRequest('PUT', fileUrl, body, settings, headers);
     } catch (err) {
       if (err && err.status === 409) {
         await tryMkcol(webdavFolderLabel(settings), settings);
-        return await davRequest('PUT', fileUrl, body, settings, { 'Content-Type': 'application/json;charset=utf-8' });
+        return await davRequest('PUT', fileUrl, body, settings, headers);
+      }
+      if (err && (err.status === 412 || err.status === 409)) {
+        err.isConflict = true;
       }
       throw err;
     }
   }
 
-  async function getOrCreateDavJson(settings, body) {
+  async function getDavJson(settings) {
     const fileUrl = effectiveWebdavFileUrl(settings);
     if (!fileUrl) throw new Error('Missing WebDAV folder URL');
-    try {
-      const res = await davRequest('GET', fileUrl, null, settings);
-      res.created = false;
-      return res;
-    } catch (err) {
-      if (err && err.status === 404) {
-        const put = await putDavJson(settings, body);
-        put.created = true;
-        return put;
-      }
+    return davRequest('GET', fileUrl, null, settings);
+  }
+
+  async function headDavJson(settings) {
+    const fileUrl = effectiveWebdavFileUrl(settings);
+    if (!fileUrl) throw new Error('Missing WebDAV folder URL');
+    try { return await davRequest('HEAD', fileUrl, null, settings); }
+    catch (err) {
+      // Some WebDAV servers disable HEAD; a GET remains compatible.
+      if (err && (err.status === 405 || err.status === 501)) return getDavJson(settings);
       throw err;
     }
   }
+
 
   // ---------------------------------------------------------------------------
   // 9. Sidebar width, sync status and settings modal
@@ -2786,7 +2933,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
         <h2>WebDAV 备份</h2>
         <div class="cgfm-modal-row"><input id="cgfm-dav-enabled" type="checkbox"><span>本地修改后自动备份</span></div>
         <label for="cgfm-dav-url">WebDAV 文件夹地址</label><input id="cgfm-dav-url" type="text" placeholder="https://example.com/dav/chatgpt-folders">
-        <div style="margin:6px 0 8px;color:var(--text-secondary,#777);font-size:12px">当前账号文件：<span id="cgfm-dav-file"></span></div>
+        <label for="cgfm-dav-file">当前账号远程 JSON 文件名</label><input id="cgfm-dav-file" type="text" placeholder="account-name.json"><div style="margin:6px 0 8px;color:var(--text-secondary,#777);font-size:12px">仅影响当前 ChatGPT 账号；切换账号后会使用该账号自己的映射。</div>
         <label for="cgfm-dav-username">用户名</label><input id="cgfm-dav-username" type="text" autocomplete="username">
         <label for="cgfm-dav-password">密码 / 应用密码</label><input id="cgfm-dav-password" type="password" autocomplete="current-password">
         <label for="cgfm-dav-debounce">自动备份延迟（毫秒）</label><input id="cgfm-dav-debounce" type="number" min="1000" step="1000">
@@ -2828,7 +2975,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     byId('cgfm-sidebar-width-range').addEventListener('change', applyWidthFromControls);
     byId('cgfm-sidebar-width-range').addEventListener('pointerup', applyWidthFromControls);
     byId('cgfm-sidebar-width-enabled').addEventListener('change', applyWidthFromControls);
-    byId('cgfm-dav-url').addEventListener('input', () => { byId('cgfm-dav-file').textContent = currentWebdavFileName(); });
+    byId('cgfm-dav-url').addEventListener('input', () => {});
     byId('cgfm-dav-cancel').addEventListener('click', cancelSettingsModal);
     byId('cgfm-dav-save').addEventListener('click', saveSettingsModal);
     byId('cgfm-dav-push').addEventListener('click', () => runSettingsButton('cgfm-dav-push', () => webdavPush(true)));
@@ -2844,7 +2991,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     const byId = modalById;
     byId('cgfm-dav-enabled').checked = !!w.enabled;
     byId('cgfm-dav-url').value = w.url ? normalizeWebdavFolderUrl(w.url).replace(/\/$/, '') : '';
-    byId('cgfm-dav-file').textContent = currentWebdavFileName();
+    byId('cgfm-dav-file').value = currentWebdavFileName();
     byId('cgfm-dav-username').value = w.username || '';
     byId('cgfm-dav-password').value = w.password || '';
     byId('cgfm-dav-debounce').value = String(w.debounceMs || DEFAULT_DEBOUNCE_MS);
@@ -2878,6 +3025,10 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     w.password = byId('cgfm-dav-password').value;
     w.debounceMs = Math.max(1000, Number(byId('cgfm-dav-debounce').value || DEFAULT_DEBOUNCE_MS));
     w.intervalMs = Math.max(60000, Number(byId('cgfm-dav-interval').value || 15) * 60000);
+    const requestedFile = sanitizeFilePart(String(byId('cgfm-dav-file').value || '').replace(/\.json$/i, '')) + '.json';
+    const fileMap = readRemoteFileMap();
+    fileMap[accountStableKey(currentAccount)] = requestedFile;
+    gmSet(ACCOUNT_FILE_MAP_KEY, JSON.stringify(fileMap));
     p.settings.webdav = w;
     p.settings.ui.sidebarWidthEnabled = !!byId('cgfm-sidebar-width-enabled').checked;
     p.settings.ui.sidebarWidthPx = clamp(Number(byId('cgfm-sidebar-width-range').value || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX);
@@ -2907,10 +3058,18 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
       setSyncStatus('syncing');
       const tmp = { url: modalById('cgfm-dav-url').value.trim(), username: modalById('cgfm-dav-username').value, password: modalById('cgfm-dav-password').value };
       if (!normalizeWebdavFolderUrl(tmp.url)) throw new Error('Missing WebDAV folder URL');
-      const body = JSON.stringify(exportPayload(getProfile()), null, 2);
-      const res = await getOrCreateDavJson(tmp, body);
-      setSyncStatus('idle');
-      toast(res.created ? '测试连接成功：已创建当前账号文件。' : '测试连接成功：当前账号文件已存在。');
+      try {
+        await headDavJson(tmp);
+        setSyncStatus('idle');
+        toast('测试成功：当前账号远程文件已存在。');
+      } catch (err) {
+        if (err && err.status === 404) {
+          setSyncStatus('dirty');
+          toast('连接成功，但当前账号远程文件尚未创建；首次推送时创建。');
+          return;
+        }
+        throw err;
+      }
     } catch (err) {
       setSyncStatus('error');
       toast('测试连接失败：' + safeError(err));
@@ -2923,32 +3082,101 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     settingsWidthPreviewApplied = false;
   }
 
-  async function webdavPush(manual) {
-    persistNow({ webdav: false });
+  async function withWebdavOperation(name, task) {
+    if (webdavOperation) throw new Error('另一个 WebDAV 操作正在进行：' + webdavOperation);
+    webdavOperation = name;
+    try { return await task(); }
+    finally { webdavOperation = null; }
+  }
+
+  async function webdavPush(manual, force) {
+    if (localUnsavedChanges || pendingPersistTimer) persistNow({ webdav: false });
     const p = getProfile();
     const w = p.settings.webdav || {};
     if (!manual && !w.enabled) return;
     if (!normalizeWebdavFolderUrl(w.url)) { if (manual) toast('请先填写 WebDAV 文件夹地址。'); return; }
     try {
-      setSyncStatus('syncing');
-      w.lastStatus = 'pushing...';
-      const body = JSON.stringify(exportPayload(p), null, 2);
-      const res = await putDavJson(w, body);
-      w.lastPushAt = nowIso();
-      w.lastStatus = 'push OK ' + res.status + ' at ' + shortTime(w.lastPushAt);
-      w.lastError = '';
-      dirtySincePush = false;
-      setSyncStatus('idle');
-      schedulePersist('webdav-push-ok', { webdav: false, touch: false });
-      if (manual) toast('WebDAV 推送完成：' + currentWebdavFileName());
+      await withWebdavOperation('push', async () => {
+        setSyncStatus('syncing');
+        w.lastStatus = 'pushing...';
+        if (!w.remoteEtag && !force) {
+          try {
+            const existing = await getDavJson(w);
+            w.remoteEtag = responseHeader(existing, 'ETag') || '';
+            w.remoteRevision = Number((JSON.parse(existing.responseText || '{}').sync || {}).revision || 0);
+            const conflict = new Error('远程文件已存在，但本设备尚未建立同步基线。请先拉取。');
+            conflict.isConflict = true; conflict.status = 412;
+            throw conflict;
+          } catch (preflightErr) {
+            if (!(preflightErr && preflightErr.status === 404)) throw preflightErr;
+          }
+        }
+        const payload = exportPayload(p);
+        const body = JSON.stringify(payload, null, 2);
+        let res;
+        try {
+          res = await putDavJson(w, body, { force: !!force });
+        } catch (err) {
+          if (err && err.status === 404) res = await putDavJson(w, body, { createOnly: true });
+          else throw err;
+        }
+        w.remoteEtag = responseHeader(res, 'ETag') || w.remoteEtag || '';
+        w.remoteRevision = Number(payload.sync && payload.sync.revision || w.remoteRevision || 0);
+        w.lastPushAt = nowIso();
+        w.lastStatus = 'push OK ' + res.status + ' at ' + shortTime(w.lastPushAt);
+        w.lastError = '';
+        w.conflict = false;
+        dirtySincePush = false;
+        setSyncStatus('idle');
+        schedulePersist('webdav-push-ok', { webdav: false, touch: false });
+        if (manual) toast('WebDAV 推送完成：' + currentWebdavFileName());
+      });
     } catch (err) {
       w.lastError = safeError(err);
-      w.lastStatus = 'push failed';
+      w.lastStatus = err && (err.isConflict || err.status === 412) ? 'conflict' : 'push failed';
+      w.conflict = !!(err && (err.isConflict || err.status === 412));
       setSyncStatus('error');
       schedulePersist('webdav-push-fail', { webdav: false, touch: false });
-      if (manual) toast('WebDAV 推送失败：' + w.lastError);
-      else console.warn(APP_NAME, 'auto WebDAV push failed', err);
+      const msg = w.conflict ? '远程文件已被另一台设备更新，已阻止覆盖。请先拉取或导出本地数据。' : ('WebDAV 推送失败：' + w.lastError);
+      if (manual) toast(msg); else console.warn(APP_NAME, msg, err);
     }
+  }
+
+  async function applyRemoteResponse(res, manual) {
+    const p = getProfile();
+    const w = p.settings.webdav || {};
+    const data = JSON.parse(res.responseText || '{}');
+    const profile = data.profile || data;
+    if (!profile || !profile.folders || !profile.conversations) throw new Error('远程 JSON 不是有效配置。');
+    if (manual && !confirm('用远程 WebDAV JSON 替换当前账号的本地文件夹数据？不会删除 ChatGPT 原聊天。')) return false;
+    if (!manual && dirtySincePush) {
+      w.conflict = true;
+      setSyncStatus('error');
+      toast('云端与本地均有修改，已暂停自动同步。');
+      return false;
+    }
+    const currentWebdav = JSON.parse(JSON.stringify(w));
+    const normalized = normalizeProfile(profile, p.id, p.label);
+    normalized.id = p.id;
+    normalized.label = p.label;
+    const remoteWebdav = normalized.settings.webdav || {};
+    normalized.settings.webdav = Object.assign({}, remoteWebdav, currentWebdav, {
+      remoteEtag: responseHeader(res, 'ETag') || currentWebdav.remoteEtag || '',
+      remoteRevision: Number(data.sync && data.sync.revision || currentWebdav.remoteRevision || 0),
+      lastPullAt: nowIso(),
+      lastRemoteCheckAt: nowIso(),
+      lastStatus: 'pull OK ' + res.status + ' at ' + shortTime(nowIso()),
+      lastError: '', conflict: false
+    });
+    state = normalized;
+    if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
+    dirtySincePush = false;
+    setSyncStatus('idle');
+    queueRender();
+    applySidebarWidth();
+    restartPeriodicBackup();
+    schedulePersist('webdav-pull-ok', { webdav: false, touch: false });
+    return true;
   }
 
   async function webdavPull(manual) {
@@ -2956,51 +3184,51 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     const w = p.settings.webdav || {};
     if (!normalizeWebdavFolderUrl(w.url)) { if (manual) toast('请先填写 WebDAV 文件夹地址。'); return; }
     try {
-      setSyncStatus('syncing');
-      const localBody = JSON.stringify(exportPayload(p), null, 2);
-      const res = await getOrCreateDavJson(w, localBody);
-      if (res.created) {
-        w.lastPullAt = nowIso();
-        w.lastStatus = 'remote created ' + res.status + ' at ' + shortTime(w.lastPullAt);
-        w.lastError = '';
-        dirtySincePush = false;
-        setSyncStatus('idle');
-        schedulePersist('webdav-create-ok', { webdav: false, touch: false });
-        if (manual) toast('远程账号文件不存在，已创建：' + currentWebdavFileName());
-        return;
-      }
-      const data = JSON.parse(res.responseText || '{}');
-      const profile = data.profile || data;
-      if (!profile || !profile.folders || !profile.conversations) throw new Error('远程 JSON 不是有效配置。');
-      if (manual && !confirm('用远程 WebDAV JSON 替换当前本地文件夹数据？不会删除 ChatGPT 原聊天。')) return;
-      const currentWebdav = JSON.parse(JSON.stringify(w));
-      const normalized = normalizeProfile(profile, p.id, p.label);
-      normalized.id = p.id;
-      normalized.label = p.label;
-      const remoteWebdav = normalized.settings.webdav || {};
-      normalized.settings.webdav = Object.assign({}, remoteWebdav, {
-        url: currentWebdav.url,
-        username: currentWebdav.username,
-        password: currentWebdav.password,
-        lastPullAt: nowIso(),
-        lastStatus: 'pull OK ' + res.status + ' at ' + shortTime(nowIso()),
-        lastError: ''
+      await withWebdavOperation('pull', async () => {
+        setSyncStatus('syncing');
+        const res = await getDavJson(w);
+        const applied = await applyRemoteResponse(res, manual);
+        if (manual && applied) toast('WebDAV 拉取完成：' + currentWebdavFileName());
       });
-      state = normalized;
-      if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
-      dirtySincePush = false;
-      setSyncStatus('idle');
-      queueRender();
-      applySidebarWidth();
-      restartPeriodicBackup();
-      schedulePersist('webdav-pull-ok', { webdav: false, touch: false });
-      if (manual) toast('WebDAV 拉取完成：' + currentWebdavFileName());
     } catch (err) {
       w.lastError = safeError(err);
       w.lastStatus = 'pull failed';
       setSyncStatus('error');
       schedulePersist('webdav-pull-fail', { webdav: false, touch: false });
-      if (manual) toast('WebDAV 拉取失败：' + w.lastError);
+      if (manual) {
+        if (err && err.status === 404) toast('远程文件不存在：' + currentWebdavFileName() + '。首次推送可创建该文件。');
+        else toast('WebDAV 拉取失败：' + w.lastError);
+      }
+    }
+  }
+
+  async function checkRemoteUpdate(showToast, reason) {
+    const p = getProfile();
+    const w = p.settings.webdav || {};
+    if (!w.enabled || !normalizeWebdavFolderUrl(w.url) || webdavOperation) return;
+    if (Date.now() - lastRemoteCheckAt < 15000) return;
+    lastRemoteCheckAt = Date.now();
+    try {
+      await withWebdavOperation('check', async () => {
+        const res = await headDavJson(w);
+        const etag = responseHeader(res, 'ETag');
+        w.lastRemoteCheckAt = nowIso();
+        if (!etag) return;
+        if (!w.remoteEtag) { w.remoteEtag = etag; schedulePersist('webdav-etag-baseline', { webdav: false, touch: false }); return; }
+        if (etag === w.remoteEtag) return;
+        if (dirtySincePush || localUnsavedChanges) {
+          w.conflict = true;
+          setSyncStatus('error');
+          if (showToast) toast('检测到云端新版本，但本地也有修改；已停止自动覆盖。');
+          return;
+        }
+        const full = (res.responseText ? res : await getDavJson(w));
+        await applyRemoteResponse(full, false);
+        if (showToast) toast('已自动同步云端文件夹更新。');
+      });
+    } catch (err) {
+      if (err && err.status === 404) return;
+      console.warn(APP_NAME, 'remote update check failed:', reason || '', err);
     }
   }
 
@@ -3026,19 +3254,20 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     const w = getProfile().settings.webdav || {};
     if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) return;
     const interval = Math.max(60000, Number(w.intervalMs || DEFAULT_INTERVAL_MS));
-    periodicWebdavTimer = setInterval(() => { if (dirtySincePush) webdavPush(false); }, interval);
+    periodicWebdavTimer = setInterval(() => {
+      if (dirtySincePush) webdavPush(false);
+      else checkRemoteUpdate(false, 'interval');
+    }, interval);
   }
 
   function davRequest(method, url, body, settings, extraHeaders) {
     return new Promise((resolve, reject) => {
       const headers = Object.assign({}, extraHeaders || {});
       if (settings && settings.username) headers.Authorization = 'Basic ' + base64(settings.username + ':' + (settings.password || ''));
-      GM_xmlhttpRequest({
-        method,
-        url,
-        data: body || undefined,
-        headers,
-        timeout: 30000,
+      const details = {
+        method, url, data: body || undefined, headers, timeout: 30000,
+        user: settings && settings.username ? settings.username : undefined,
+        password: settings && settings.username ? (settings.password || '') : undefined,
         onload: res => {
           if (res.status >= 200 && res.status < 300) resolve(res);
           else {
@@ -3046,12 +3275,18 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
             err.status = res.status;
             err.statusText = res.statusText || '';
             err.responseText = res.responseText || '';
+            err.responseHeaders = res.responseHeaders || '';
             reject(err);
           }
         },
-        onerror: () => reject(new Error('Network error')),
+        onerror: err => reject(new Error('Network error' + (err && err.error ? ': ' + err.error : ''))),
         ontimeout: () => reject(new Error('Request timed out'))
-      });
+      };
+      try {
+        if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest(details);
+        else if (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function') GM.xmlHttpRequest(details).catch(reject);
+        else reject(new Error('当前油猴扩展不支持 GM_xmlhttpRequest'));
+      } catch (err) { reject(err); }
     });
   }
 
@@ -3077,7 +3312,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
     try {
       // Performance-first design: listen only to the tiny revision key. The large
       // STORAGE_KEY is read and parsed only after a newer revision is observed.
-      GM_addValueChangeListener(REVISION_KEY, (_key, _oldValue, newValue, remote) => {
+      GM_addValueChangeListener(activeRevisionStorageKey(), (_key, _oldValue, newValue, remote) => {
         if (!remote) return; // Ignore this tab's own write.
         const meta = parseRevisionMeta(newValue);
         const rev = meta.revision;
@@ -3240,7 +3475,6 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
 
   function boot() {
     try {
-      state = loadState();
       ensureActiveProfile();
       lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
       setupCrossTabStorageSync();
@@ -3252,13 +3486,14 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
       const idle = window.requestIdleCallback || (fn => setTimeout(fn, 3500));
       idle(() => { try { ensureSettingsModal(); } catch (_) {} });
       restartPeriodicBackup();
+      setTimeout(() => checkRemoteUpdate(false, 'boot'), 1800);
       window.addEventListener('beforeunload', () => flushPendingPersist(false));
       window.addEventListener('pagehide', () => flushPendingPersist(false));
-      window.addEventListener('focus', () => scheduleResumeRecovery('focus'), { passive: true });
-      window.addEventListener('pageshow', () => scheduleResumeRecovery('pageshow'), { passive: true });
+      window.addEventListener('focus', () => { scheduleResumeRecovery('focus'); setTimeout(() => checkRemoteUpdate(true, 'focus'), 500); }, { passive: true });
+      window.addEventListener('pageshow', () => { scheduleResumeRecovery('pageshow'); setTimeout(() => checkRemoteUpdate(false, 'pageshow'), 700); }, { passive: true });
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) flushPendingPersist(false);
-        else scheduleResumeRecovery('visibilitychange');
+        else { scheduleResumeRecovery('visibilitychange'); setTimeout(() => checkRemoteUpdate(false, 'visibilitychange'), 700); }
       }, { passive: true });
     } catch (err) {
       console.error(APP_NAME, 'boot failed', err);
