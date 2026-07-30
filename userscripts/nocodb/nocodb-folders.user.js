@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.1.0
+// @version      11.1.1
 // @description  Compact NocoDB folder toolbar with guided WebDAV first sync, live feedback, conflict protection, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
@@ -25,7 +25,7 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.1.0';
+    const SCRIPT_VERSION = '11.1.1';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
@@ -1244,8 +1244,8 @@
         :root { --ndf-base-pad: 12px; }
         #ndf-folder-toolbar-container { margin: 8px 0; border-bottom: 1px dashed #ddd; }
         .ndf-folder-toolbar { padding:4px 12px; display:flex; align-items:center; gap:8px; }
-        .ndf-add-folder-btn { width:28px; height:28px; flex:0 0 28px; padding:0; border:0; border-radius:6px; background:transparent; cursor:pointer; color:#3366ff; display:inline-flex; align-items:center; justify-content:center; }
-        .ndf-add-folder-btn:hover { background:#f0f5ff; color:#1677ff; }
+        .ndf-add-folder-btn { flex:0 0 auto; padding:0; border:0; background:transparent; cursor:pointer; color:#3366ff; font:inherit; font-size:13px; font-weight:700; display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+        .ndf-add-folder-btn:hover { color:#1677ff; }
         .ndf-add-folder-btn:focus-visible { outline:2px solid #91caff; outline-offset:1px; }
         .ndf-toolbar-right { margin-left:auto; display:flex; align-items:center; gap:12px; color:#666; }
         .ndf-action-btn { cursor:pointer; opacity:.72; transition:.2s; display:flex; align-items:center; justify-content:center; }
@@ -1717,7 +1717,7 @@
                 toolbar.id = 'ndf-folder-toolbar-container';
                 toolbar.innerHTML = `
                     <div class="ndf-folder-toolbar">
-                        <button type="button" class="ndf-add-folder-btn" title="Create New Folder" aria-label="Create New Folder">${ICON_ADD}</button>
+                        <button type="button" class="ndf-add-folder-btn" title="Create New Folder" aria-label="Create New Folder">${ICON_ADD}<span>Folder</span></button>
                         <div class="ndf-toolbar-right">
                             <span class="ndf-action-btn" id="ndf-btn-import" title="Import Local Backup">${ICON_IMPORT}</span>
                             <span class="ndf-action-btn" id="ndf-btn-export" title="Export Local Backup">${ICON_EXPORT}</span>
