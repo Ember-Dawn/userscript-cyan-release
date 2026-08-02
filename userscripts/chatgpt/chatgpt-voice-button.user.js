@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      2.1.0
+// @version      2.1.1
 // @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并为官方朗读音频提供紧凑悬浮播放器、进度控制、倍速和快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -35,6 +35,7 @@
  - 使用 MutationObserver 处理 ChatGPT 单页应用中的动态回答和重新渲染。
  - 通过捕获媒体 play 事件和轻量周期检查识别当前官方音频。
  - 临时监听器、菜单隐藏状态和操作超时均会及时清理。
+ - 关闭后再次主动朗读会创建新的播放会话，旧关闭状态不会误伤新播放。
 */
 
 (() => {
@@ -87,7 +88,9 @@
   let minimizeButton = null;
   let audioScanTimer = null;
   let dismissedAudio = null;
-  let reopenRequestUntil = 0;
+  let playbackSessionId = 0;
+  let playbackSessionState = 'idle';
+  let openingRequestUntil = 0;
 
   let seekStep = readNumberSetting(STORAGE_SEEK_STEP, 3, SEEK_STEP_OPTIONS);
   let playbackRate = readNumberSetting(
@@ -569,8 +572,15 @@
       return;
     }
 
-    reopenRequestUntil = Date.now() + 10000;
-    if (dismissedAudio === currentAudio) dismissedAudio = null;
+    playbackSessionId += 1;
+    playbackSessionState = 'opening';
+    openingRequestUntil = Date.now() + 10000;
+    dismissedAudio = null;
+
+    if (activeOperation) {
+      finishOperation(activeOperation);
+    }
+
     startOfficialVoiceAction(button, moreButton);
   }
 
@@ -811,28 +821,74 @@
     currentAudio = null;
   }
 
+  function canShowAudio(audio) {
+    if (!(audio instanceof HTMLAudioElement)) return false;
+
+    if (playbackSessionState === 'dismissed') {
+      return audio !== dismissedAudio;
+    }
+
+    return true;
+  }
+
+  function activatePlaybackSession(audio) {
+    if (!(audio instanceof HTMLAudioElement)) return false;
+
+    if (playbackSessionState === 'opening') {
+      if (Date.now() > openingRequestUntil) {
+        playbackSessionState = 'idle';
+        openingRequestUntil = 0;
+      } else {
+        playbackSessionState = 'active';
+        openingRequestUntil = 0;
+        dismissedAudio = null;
+        return true;
+      }
+    }
+
+    if (playbackSessionState === 'dismissed' && audio === dismissedAudio) {
+      return false;
+    }
+
+    playbackSessionState = 'active';
+    dismissedAudio = null;
+    return true;
+  }
+
   function handleAudioStateEvent(event) {
     if (event.currentTarget !== currentAudio) return;
-    if (event.type === 'play') {
-      if (dismissedAudio === currentAudio && Date.now() <= reopenRequestUntil) {
-        dismissedAudio = null;
-      }
-      if (dismissedAudio !== currentAudio) showPlayer();
+
+    if (event.type === 'play' && activatePlaybackSession(currentAudio)) {
+      showPlayer();
     }
+
+    if (event.type === 'ended' && playbackSessionState === 'active') {
+      playbackSessionState = 'idle';
+    }
+
     updatePlayerState();
   }
 
   function showPlayer() {
+    if (!canShowAudio(currentAudio)) return;
     createPlayer();
     player.hidden = false;
   }
 
   function closePlayer() {
+    playbackSessionId += 1;
+    playbackSessionState = 'dismissed';
+    openingRequestUntil = 0;
+
+    if (activeOperation) {
+      finishOperation(activeOperation);
+    }
+
     if (currentAudio) {
       dismissedAudio = currentAudio;
       if (!currentAudio.paused) currentAudio.pause();
     }
-    reopenRequestUntil = 0;
+
     if (player) player.hidden = true;
   }
 
@@ -964,14 +1020,22 @@
   function handleDocumentPlay(event) {
     const audio = event.target;
     if (!(audio instanceof HTMLAudioElement)) return;
-    if (dismissedAudio === audio && Date.now() <= reopenRequestUntil) dismissedAudio = null;
-    bindAudio(audio, dismissedAudio !== audio);
+
+    const shouldShow = activatePlaybackSession(audio);
+    bindAudio(audio, shouldShow);
   }
 
   function scanForAudio() {
     const audio = findBestAudio();
     if (!audio || audio.paused || audio.ended) return;
-    bindAudio(audio, dismissedAudio !== audio);
+
+    if (playbackSessionState === 'opening' && Date.now() > openingRequestUntil) {
+      playbackSessionState = 'idle';
+      openingRequestUntil = 0;
+    }
+
+    const shouldShow = playbackSessionState !== 'dismissed' && canShowAudio(audio);
+    bindAudio(audio, shouldShow);
   }
 
   function startAudioTracking() {
