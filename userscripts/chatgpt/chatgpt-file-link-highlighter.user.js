@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         ChatGPT 文件直链下载按钮助手
+// @name         ChatGPT 文件链接高亮助手
 // @namespace    https://chatgpt.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-direct-download.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-direct-download.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-file-link-highlighter.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-file-link-highlighter.user.js
 // @version      1.0.0
 // @description  高亮 ChatGPT 回答中的文件链接和官方文件下载入口，使文件相关操作更易识别。
 // @author       Penghao
@@ -22,9 +22,9 @@
    - 高亮 ChatGPT 官方提供的“下载”或“Download”入口。
    - 不创建额外下载按钮，不调用 ChatGPT 内部下载接口，也不改变原有点击行为。
 
-2. 兼容说明
-   - 文件路径保持不变，以便已安装用户继续自动更新。
-   - @name 和 @namespace 保持旧值，避免 Tampermonkey 将本次重构识别为另一份脚本。
+2. 版本说明
+   - v1.0.0 将脚本正式更名为“ChatGPT 文件链接高亮助手”。
+   - 现行文件改为 chatgpt-file-link-highlighter.user.js。
    - v0.5.0 的原始直链下载实现保存在：
      archive/userscripts/chatgpt-direct-download-v0.5.0.user.js
 

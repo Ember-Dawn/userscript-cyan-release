@@ -36,7 +36,7 @@ userscript-cyan-release/
 |---|---|---|
 | ChatGPT 宽屏 | [`chatgpt-wide.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-wide.user.js) | 自动放宽 ChatGPT 的对话区和输入区。 |
 | ChatGPT 文件夹 | [`chatgpt-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js) | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。 |
-| ChatGPT 文件链接高亮助手 | [`chatgpt-direct-download.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-direct-download.user.js) | 高亮助手回答中的文件链接和 ChatGPT 官方下载入口。 |
+| ChatGPT 文件链接高亮助手 | [`chatgpt-file-link-highlighter.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-file-link-highlighter.user.js) | 高亮助手回答中的文件链接和 ChatGPT 官方下载入口。 |
 | ChatGPT GitHub 自动允许助手 | [`chatgpt-auto-allow-github.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-auto-allow-github.user.js) | 自动处理 ChatGPT 的 GitHub 权限卡片。 |
 
 ### GitHub
