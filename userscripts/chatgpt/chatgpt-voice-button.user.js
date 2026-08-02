@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      2.1.2
-// @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并为官方朗读音频提供紧凑悬浮播放器、进度控制、倍速和快捷键。
+// @version      2.2.0
+// @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并提供带消息切换、进度控制、倍速和快捷键的紧凑悬浮播放器。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -28,7 +28,7 @@
  - 前进/后退步长可选 3、5、10 秒，默认 3 秒，并保存到 localStorage。
 
 3. 键盘快捷键
- - 播放器打开时：左/右方向键后退或前进，空格播放或暂停，Esc 关闭并暂停。
+ - 播放器打开时：上/下方向键切换上一条或下一条助手消息，左/右方向键后退或前进，空格播放或暂停，Esc 关闭并暂停。
  - 焦点位于输入框、文本域、可编辑区域或选择框时，不接管快捷键。
 
 4. 性能与可靠性
@@ -37,6 +37,7 @@
  - 临时监听器、菜单隐藏状态和操作超时均会及时清理。
  - 关闭后再次主动朗读会创建新的播放会话，旧关闭状态不会误伤新播放。
  - 内部菜单清理不再派发全局 Escape，避免误触播放器关闭快捷键。
+ - 消息列表仅在切换时即时扫描；切换聊天、追加消息和重新回答时会重新解析当前可见消息。
 */
 
 (() => {
@@ -70,6 +71,8 @@
   const ITEM_ACTIVATION_DELAY_MS = 32;
   const MENU_CLOSE_DELAY_MS = 100;
   const AUDIO_SCAN_INTERVAL_MS = 500;
+  const MESSAGE_SWITCH_TIMEOUT_MS = 12000;
+  const STATUS_DISPLAY_MS = 1500;
 
   let activeOperation = null;
   let scanFrame = null;
@@ -87,6 +90,16 @@
   let seekStepSelect = null;
   let speedSelect = null;
   let minimizeButton = null;
+  let previousMessageButton = null;
+  let nextMessageButton = null;
+  let playerStatus = null;
+  let statusTimer = null;
+  let messageSwitchTimer = null;
+  let navigationInProgress = false;
+  let currentMessageContext = null;
+  let pendingMessageContext = null;
+  let lastKnownMessageIndex = -1;
+  let currentRouteKey = getRouteKey();
   let audioScanTimer = null;
   let dismissedAudio = null;
   let playbackSessionId = 0;
@@ -103,6 +116,82 @@
 
   function normalizeText(text) {
     return (text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getRouteKey() {
+    return `${location.pathname}${location.search}${location.hash}`;
+  }
+
+  function isElementVisible(element) {
+    if (!(element instanceof Element) || !element.isConnected) return false;
+    if (element.getClientRects().length === 0) return false;
+    if (element.closest('[hidden], [aria-hidden="true"]')) return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
+  function getMessageContextFromGroup(group) {
+    if (!(group instanceof Element)) return null;
+    const turn = group.closest('article, [data-testid^="conversation-turn-"]') ||
+      group.closest('[data-message-author-role="assistant"]') || group.parentElement;
+    if (!(turn instanceof Element)) return null;
+
+    const key =
+      turn.getAttribute('data-testid') ||
+      turn.getAttribute('data-message-id') ||
+      turn.id ||
+      null;
+
+    return { group, turn, key };
+  }
+
+  function collectPlayableMessageContexts() {
+    const contexts = [];
+    const seenTurns = new Set();
+
+    for (const group of collectActionGroups(document)) {
+      if (!isAssistantActionGroup(group) || !isElementVisible(group)) continue;
+      const moreButton = findMoreButton(group);
+      if (!(moreButton instanceof HTMLButtonElement) || !moreButton.isConnected) continue;
+
+      const context = getMessageContextFromGroup(group);
+      if (!context || seenTurns.has(context.turn)) continue;
+      seenTurns.add(context.turn);
+      contexts.push(context);
+    }
+
+    return contexts;
+  }
+
+  function findContextIndex(contexts, context = currentMessageContext) {
+    if (!contexts.length) return -1;
+    if (context?.group?.isConnected) {
+      const exactGroupIndex = contexts.findIndex((item) => item.group === context.group);
+      if (exactGroupIndex >= 0) return exactGroupIndex;
+    }
+    if (context?.turn?.isConnected) {
+      const exactTurnIndex = contexts.findIndex((item) => item.turn === context.turn);
+      if (exactTurnIndex >= 0) return exactTurnIndex;
+    }
+    if (context?.key) {
+      const keyIndex = contexts.findIndex((item) => item.key === context.key);
+      if (keyIndex >= 0) return keyIndex;
+    }
+    if (lastKnownMessageIndex >= 0) {
+      return Math.min(lastKnownMessageIndex, contexts.length - 1);
+    }
+    return contexts.length - 1;
+  }
+
+  function setPlayerStatus(message, duration = STATUS_DISPLAY_MS) {
+    if (!playerStatus) return;
+    window.clearTimeout(statusTimer);
+    playerStatus.textContent = message || '';
+    if (message && duration > 0) {
+      statusTimer = window.setTimeout(() => {
+        if (playerStatus) playerStatus.textContent = '';
+      }, duration);
+    }
   }
 
   function readNumberSetting(key, fallback, allowedValues) {
@@ -215,7 +304,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 16px;
+        gap: 8px;
         margin-bottom: 7px;
       }
       #${PLAYER_ID} .cyan-player-control-button {
@@ -236,6 +325,22 @@
         border-radius: 50%;
       }
       #${PLAYER_ID} .cyan-player-main-button:hover { background: rgba(119, 157, 176, 0.36); }
+      #${PLAYER_ID} .cyan-player-message-button {
+        width: 32px;
+        height: 32px;
+        background: transparent;
+        border-color: transparent;
+      }
+      #${PLAYER_ID} .cyan-player-message-button svg { width: 21px; height: 21px; }
+      #${PLAYER_ID} .cyan-player-status {
+        flex: 0 1 auto;
+        max-width: 92px;
+        overflow: hidden;
+        color: rgba(220, 234, 240, 0.82);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #${PLAYER_ID} .cyan-player-status:empty { display: none; }
       #${PLAYER_ID} .cyan-player-step-number {
         position: absolute;
         left: 50%;
@@ -466,6 +571,14 @@
 
     if (error) {
       closeOperationMenu(operation);
+      if (navigationInProgress) {
+        navigationInProgress = false;
+        pendingMessageContext = null;
+        window.clearTimeout(messageSwitchTimer);
+        if (playbackSessionState === 'opening') playbackSessionState = 'idle';
+        setPlayerStatus('切换失败');
+        updatePlayerState();
+      }
       console.warn(`${SCRIPT_PREFIX} ${error}`);
     }
   }
@@ -573,10 +686,19 @@
       return;
     }
 
+    const messageContext = getMessageContextFromGroup(group);
+    pendingMessageContext = messageContext;
+    currentMessageContext = messageContext || currentMessageContext;
+    const contexts = collectPlayableMessageContexts();
+    const contextIndex = findContextIndex(contexts, messageContext);
+    if (contextIndex >= 0) lastKnownMessageIndex = contextIndex;
+
     playbackSessionId += 1;
     playbackSessionState = 'opening';
     openingRequestUntil = Date.now() + 10000;
     dismissedAudio = null;
+    navigationInProgress = false;
+    window.clearTimeout(messageSwitchTimer);
 
     if (activeOperation) {
       finishOperation(activeOperation);
@@ -639,6 +761,20 @@
     }
   }
 
+
+  function createMessageNavigationButton(direction) {
+    const isPrevious = direction < 0;
+    const button = createPlayerIconButton(
+      isPrevious ? '播放上一条消息' : '播放下一条消息',
+      isPrevious
+        ? 'M7 6v12M18 7l-8 5 8 5V7Z'
+        : 'M17 6v12M6 7l8 5-8 5V7Z',
+      'cyan-player-control-button cyan-player-message-button'
+    );
+    button.addEventListener('click', () => switchMessage(direction));
+    return button;
+  }
+
   function createPlayer() {
     if (player?.isConnected) return player;
 
@@ -681,6 +817,11 @@
 
     headerSettings.append(seekSetting, speedSetting);
 
+    playerStatus = document.createElement('span');
+    playerStatus.className = 'cyan-player-status';
+    playerStatus.setAttribute('role', 'status');
+    playerStatus.setAttribute('aria-live', 'polite');
+
     const windowActions = document.createElement('div');
     windowActions.className = 'cyan-player-window-actions';
 
@@ -693,7 +834,7 @@
     const closeButton = createPlayerIconButton('关闭播放器', 'M6 6l12 12M18 6 6 18');
     closeButton.addEventListener('click', closePlayer);
     windowActions.append(minimizeButton, closeButton);
-    header.append(headerSettings, windowActions);
+    header.append(headerSettings, playerStatus, windowActions);
 
     playerBody = document.createElement('div');
     playerBody.className = 'cyan-player-body';
@@ -701,6 +842,7 @@
     const controls = document.createElement('div');
     controls.className = 'cyan-player-controls';
 
+    previousMessageButton = createMessageNavigationButton(-1);
     backwardButton = createSeekControl(-1);
     playPauseButton = createPlayerIconButton(
       '播放',
@@ -709,7 +851,14 @@
     );
     playPauseButton.addEventListener('click', togglePlayback);
     forwardButton = createSeekControl(1);
-    controls.append(backwardButton, playPauseButton, forwardButton);
+    nextMessageButton = createMessageNavigationButton(1);
+    controls.append(
+      previousMessageButton,
+      backwardButton,
+      playPauseButton,
+      forwardButton,
+      nextMessageButton
+    );
 
     const seekRow = document.createElement('div');
     seekRow.className = 'cyan-player-seek-row';
@@ -843,6 +992,13 @@
         playbackSessionState = 'active';
         openingRequestUntil = 0;
         dismissedAudio = null;
+        if (pendingMessageContext) {
+          currentMessageContext = pendingMessageContext;
+          pendingMessageContext = null;
+        }
+        navigationInProgress = false;
+        window.clearTimeout(messageSwitchTimer);
+        setPlayerStatus('');
         return true;
       }
     }
@@ -853,6 +1009,13 @@
 
     playbackSessionState = 'active';
     dismissedAudio = null;
+    if (pendingMessageContext) {
+      currentMessageContext = pendingMessageContext;
+      pendingMessageContext = null;
+    }
+    navigationInProgress = false;
+    window.clearTimeout(messageSwitchTimer);
+    setPlayerStatus('');
     return true;
   }
 
@@ -880,6 +1043,9 @@
     playbackSessionId += 1;
     playbackSessionState = 'dismissed';
     openingRequestUntil = 0;
+    navigationInProgress = false;
+    pendingMessageContext = null;
+    window.clearTimeout(messageSwitchTimer);
 
     if (activeOperation) {
       finishOperation(activeOperation);
@@ -891,6 +1057,106 @@
     }
 
     if (player) player.hidden = true;
+  }
+
+  function switchMessage(direction) {
+    if (direction !== -1 && direction !== 1) return;
+    if (navigationInProgress || activeOperation) {
+      setPlayerStatus('正在切换…');
+      return;
+    }
+
+    const contexts = collectPlayableMessageContexts();
+    if (!contexts.length) {
+      setPlayerStatus('没有可朗读消息');
+      return;
+    }
+
+    const currentIndex = findContextIndex(contexts);
+    if (currentIndex < 0) {
+      setPlayerStatus('无法定位当前消息');
+      return;
+    }
+
+    const targetIndex = currentIndex + direction;
+    if (targetIndex < 0) {
+      setPlayerStatus('已经是第一条');
+      updateMessageNavigationState(contexts, currentIndex);
+      return;
+    }
+    if (targetIndex >= contexts.length) {
+      setPlayerStatus('已经是最后一条');
+      updateMessageNavigationState(contexts, currentIndex);
+      return;
+    }
+
+    const target = contexts[targetIndex];
+    const customButton = target.group.querySelector(
+      `button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]`
+    );
+    const moreButton = findMoreButton(target.group);
+    if (!(customButton instanceof HTMLButtonElement) ||
+        !(moreButton instanceof HTMLButtonElement)) {
+      setPlayerStatus('目标消息尚未就绪');
+      scheduleScan(target.group);
+      return;
+    }
+
+    navigationInProgress = true;
+    pendingMessageContext = target;
+    lastKnownMessageIndex = targetIndex;
+    playbackSessionId += 1;
+    playbackSessionState = 'opening';
+    openingRequestUntil = Date.now() + MESSAGE_SWITCH_TIMEOUT_MS;
+    dismissedAudio = null;
+    setPlayerStatus('正在切换…', 0);
+    updatePlayerState();
+
+    if (currentAudio && !currentAudio.paused) currentAudio.pause();
+    target.turn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    startOfficialVoiceAction(customButton, moreButton);
+
+    window.clearTimeout(messageSwitchTimer);
+    messageSwitchTimer = window.setTimeout(() => {
+      if (!navigationInProgress) return;
+      navigationInProgress = false;
+      pendingMessageContext = null;
+      if (playbackSessionState === 'opening') playbackSessionState = 'idle';
+      setPlayerStatus('切换超时');
+      updatePlayerState();
+    }, MESSAGE_SWITCH_TIMEOUT_MS);
+  }
+
+  function updateMessageNavigationState(contexts = null, currentIndex = null) {
+    if (!previousMessageButton || !nextMessageButton) return;
+    const list = contexts || collectPlayableMessageContexts();
+    const index = currentIndex ?? findContextIndex(list);
+    const disabled = navigationInProgress || !list.length || index < 0;
+    previousMessageButton.disabled = disabled || index <= 0;
+    nextMessageButton.disabled = disabled || index >= list.length - 1;
+  }
+
+  function resetPlaybackForRouteChange() {
+    currentRouteKey = getRouteKey();
+    playbackSessionId += 1;
+    playbackSessionState = 'idle';
+    openingRequestUntil = 0;
+    navigationInProgress = false;
+    currentMessageContext = null;
+    pendingMessageContext = null;
+    lastKnownMessageIndex = -1;
+    dismissedAudio = null;
+    window.clearTimeout(messageSwitchTimer);
+    window.clearTimeout(statusTimer);
+    if (activeOperation) finishOperation(activeOperation);
+    if (currentAudio && !currentAudio.paused) currentAudio.pause();
+    unbindCurrentAudio();
+    if (player) player.hidden = true;
+    setPlayerStatus('');
+  }
+
+  function checkRouteChange() {
+    if (getRouteKey() !== currentRouteKey) resetPlaybackForRouteChange();
   }
 
   function togglePlayerCollapsed() {
@@ -954,11 +1220,13 @@
     const isPlaying = hasAudio && !currentAudio.paused && !currentAudio.ended;
     const canSeek = hasAudio && hasUsableDuration();
 
-    backwardButton.disabled = !hasAudio;
-    forwardButton.disabled = !hasAudio;
-    playPauseButton.disabled = !hasAudio;
+    backwardButton.disabled = !hasAudio || navigationInProgress;
+    forwardButton.disabled = !hasAudio || navigationInProgress;
+    playPauseButton.disabled = !hasAudio || navigationInProgress;
     seekRange.disabled = !canSeek;
-    speedSelect.disabled = !hasAudio;
+    speedSelect.disabled = !hasAudio || navigationInProgress;
+    seekStepSelect.disabled = navigationInProgress;
+    updateMessageNavigationState();
 
     replaceButtonIcon(
       playPauseButton,
@@ -996,6 +1264,12 @@
 
     let handled = true;
     switch (event.key) {
+      case 'ArrowUp':
+        switchMessage(-1);
+        break;
+      case 'ArrowDown':
+        switchMessage(1);
+        break;
       case 'ArrowLeft':
         seekBy(-seekStep);
         break;
@@ -1028,6 +1302,7 @@
   }
 
   function scanForAudio() {
+    checkRouteChange();
     const audio = findBestAudio();
     if (!audio || audio.paused || audio.ended) return;
 
@@ -1049,6 +1324,7 @@
 
   function observePage() {
     const observer = new MutationObserver((mutations) => {
+      checkRouteChange();
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node instanceof Element) {
