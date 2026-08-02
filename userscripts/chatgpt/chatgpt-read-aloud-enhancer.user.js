@@ -1,12 +1,12 @@
 // ==UserScript==
-// @name         ChatGPT 一级朗读按钮
+// @name         ChatGPT 朗读增强助手
 // @namespace    https://chatgpt.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      2.2.0
-// @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并提供带消息切换、进度控制、倍速和快捷键的紧凑悬浮播放器。
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
+// @version      3.0.0
+// @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、音频下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -24,7 +24,7 @@
 
 2. 悬浮播放器
  - 仅在 ChatGPT 官方朗读真正开始播放后显示播放器，不因页面中残留 audio 元素自动弹出。
- - 提供后退、播放/暂停、前进、进度条、时间显示、倍速、最小化和关闭。
+ - 提供上一条、快退、播放/暂停、快进、下一条、进度条、时间显示、倍速、下载、最小化和关闭。
  - 前进/后退步长可选 3、5、10 秒，默认 3 秒，并保存到 localStorage。
 
 3. 键盘快捷键
@@ -43,7 +43,7 @@
 (() => {
   'use strict';
 
-  const SCRIPT_PREFIX = '[ChatGPT 一级朗读按钮]';
+  const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
 
   const ACTION_GROUP_SELECTOR = '[role="group"][aria-label="回复操作"]';
   const FALLBACK_ACTION_GROUP_SELECTOR = '[role="group"]';
@@ -90,6 +90,8 @@
   let seekStepSelect = null;
   let speedSelect = null;
   let minimizeButton = null;
+  let downloadButton = null;
+  let downloadInProgress = false;
   let previousMessageButton = null;
   let nextMessageButton = null;
   let playerStatus = null;
@@ -334,24 +336,13 @@
       #${PLAYER_ID} .cyan-player-message-button svg { width: 21px; height: 21px; }
       #${PLAYER_ID} .cyan-player-status {
         flex: 0 1 auto;
-        max-width: 92px;
+        max-width: 66px;
         overflow: hidden;
         color: rgba(220, 234, 240, 0.82);
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       #${PLAYER_ID} .cyan-player-status:empty { display: none; }
-      #${PLAYER_ID} .cyan-player-step-number {
-        position: absolute;
-        left: 50%;
-        top: 51%;
-        transform: translate(-50%, -50%);
-        font-size: 9px;
-        font-weight: 700;
-        line-height: 1;
-        color: currentColor;
-        pointer-events: none;
-      }
 
       #${PLAYER_ID} .cyan-player-seek-row {
         display: grid;
@@ -736,14 +727,10 @@
     const button = createPlayerIconButton(
       `${isBackward ? '后退' : '前进'} ${seekStep} 秒`,
       isBackward
-        ? 'M9.5 8H5.7l2.1-2.1M5.8 8l2.1 2.1M6.1 8.1a7 7 0 1 1-.7 6.2'
-        : 'M14.5 8h3.8l-2.1-2.1M18.2 8l-2.1 2.1M17.9 8.1a7 7 0 1 0 .7 6.2',
+        ? 'M11 7 6 12l5 5M18 7l-5 5 5 5'
+        : 'M6 7l5 5-5 5M13 7l5 5-5 5',
       'cyan-player-control-button'
     );
-    const number = document.createElement('span');
-    number.className = 'cyan-player-step-number';
-    number.textContent = String(seekStep);
-    button.appendChild(number);
     button.addEventListener('click', () => seekBy(direction * seekStep));
     return button;
   }
@@ -756,8 +743,6 @@
       if (!button) continue;
       button.setAttribute('aria-label', `${prefix} ${seekStep} 秒`);
       button.title = `${prefix} ${seekStep} 秒`;
-      const number = button.querySelector('.cyan-player-step-number');
-      if (number) number.textContent = String(seekStep);
     }
   }
 
@@ -773,6 +758,77 @@
     );
     button.addEventListener('click', () => switchMessage(direction));
     return button;
+  }
+
+  function getCurrentAudioSource() {
+    if (!currentAudio) return '';
+    return `${currentAudio.currentSrc || currentAudio.src || ''}`.trim();
+  }
+
+  function getDownloadExtension(source, mimeType = '') {
+    const normalizedMime = mimeType.toLowerCase();
+    if (normalizedMime.includes('mpeg')) return 'mp3';
+    if (normalizedMime.includes('wav')) return 'wav';
+    if (normalizedMime.includes('ogg')) return 'ogg';
+    if (normalizedMime.includes('webm')) return 'webm';
+    if (normalizedMime.includes('mp4') || normalizedMime.includes('aac')) return 'm4a';
+
+    try {
+      const match = new URL(source, location.href).pathname.match(/\.([a-z0-9]{2,5})$/i);
+      if (match) return match[1].toLowerCase();
+    } catch {}
+    return 'm4a';
+  }
+
+  function buildDownloadFilename(extension) {
+    const base = (document.title || 'ChatGPT-朗读')
+      .replace(/\s*[|–—-]\s*ChatGPT.*$/i, '')
+      .replace(/[\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'ChatGPT-朗读';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `${base}-${stamp}.${extension}`;
+  }
+
+  function triggerBlobDownload(blob, source = '') {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = buildDownloadFilename(getDownloadExtension(source, blob.type));
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+  }
+
+  async function downloadCurrentAudio() {
+    if (downloadInProgress || !currentAudio) return;
+    const source = getCurrentAudioSource();
+    if (!source || currentAudio.srcObject) {
+      setPlayerStatus('当前音频不可下载');
+      return;
+    }
+
+    downloadInProgress = true;
+    setPlayerStatus('正在准备下载…', 0);
+    updatePlayerState();
+
+    try {
+      const response = await fetch(source, { credentials: 'include' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      if (!blob.size) throw new Error('empty audio blob');
+      triggerBlobDownload(blob, source);
+      setPlayerStatus('已开始下载');
+    } catch (error) {
+      console.warn(`${SCRIPT_PREFIX} 音频下载失败。`, error);
+      setPlayerStatus('下载失败');
+    } finally {
+      downloadInProgress = false;
+      updatePlayerState();
+    }
   }
 
   function createPlayer() {
@@ -815,7 +871,13 @@
     speedSelect.addEventListener('change', handlePlaybackRateChange);
     speedSetting.appendChild(speedSelect);
 
-    headerSettings.append(seekSetting, speedSetting);
+    downloadButton = createPlayerIconButton(
+      '下载当前音频',
+      'M12 3v12M8 11l4 4 4-4M5 20h14'
+    );
+    downloadButton.addEventListener('click', downloadCurrentAudio);
+
+    headerSettings.append(seekSetting, speedSetting, downloadButton);
 
     playerStatus = document.createElement('span');
     playerStatus.className = 'cyan-player-status';
@@ -1226,6 +1288,12 @@
     seekRange.disabled = !canSeek;
     speedSelect.disabled = !hasAudio || navigationInProgress;
     seekStepSelect.disabled = navigationInProgress;
+    if (downloadButton) {
+      downloadButton.disabled =
+        !hasAudio || navigationInProgress || downloadInProgress ||
+        !getCurrentAudioSource() || !!currentAudio?.srcObject;
+      downloadButton.setAttribute('aria-busy', String(downloadInProgress));
+    }
     updateMessageNavigationState();
 
     replaceButtonIcon(
