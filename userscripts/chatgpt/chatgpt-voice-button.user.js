@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      2.1.1
+// @version      2.1.2
 // @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并为官方朗读音频提供紧凑悬浮播放器、进度控制、倍速和快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -36,6 +36,7 @@
  - 通过捕获媒体 play 事件和轻量周期检查识别当前官方音频。
  - 临时监听器、菜单隐藏状态和操作超时均会及时清理。
  - 关闭后再次主动朗读会创建新的播放会话，旧关闭状态不会误伤新播放。
+ - 内部菜单清理不再派发全局 Escape，避免误触播放器关闭快捷键。
 */
 
 (() => {
@@ -434,15 +435,15 @@
     }
   }
 
-  function closeOpenMenu() {
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'Escape',
-        code: 'Escape',
-        bubbles: true,
-        cancelable: true,
-      })
-    );
+  function closeOperationMenu(operation) {
+    const moreButton = operation?.moreButton;
+    if (!(moreButton instanceof HTMLButtonElement) || !moreButton.isConnected) return;
+
+    const isOpen =
+      moreButton.getAttribute('aria-expanded') === 'true' ||
+      moreButton.getAttribute('data-state') === 'open';
+
+    if (isOpen) moreButton.click();
   }
 
   function clearMoreButtonVisualState(operation) {
@@ -464,7 +465,7 @@
     clearMoreButtonVisualState(operation);
 
     if (error) {
-      closeOpenMenu();
+      closeOperationMenu(operation);
       console.warn(`${SCRIPT_PREFIX} ${error}`);
     }
   }
@@ -502,7 +503,7 @@
       dispatchActivationSequence(item);
 
       window.setTimeout(() => {
-        closeOpenMenu();
+        closeOperationMenu(operation);
         finishOperation(operation);
       }, MENU_CLOSE_DELAY_MS);
     }, ITEM_ACTIVATION_DELAY_MS);
@@ -988,6 +989,7 @@
   }
 
   function handleGlobalKeydown(event) {
+    if (!event.isTrusted) return;
     if (!player || player.hidden || !currentAudio) return;
     if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
     if (isEditableTarget(event.target)) return;
