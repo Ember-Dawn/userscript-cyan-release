@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.0.0
-// @description  在 ChatGPT 中按队列逐条发送任务；每行一条命令，等待当前回答停止后再继续，并支持暂停后续、恢复、刷新状态、重试和跳过。
+// @version      1.1.0
+// @description  在 ChatGPT 中按队列逐条发送任务；每行一条命令，等待当前回答停止后再继续，并提供紧凑进度入口、暂停、恢复和状态刷新。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -18,32 +18,38 @@
 脚本说明：
 
 1. 任务输入
- - 在浮动面板中粘贴多行文本，每个非空行作为一轮独立命令。
- - 点击“载入/替换队列”后生成任务队列，再点击“开始/恢复”执行。
+ - 面板默认收起为右下角圆形进度环；点击圆环展开。
+ - 在面板中粘贴多行文本，每个非空行作为一轮独立命令。
+ - “开始/恢复”会自动载入新任务、恢复现有队列，或在确认后用已修改文本替换队列。
 
 2. 顺序执行
  - 脚本把命令写入 ChatGPT 的 ProseMirror 输入框并点击发送按钮。
- - 每轮必须先观察到 data-testid="stop-button"，再等待该按钮消失并保持空闲 3 秒，才把本轮标记为完成。
+ - 每轮必须先观察到 data-testid="stop-button"，再等待该按钮消失并保持空闲 3 秒，之后按设置的额外秒数等待，再发送下一轮。
  - 脚本不读取、提取或判断回答正文，只观察输入框、停止按钮和当前会话地址。
 
 3. 暂停与恢复
- - “暂停后续”只阻止发送下一轮，不会点击 ChatGPT 自带的停止按钮。
+ - “暂停”只阻止发送下一轮，不会点击 ChatGPT 自带的停止按钮。
  - 若第 4 轮已经发出，点击暂停后仍等待第 4 轮完成；恢复时从第 5 轮开始。
  - 页面刷新后队列会安全恢复为暂停状态，避免自动误发；用户可先刷新状态，再手动恢复。
 
-4. 安全限制
+4. 界面
+ - 收起状态显示圆形任务进度，环内为“已完成数/总数”；运行时有轻微动画。
+ - 展开后只保留“开始/恢复、暂停、刷新状态、清空”四个操作按钮。
+ - 当前任务和下一任务默认收在“任务详情”中，会话只显示绑定状态，不展示会话 ID。
+
+5. 安全限制
  - 切换到其他 ChatGPT 会话时自动暂停，避免把后续任务发送到错误对话。
  - 输入框已有用户文字、页面正在运行非队列回答、状态无法确认或发送失败时，均采用暂停而不是猜测。
  - 同一时刻只允许一个标签页接管队列；标签页锁会在失联后自动过期。
 
-5. 调试方法
+6. 调试方法
  - 可在 Console 运行：window.__cgSequentialTaskQueue.getState()
 */
 
 (() => {
   'use strict';
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const PREFIX = 'cg-stq';
   const STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const LOCK_KEY = 'cyan.chatgptSequentialTaskQueue.lock.v1';
@@ -80,11 +86,12 @@
   };
 
   const MODE_LABELS = {
-    idle: '尚未开始',
-    running: '队列运行中',
+    idle: '未开始',
+    running: '运行中',
+    pausing: '等待暂停',
     paused: '已暂停',
-    completed: '全部完成',
-    error: '需要处理',
+    completed: '已完成',
+    error: '状态异常',
   };
 
   let state = loadState();
@@ -122,7 +129,7 @@
     return {
       id: Number.isInteger(task?.id) ? task.id : index + 1,
       text: typeof task?.text === 'string' ? task.text : '',
-      status: validStatus,
+      status: validStatus === 'skipped' ? 'completed' : validStatus,
       hasSeenStop: Boolean(task?.hasSeenStop),
       submittedAt: Number(task?.submittedAt) || 0,
       completedAt: Number(task?.completedAt) || 0,
@@ -169,7 +176,7 @@
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       const loaded = normalizeState(parsed);
 
-      if (loaded.mode === 'running') {
+      if (loaded.mode === 'running' || loaded.mode === 'pausing') {
         loaded.mode = 'paused';
         loaded.notice = '页面已重新加载，队列已安全暂停。请先刷新状态，再决定是否恢复。';
       }
@@ -718,26 +725,25 @@
     saveState();
   }
 
-  function loadQueueFromPanel() {
+  function readPanelQueueDraft() {
     const textarea = document.getElementById(`${PREFIX}-input`);
     const delayInput = document.getElementById(`${PREFIX}-delay`);
-    const sourceText = textarea?.value || '';
-    const lines = parseTasks(sourceText);
+    const lines = parseTasks(textarea?.value || '');
 
-    if (lines.length === 0) {
-      window.alert('没有识别到任务。请确保每个非空行是一条命令。');
-      return;
-    }
+    return {
+      textarea,
+      lines,
+      sourceText: lines.join('\n'),
+      delayMs: clampInteger(
+        Number(delayInput?.value) * 1000,
+        1000,
+        30000,
+        DEFAULT_BETWEEN_TASK_DELAY_MS
+      ),
+    };
+  }
 
-    if (state.activeIndex !== null && findStopButton()) {
-      window.alert('当前队列任务仍在运行，不能替换队列。请先等待它结束。');
-      return;
-    }
-
-    if (state.tasks.length > 0 && !window.confirm(`将用 ${lines.length} 条新任务替换当前队列，是否继续？`)) {
-      return;
-    }
-
+  function replaceQueueFromPanel(draft) {
     sendingEpoch += 1;
     stopMonitor();
     resetDispatchTimer();
@@ -746,8 +752,8 @@
     const now = Date.now();
     state = {
       version: 1,
-      sourceText: lines.join('\n'),
-      tasks: lines.map((text, index) => ({
+      sourceText: draft.sourceText,
+      tasks: draft.lines.map((text, index) => ({
         id: index + 1,
         text,
         status: 'pending',
@@ -759,23 +765,83 @@
       activeIndex: null,
       mode: 'paused',
       conversationId: getConversationId(),
-      delayMs: clampInteger(
-        Number(delayInput?.value) * 1000,
-        1000,
-        30000,
-        DEFAULT_BETWEEN_TASK_DELAY_MS
-      ),
-      notice: `已载入 ${lines.length} 条任务。检查无误后点击“开始/恢复”。`,
+      delayMs: draft.delayMs,
+      notice: `已载入 ${draft.lines.length} 条任务，准备从第 1 轮开始。`,
       createdAt: now,
       updatedAt: now,
     };
 
-    if (textarea) {
-      textarea.value = state.sourceText;
-      textarea.dataset.dirty = 'false';
+    if (draft.textarea) {
+      draft.textarea.value = state.sourceText;
+      draft.textarea.dataset.dirty = 'false';
     }
 
     saveState();
+  }
+
+  function startOrResumeQueue() {
+    const draft = readPanelQueueDraft();
+    const hasQueue = state.tasks.length > 0;
+    const sourceChanged = draft.sourceText !== state.sourceText;
+    const queueFinished = state.activeIndex === null && state.nextIndex >= state.tasks.length;
+    const activeTask = getActiveTask();
+    const stopButton = findStopButton();
+
+    if (state.mode === 'running' || state.mode === 'pausing' || (activeTask && stopButton)) {
+      return;
+    }
+
+    if (!hasQueue) {
+      if (draft.lines.length === 0) {
+        window.alert('没有识别到任务。请确保每个非空行是一条命令。');
+        return;
+      }
+
+      replaceQueueFromPanel(draft);
+      resumeQueue();
+      return;
+    }
+
+    if (queueFinished) {
+      if (draft.lines.length === 0) {
+        window.alert('任务输入为空。请粘贴新任务后再开始。');
+        return;
+      }
+
+      const message = sourceChanged
+        ? `将载入 ${draft.lines.length} 条新任务并从第 1 轮开始，是否继续？`
+        : `当前队列已经完成。是否重新执行这 ${draft.lines.length} 条任务？`;
+
+      if (!window.confirm(message)) return;
+      replaceQueueFromPanel(draft);
+      resumeQueue();
+      return;
+    }
+
+    if (sourceChanged) {
+      if (draft.lines.length === 0) {
+        window.alert('修改后的任务输入为空，不能替换当前队列。');
+        return;
+      }
+
+      if (!window.confirm(`任务文本已修改。是否用 ${draft.lines.length} 条任务替换当前队列并从第 1 轮开始？`)) {
+        return;
+      }
+
+      replaceQueueFromPanel(draft);
+      resumeQueue();
+      return;
+    }
+
+    if (activeTask && !stopButton && !activeTask.hasSeenStop) {
+      if (!window.confirm(`无法确认第 ${state.activeIndex + 1} 轮是否真正开始。是否重新发送这一轮？`)) {
+        return;
+      }
+
+      resetActiveTaskForRetry();
+    }
+
+    resumeQueue();
   }
 
   function pauseQueue() {
@@ -788,10 +854,10 @@
       return;
     }
 
-    state.mode = 'paused';
+    state.mode = state.activeIndex !== null ? 'pausing' : 'paused';
 
     if (state.activeIndex !== null) {
-      state.notice = `已暂停后续发送；第 ${state.activeIndex + 1} 轮仍会继续运行，完成后停在下一轮。`;
+      state.notice = `已请求暂停；第 ${state.activeIndex + 1} 轮仍会继续运行，完成后停在下一轮。`;
       startMonitor();
       syncLockToState();
     } else if (state.nextIndex < state.tasks.length) {
@@ -807,7 +873,7 @@
 
   function resumeQueue() {
     if (state.tasks.length === 0) {
-      state.notice = '请先粘贴并载入任务队列。';
+      state.notice = '请先在面板中粘贴任务，然后点击“开始/恢复”。';
       state.mode = 'idle';
       saveState();
       return;
@@ -860,7 +926,7 @@
 
       state.mode = 'error';
       task.status = 'uncertain';
-      state.notice = `无法确认第 ${state.activeIndex + 1} 轮是否真正开始。请使用“重试当前”或“跳过当前”。`;
+      state.notice = `无法确认第 ${state.activeIndex + 1} 轮是否真正开始。点击“开始/恢复”可在确认后重新发送这一轮。`;
       saveState();
       return;
     }
@@ -943,18 +1009,9 @@
     saveState();
   }
 
-  function retryCurrentTask() {
+  function resetActiveTaskForRetry() {
     const task = getActiveTask();
-    if (!task) {
-      state.notice = '当前没有需要重试的任务。';
-      saveState();
-      return;
-    }
-
-    if (findStopButton()) {
-      window.alert('当前回答仍在运行，不能重试。请先等待它结束。');
-      return;
-    }
+    if (!task || findStopButton()) return false;
 
     clearEditorIfMatches(task.text);
     const index = state.activeIndex;
@@ -965,51 +1022,36 @@
     state.activeIndex = null;
     state.nextIndex = index;
     state.mode = 'paused';
-    state.notice = `第 ${index + 1} 轮已重置为待执行。点击“开始/恢复”后重新发送。`;
+    state.notice = `第 ${index + 1} 轮已重置，将重新发送。`;
     idleSince = 0;
     sendingEpoch += 1;
     stopMonitor();
     releaseLock();
     saveState();
+    return true;
   }
 
-  function skipCurrentTask() {
-    const task = getActiveTask();
-    if (!task) {
-      state.notice = '当前没有可以跳过的任务。';
+  function clearQueue() {
+    const activeTask = getActiveTask();
+    const answerRunning = Boolean(activeTask && findStopButton());
+    const hasAnything = state.tasks.length > 0 || Boolean(normalizeText(
+      document.getElementById(`${PREFIX}-input`)?.value || ''
+    ));
+
+    if (!hasAnything) {
+      state.notice = '当前没有可清空的任务。';
       saveState();
       return;
     }
 
-    if (findStopButton()) {
-      window.alert('当前回答仍在运行。为避免队列与页面状态冲突，请等待它结束后再跳过。');
-      return;
-    }
+    const message = answerRunning
+      ? '当前回答仍会继续生成，但脚本将清空队列并停止后续发送。是否继续？'
+      : '确定清空任务文本、队列和本地进度吗？';
 
-    const index = state.activeIndex;
-    task.status = 'skipped';
-    task.completedAt = Date.now();
-    state.activeIndex = null;
-    state.nextIndex = Math.max(state.nextIndex, index + 1);
-    state.mode = state.nextIndex >= state.tasks.length ? 'completed' : 'paused';
-    state.notice = state.mode === 'completed'
-      ? '最后一轮已跳过，队列处理完毕。'
-      : `第 ${index + 1} 轮已跳过；下一轮是第 ${state.nextIndex + 1} 轮。`;
-    idleSince = 0;
-    sendingEpoch += 1;
-    stopMonitor();
-    releaseLock();
-    saveState();
-  }
+    if (!window.confirm(message)) return;
 
-  function clearQueue() {
-    if (state.activeIndex !== null && findStopButton()) {
-      window.alert('当前队列任务仍在运行，不能清空队列。请先等待它结束。');
-      return;
-    }
-
-    if (state.tasks.length > 0 && !window.confirm('确定清空当前任务队列和本地进度吗？')) {
-      return;
+    if (activeTask && !answerRunning) {
+      clearEditorIfMatches(activeTask.text);
     }
 
     sendingEpoch += 1;
@@ -1031,10 +1073,6 @@
     return state.tasks.filter((task) => task.status === 'completed').length;
   }
 
-  function getProcessedCount() {
-    return state.tasks.filter((task) => task.status === 'completed' || task.status === 'skipped').length;
-  }
-
   function truncate(text, maxLength = 90) {
     const clean = normalizeText(text);
     return clean.length > maxLength ? `${clean.slice(0, maxLength)}…` : clean;
@@ -1047,12 +1085,14 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${PANEL_ID} {
+        --${PREFIX}-accent: #10a37f;
+        --${PREFIX}-progress-angle: 0deg;
         position: fixed;
-        right: 18px;
-        bottom: 96px;
+        right: max(16px, env(safe-area-inset-right));
+        bottom: max(16px, env(safe-area-inset-bottom));
         z-index: 2147483000;
-        width: min(390px, calc(100vw - 24px));
-        max-height: min(720px, calc(100vh - 120px));
+        width: min(390px, calc(100vw - 32px));
+        max-height: min(720px, calc(100vh - 32px));
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -1065,12 +1105,76 @@
       }
 
       #${PANEL_ID}[data-collapsed="true"] {
-        width: auto;
+        width: 48px;
+        height: 48px;
         max-height: none;
+        overflow: visible;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        box-shadow: none;
       }
 
       #${PANEL_ID} * {
         box-sizing: border-box;
+      }
+
+      #${PANEL_ID} .${PREFIX}-launcher {
+        display: none;
+      }
+
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher {
+        position: relative;
+        display: grid;
+        width: 48px;
+        height: 48px;
+        min-height: 48px;
+        place-items: center;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+        border-radius: 50%;
+        background: conic-gradient(
+          var(--${PREFIX}-accent) var(--${PREFIX}-progress-angle),
+          color-mix(in srgb, var(--main-surface-primary, #ffffff) 78%, currentColor 22%) 0
+        );
+        color: inherit;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        cursor: pointer;
+      }
+
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher::before {
+        content: "";
+        position: absolute;
+        inset: 4px;
+        border-radius: 50%;
+        background: var(--main-surface-primary, #ffffff);
+      }
+
+      #${PANEL_ID}[data-mode="running"][data-collapsed="true"] .${PREFIX}-launcher,
+      #${PANEL_ID}[data-mode="pausing"][data-collapsed="true"] .${PREFIX}-launcher {
+        animation: ${PREFIX}-pulse 1.8s ease-in-out infinite;
+      }
+
+      #${PANEL_ID}[data-mode="error"] {
+        --${PREFIX}-accent: #d92d20;
+      }
+
+      #${PANEL_ID} .${PREFIX}-launcher-text {
+        position: relative;
+        z-index: 1;
+        max-width: 38px;
+        overflow: hidden;
+        font-size: 11px;
+        font-weight: 750;
+        line-height: 1;
+        text-overflow: clip;
+        white-space: nowrap;
+      }
+
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-header,
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-body {
+        display: none;
       }
 
       #${PANEL_ID} .${PREFIX}-header {
@@ -1080,12 +1184,31 @@
         gap: 10px;
         padding: 10px 12px;
         border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-        font-weight: 700;
         user-select: none;
       }
 
-      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-body {
-        display: none;
+      #${PANEL_ID} .${PREFIX}-title-group {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-title {
+        overflow: hidden;
+        font-weight: 700;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #${PANEL_ID} .${PREFIX}-mode-badge {
+        flex: none;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--${PREFIX}-accent) 13%, transparent);
+        color: var(--${PREFIX}-accent);
+        font-size: 11px;
+        font-weight: 700;
       }
 
       #${PANEL_ID} .${PREFIX}-body {
@@ -1121,8 +1244,8 @@
 
       #${PANEL_ID} textarea:focus,
       #${PANEL_ID} input:focus {
-        border-color: #10a37f;
-        box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.16);
+        border-color: var(--${PREFIX}-accent);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--${PREFIX}-accent) 16%, transparent);
       }
 
       #${PANEL_ID} .${PREFIX}-hint,
@@ -1132,9 +1255,16 @@
 
       #${PANEL_ID} .${PREFIX}-row {
         display: grid;
-        grid-template-columns: 1fr 92px;
+        grid-template-columns: 1fr auto;
         align-items: center;
         gap: 8px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-unit-input {
+        display: grid;
+        grid-template-columns: 66px auto;
+        align-items: center;
+        gap: 6px;
       }
 
       #${PANEL_ID} .${PREFIX}-buttons {
@@ -1164,32 +1294,109 @@
       }
 
       #${PANEL_ID} .${PREFIX}-primary {
-        border-color: #10a37f;
-        background: #10a37f;
+        border-color: var(--${PREFIX}-accent);
+        background: var(--${PREFIX}-accent);
         color: #ffffff;
       }
 
       #${PANEL_ID} .${PREFIX}-primary:hover:not(:disabled) {
-        background: #0d8b6d;
+        filter: brightness(0.9);
       }
 
       #${PANEL_ID} .${PREFIX}-danger {
         color: #b42318;
       }
 
-      #${PANEL_ID} .${PREFIX}-status {
+      #${PANEL_ID} .${PREFIX}-progress-section {
         display: grid;
-        gap: 5px;
-        padding: 9px;
-        border-radius: 9px;
-        background: color-mix(in srgb, var(--main-surface-primary, #ffffff) 90%, currentColor 10%);
+        gap: 7px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-progress-track {
+        position: relative;
+        height: 24px;
+        overflow: hidden;
+        border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--main-surface-primary, #ffffff) 87%, currentColor 13%);
+      }
+
+      #${PANEL_ID} .${PREFIX}-progress-fill {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 0;
+        border-radius: inherit;
+        background: color-mix(in srgb, var(--${PREFIX}-accent) 78%, transparent);
+        transition: width 220ms ease;
+      }
+
+      #${PANEL_ID} .${PREFIX}-progress-text {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      #${PANEL_ID} .${PREFIX}-conversation {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--text-secondary, #6b7280);
+        font-size: 12px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-conversation-dot {
+        width: 8px;
+        height: 8px;
+        flex: none;
+        border-radius: 50%;
+        background: #98a2b3;
+      }
+
+      #${PANEL_ID} .${PREFIX}-conversation[data-state="bound"] .${PREFIX}-conversation-dot {
+        background: #12b76a;
+      }
+
+      #${PANEL_ID} .${PREFIX}-conversation[data-state="mismatch"] .${PREFIX}-conversation-dot {
+        background: #d92d20;
+      }
+
+      #${PANEL_ID} .${PREFIX}-details {
+        border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+        padding-top: 7px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-details summary {
+        cursor: pointer;
+        color: var(--text-secondary, #6b7280);
+        font-weight: 650;
+        user-select: none;
+      }
+
+      #${PANEL_ID} .${PREFIX}-details-content {
+        display: grid;
+        gap: 8px;
+        padding-top: 8px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-detail-item {
+        display: grid;
+        gap: 2px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-detail-label {
+        color: var(--text-secondary, #6b7280);
+        font-size: 11px;
+        font-weight: 700;
       }
 
       #${PANEL_ID} .${PREFIX}-notice {
         padding: 8px 9px;
-        border-left: 3px solid #10a37f;
+        border-left: 3px solid var(--${PREFIX}-accent);
         border-radius: 5px;
-        background: rgba(16, 163, 127, 0.08);
+        background: color-mix(in srgb, var(--${PREFIX}-accent) 8%, transparent);
         overflow-wrap: anywhere;
       }
 
@@ -1204,10 +1411,26 @@
         font-size: 16px;
       }
 
+      @keyframes ${PREFIX}-pulse {
+        0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); }
+        50% { box-shadow: 0 8px 28px color-mix(in srgb, var(--${PREFIX}-accent) 44%, transparent); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #${PANEL_ID} * {
+          animation: none !important;
+          transition: none !important;
+        }
+      }
+
       @media (prefers-color-scheme: dark) {
         #${PANEL_ID} {
           background: var(--main-surface-primary, #212121);
           color: var(--text-primary, #f3f4f6);
+        }
+
+        #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher::before {
+          background: var(--main-surface-primary, #212121);
         }
 
         #${PANEL_ID} .${PREFIX}-danger {
@@ -1225,35 +1448,57 @@
 
     const panel = document.createElement('section');
     panel.id = PANEL_ID;
-    panel.dataset.collapsed = 'false';
+    panel.dataset.collapsed = 'true';
     panel.innerHTML = `
+      <button type="button" class="${PREFIX}-launcher" data-action="expand" aria-label="展开 ChatGPT 顺序任务助手" title="ChatGPT 顺序任务助手">
+        <span class="${PREFIX}-launcher-text" data-field="launcher-progress">+</span>
+      </button>
       <div class="${PREFIX}-header">
-        <span>ChatGPT 顺序任务助手</span>
-        <button type="button" class="${PREFIX}-collapse" data-action="collapse" aria-label="折叠面板">−</button>
+        <div class="${PREFIX}-title-group">
+          <span class="${PREFIX}-title">ChatGPT 顺序任务助手</span>
+          <span class="${PREFIX}-mode-badge" data-field="mode"></span>
+        </div>
+        <button type="button" class="${PREFIX}-collapse" data-action="collapse" aria-label="收起面板">−</button>
       </div>
       <div class="${PREFIX}-body">
         <div class="${PREFIX}-hint">每个非空行作为一轮命令；脚本不读取回答正文。</div>
         <textarea id="${PREFIX}-input" spellcheck="false" placeholder="请按照 xxx 文件生成第 1 页的图\n请按照 xxx 文件生成第 2 页的图"></textarea>
         <div class="${PREFIX}-row">
-          <label for="${PREFIX}-delay">两轮之间额外等待</label>
-          <input id="${PREFIX}-delay" type="number" min="1" max="30" step="1" value="3" aria-label="两轮之间等待秒数">
+          <label for="${PREFIX}-delay">回答结束后额外等待</label>
+          <div class="${PREFIX}-unit-input">
+            <input id="${PREFIX}-delay" type="number" min="1" max="30" step="1" value="3" aria-label="回答结束后额外等待秒数">
+            <span class="${PREFIX}-muted">秒</span>
+          </div>
         </div>
         <div class="${PREFIX}-buttons">
-          <button type="button" data-action="load">载入/替换队列</button>
-          <button type="button" data-action="resume" class="${PREFIX}-primary">开始/恢复</button>
-          <button type="button" data-action="pause">暂停后续</button>
+          <button type="button" data-action="start" class="${PREFIX}-primary">开始/恢复</button>
+          <button type="button" data-action="pause">暂停</button>
           <button type="button" data-action="refresh">刷新状态</button>
-          <button type="button" data-action="retry">重试当前</button>
-          <button type="button" data-action="skip">跳过当前</button>
-          <button type="button" data-action="clear" class="${PREFIX}-danger">清空队列</button>
+          <button type="button" data-action="clear" class="${PREFIX}-danger">清空</button>
         </div>
-        <div class="${PREFIX}-status">
-          <div><strong>队列状态：</strong><span data-field="mode"></span></div>
-          <div><strong>进度：</strong><span data-field="progress"></span></div>
-          <div><strong>当前任务：</strong><span data-field="current" class="${PREFIX}-task-text"></span></div>
-          <div><strong>下一任务：</strong><span data-field="next" class="${PREFIX}-task-text"></span></div>
-          <div><strong>会话绑定：</strong><span data-field="conversation" class="${PREFIX}-muted"></span></div>
+        <div class="${PREFIX}-progress-section">
+          <div class="${PREFIX}-progress-track" data-field="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+            <div class="${PREFIX}-progress-fill" data-field="progress-fill"></div>
+            <span class="${PREFIX}-progress-text" data-field="progress"></span>
+          </div>
+          <div class="${PREFIX}-conversation" data-field="conversation-wrap" data-state="unbound">
+            <span class="${PREFIX}-conversation-dot" aria-hidden="true"></span>
+            <span data-field="conversation"></span>
+          </div>
         </div>
+        <details class="${PREFIX}-details" data-field="details">
+          <summary>任务详情</summary>
+          <div class="${PREFIX}-details-content">
+            <div class="${PREFIX}-detail-item">
+              <span class="${PREFIX}-detail-label">当前任务</span>
+              <span data-field="current" class="${PREFIX}-task-text"></span>
+            </div>
+            <div class="${PREFIX}-detail-item">
+              <span class="${PREFIX}-detail-label">下一任务</span>
+              <span data-field="next" class="${PREFIX}-task-text"></span>
+            </div>
+          </div>
+        </details>
         <div class="${PREFIX}-notice" data-field="notice"></div>
       </div>
     `;
@@ -1263,19 +1508,12 @@
       if (!button) return;
 
       const action = button.dataset.action;
-      if (action === 'load') loadQueueFromPanel();
-      if (action === 'resume') resumeQueue();
+      if (action === 'start') startOrResumeQueue();
       if (action === 'pause') pauseQueue();
       if (action === 'refresh') refreshRuntimeStatus();
-      if (action === 'retry') retryCurrentTask();
-      if (action === 'skip') skipCurrentTask();
       if (action === 'clear') clearQueue();
-      if (action === 'collapse') {
-        const collapsed = panel.dataset.collapsed === 'true';
-        panel.dataset.collapsed = String(!collapsed);
-        button.textContent = collapsed ? '−' : '+';
-        button.setAttribute('aria-label', collapsed ? '折叠面板' : '展开面板');
-      }
+      if (action === 'expand') panel.dataset.collapsed = 'false';
+      if (action === 'collapse') panel.dataset.collapsed = 'true';
     });
 
     panel.addEventListener('input', (event) => {
@@ -1328,14 +1566,23 @@
     const nextTask = state.tasks[state.nextIndex] || null;
     const conversation = getConversationStatus({ allowBind: false });
     const completedCount = getCompletedCount();
-    const processedCount = getProcessedCount();
+    const totalCount = state.tasks.length;
+    const progressPercent = totalCount > 0
+      ? Math.min(100, Math.max(0, (completedCount / totalCount) * 100))
+      : 0;
+    const progressText = totalCount > 0
+      ? `${completedCount} / ${totalCount}`
+      : '尚未载入';
+    const launcherText = state.mode === 'error'
+      ? '!'
+      : (totalCount > 0 ? `${completedCount}/${totalCount}` : '+');
+
+    panel.dataset.mode = state.mode;
+    panel.style.setProperty(`--${PREFIX}-progress-angle`, `${progressPercent * 3.6}deg`);
 
     setPanelField(panel, 'mode', MODE_LABELS[state.mode] || state.mode);
-    setPanelField(
-      panel,
-      'progress',
-      `${processedCount} / ${state.tasks.length} 已处理（其中 ${completedCount} 条完成）`
-    );
+    setPanelField(panel, 'launcher-progress', launcherText);
+    setPanelField(panel, 'progress', progressText);
     setPanelField(
       panel,
       'current',
@@ -1346,25 +1593,67 @@
     setPanelField(
       panel,
       'next',
-      nextTask && state.nextIndex < state.tasks.length
+      nextTask && state.nextIndex < totalCount
         ? `第 ${state.nextIndex + 1} 轮 · ${truncate(nextTask.text)}`
         : '无'
     );
-    setPanelField(
-      panel,
-      'conversation',
-      state.conversationId
-        ? (conversation.ok ? `已绑定 ${state.conversationId}` : `会话不匹配，应返回 ${state.conversationId}`)
-        : '尚未绑定；首次发送后自动绑定'
-    );
+
+    const conversationState = !state.conversationId
+      ? 'unbound'
+      : (conversation.ok ? 'bound' : 'mismatch');
+    const conversationText = conversationState === 'bound'
+      ? '会话已绑定'
+      : (conversationState === 'mismatch' ? '会话不匹配' : '会话未绑定');
+
+    setPanelField(panel, 'conversation', conversationText);
     setPanelField(panel, 'notice', state.notice || '—');
 
-    const hasActive = state.activeIndex !== null;
+    const conversationWrap = panel.querySelector(`[data-field="conversation-wrap"]`);
+    if (conversationWrap) conversationWrap.dataset.state = conversationState;
+
+    const progressTrack = panel.querySelector(`[data-field="progress-track"]`);
+    if (progressTrack) {
+      progressTrack.setAttribute('aria-valuemax', String(totalCount));
+      progressTrack.setAttribute('aria-valuenow', String(completedCount));
+      progressTrack.setAttribute('aria-label', totalCount > 0
+        ? `已完成 ${completedCount} / ${totalCount}`
+        : '尚未载入任务');
+    }
+
+    const progressFill = panel.querySelector(`[data-field="progress-fill"]`);
+    if (progressFill) progressFill.style.width = `${progressPercent}%`;
+
+    const launcher = panel.querySelector(`.${PREFIX}-launcher`);
+    if (launcher) {
+      launcher.setAttribute(
+        'aria-label',
+        totalCount > 0
+          ? `展开 ChatGPT 顺序任务助手，已完成 ${completedCount} / ${totalCount}，当前状态：${MODE_LABELS[state.mode] || state.mode}`
+          : '展开 ChatGPT 顺序任务助手'
+      );
+    }
+
+    const details = panel.querySelector(`[data-field="details"]`);
+    if (details && (state.mode === 'error' || conversationState === 'mismatch')) {
+      details.open = true;
+    }
+
     const stopVisible = Boolean(findStopButton());
-    setButtonDisabled(panel, 'pause', state.tasks.length === 0 || state.mode === 'paused');
-    setButtonDisabled(panel, 'resume', state.tasks.length === 0 || state.mode === 'completed');
-    setButtonDisabled(panel, 'retry', !hasActive || stopVisible);
-    setButtonDisabled(panel, 'skip', !hasActive || stopVisible);
+    const hasActive = state.activeIndex !== null;
+    const startDisabled =
+      state.mode === 'running' ||
+      state.mode === 'pausing' ||
+      (hasActive && stopVisible);
+    const pauseDisabled =
+      state.tasks.length === 0 ||
+      state.mode === 'paused' ||
+      state.mode === 'pausing' ||
+      state.mode === 'completed' ||
+      state.mode === 'error' ||
+      state.mode === 'idle';
+
+    setButtonDisabled(panel, 'start', startDisabled);
+    setButtonDisabled(panel, 'pause', pauseDisabled);
   }
 
   function setPanelField(panel, name, value) {
@@ -1402,7 +1691,7 @@
   function handleTrustedEditorInput(event) {
     if (!event.isTrusted || Date.now() <= internalInputUntil) return;
     if (!event.target.closest?.(EDITOR_SELECTOR)) return;
-    if (state.mode !== 'running') return;
+    if (state.mode !== 'running' && state.mode !== 'pausing') return;
 
     resetDispatchTimer();
     state.mode = 'paused';
@@ -1492,6 +1781,7 @@
       return JSON.parse(JSON.stringify(state));
     },
     pause: pauseQueue,
+    start: startOrResumeQueue,
     resume: resumeQueue,
     refresh: refreshRuntimeStatus,
   };
