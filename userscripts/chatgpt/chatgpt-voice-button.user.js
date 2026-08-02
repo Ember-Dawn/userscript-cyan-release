@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      1.2.0
-// @description  在 ChatGPT 助手回答的一级操作栏末尾增加朗读按钮，并在后台调用官方“朗读/重播”菜单项。
+// @version      2.0.0
+// @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并为官方朗读音频提供悬浮播放器、进度控制、倍速和快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -17,22 +17,24 @@
 /*
 脚本说明：
 
-1. 作用
+1. 一级朗读按钮
  - 在每条助手回答的一级操作栏末尾增加一个朗读按钮。
- - 用户只需点击一次，脚本会在后台打开“更多操作”，调用官方“朗读/重播”菜单项。
- - 原“更多操作”菜单中的朗读或重播入口保持不变。
+ - 单击后在后台打开“更多操作”，调用官方“朗读/重播”菜单项。
+ - 原菜单中的官方朗读或重播入口保持不变。
 
-2. 实现方式
- - 通过当前回答操作栏中明确标记为“更多操作”的按钮打开对应菜单。
- - 使用官方稳定标识 data-testid="voice-play-turn-action-button" 定位朗读菜单项。
- - 自动操作期间仅将包含该菜单项的弹出菜单设为透明，避免视觉闪烁且不影响脚本触发。
- - 不读取回答正文，不调用未公开接口，也不自行实现语音合成。
+2. 悬浮播放器
+ - 自动接管 ChatGPT 官方朗读所创建的 audio 元素，不自行合成语音。
+ - 提供后退、播放/暂停、前进、进度条、时间显示、倍速、最小化和关闭。
+ - 前进/后退步长可选 3、5、10 秒，默认 3 秒，并保存到 localStorage。
 
-3. 性能与可靠性
+3. 键盘快捷键
+ - 播放器打开时：左/右方向键后退或前进，空格播放或暂停，Esc 关闭并暂停。
+ - 焦点位于输入框、文本域、可编辑区域或选择框时，不接管快捷键。
+
+4. 性能与可靠性
  - 使用 MutationObserver 处理 ChatGPT 单页应用中的动态回答和重新渲染。
- - 只扫描新增节点附近的回复操作栏，并使用标记避免重复插入。
- - 每次点击都设置超时并及时清理临时监听器、样式状态、菜单和焦点状态。
- - 同一时间只执行一次后台菜单操作，避免多个回答之间相互干扰。
+ - 通过捕获媒体 play 事件和轻量周期检查识别当前官方音频。
+ - 临时监听器、菜单隐藏状态和操作超时均会及时清理。
 */
 
 (() => {
@@ -53,17 +55,54 @@
   const PROCESSED_GROUP_ATTRIBUTE = 'data-cyan-voice-group-ready';
   const HIDE_MENU_ATTRIBUTE = 'data-cyan-hide-voice-menu';
   const STYLE_ELEMENT_ID = 'cyan-chatgpt-voice-button-style';
+  const PLAYER_ID = 'cyan-chatgpt-audio-player';
+  const PLAYER_COLLAPSED_ATTRIBUTE = 'data-cyan-collapsed';
 
+  const STORAGE_SEEK_STEP = 'cyanChatgptVoiceSeekStep';
+  const STORAGE_PLAYBACK_RATE = 'cyanChatgptVoicePlaybackRate';
+  const STORAGE_PLAYER_COLLAPSED = 'cyanChatgptVoicePlayerCollapsed';
+
+  const SEEK_STEP_OPTIONS = [3, 5, 10];
+  const PLAYBACK_RATE_OPTIONS = [0.75, 1, 1.25, 1.5, 2];
   const MENU_WAIT_TIMEOUT_MS = 2000;
   const ITEM_ACTIVATION_DELAY_MS = 32;
   const MENU_CLOSE_DELAY_MS = 100;
+  const AUDIO_SCAN_INTERVAL_MS = 500;
 
   let activeOperation = null;
   let scanFrame = null;
   const pendingScanRoots = new Set();
 
+  let currentAudio = null;
+  let player = null;
+  let playerTitle = null;
+  let playerBody = null;
+  let playPauseButton = null;
+  let backwardButton = null;
+  let forwardButton = null;
+  let seekRange = null;
+  let currentTimeLabel = null;
+  let durationLabel = null;
+  let seekStepSelect = null;
+  let speedSelect = null;
+  let minimizeButton = null;
+  let audioScanTimer = null;
+
+  let seekStep = readNumberSetting(STORAGE_SEEK_STEP, 3, SEEK_STEP_OPTIONS);
+  let playbackRate = readNumberSetting(
+    STORAGE_PLAYBACK_RATE,
+    1,
+    PLAYBACK_RATE_OPTIONS
+  );
+  let playerCollapsed = localStorage.getItem(STORAGE_PLAYER_COLLAPSED) === 'true';
+
   function normalizeText(text) {
     return (text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function readNumberSetting(key, fallback, allowedValues) {
+    const value = Number(localStorage.getItem(key));
+    return allowedValues.includes(value) ? value : fallback;
   }
 
   function installStyle() {
@@ -101,6 +140,200 @@
         opacity: 0.55;
         pointer-events: none;
       }
+
+      #${PLAYER_ID} {
+        position: fixed;
+        right: 20px;
+        bottom: 92px;
+        z-index: 2147483000;
+        width: min(390px, calc(100vw - 32px));
+        color: #24323a;
+        background: rgba(247, 249, 250, 0.96);
+        border: 1px solid rgba(82, 111, 127, 0.24);
+        border-radius: 14px;
+        box-shadow: 0 12px 34px rgba(21, 34, 41, 0.18);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+
+      html.dark #${PLAYER_ID},
+      html[data-theme="dark"] #${PLAYER_ID} {
+        color: #e4edf1;
+        background: rgba(35, 43, 48, 0.96);
+        border-color: rgba(151, 177, 190, 0.24);
+        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.36);
+      }
+
+      #${PLAYER_ID}[hidden] {
+        display: none !important;
+      }
+
+      #${PLAYER_ID} .cyan-player-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 42px;
+        padding: 7px 8px 7px 13px;
+        border-bottom: 1px solid rgba(82, 111, 127, 0.15);
+      }
+
+      html.dark #${PLAYER_ID} .cyan-player-header,
+      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-header {
+        border-bottom-color: rgba(151, 177, 190, 0.14);
+      }
+
+      #${PLAYER_ID} .cyan-player-title {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 600;
+        color: #547587;
+      }
+
+      html.dark #${PLAYER_ID} .cyan-player-title,
+      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-title {
+        color: #9bb6c4;
+      }
+
+      #${PLAYER_ID} .cyan-player-icon-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        color: inherit;
+        background: transparent;
+        border: 0;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+
+      #${PLAYER_ID} .cyan-player-icon-button:hover {
+        background: rgba(83, 111, 126, 0.12);
+      }
+
+      html.dark #${PLAYER_ID} .cyan-player-icon-button:hover,
+      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-icon-button:hover {
+        background: rgba(180, 201, 211, 0.12);
+      }
+
+      #${PLAYER_ID} .cyan-player-icon-button:disabled {
+        opacity: 0.42;
+        cursor: default;
+      }
+
+      #${PLAYER_ID} .cyan-player-body {
+        padding: 12px 13px 13px;
+      }
+
+      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-body {
+        display: none;
+      }
+
+      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-header {
+        border-bottom: 0;
+      }
+
+      #${PLAYER_ID} .cyan-player-controls {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        margin-bottom: 10px;
+      }
+
+      #${PLAYER_ID} .cyan-player-main-button {
+        width: 38px;
+        height: 38px;
+        color: #56798b;
+        background: rgba(96, 127, 145, 0.11);
+        border-radius: 50%;
+      }
+
+      html.dark #${PLAYER_ID} .cyan-player-main-button,
+      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-main-button {
+        color: #a7c0cc;
+        background: rgba(151, 177, 190, 0.12);
+      }
+
+      #${PLAYER_ID} .cyan-player-seek-row {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr) 42px;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 11px;
+      }
+
+      #${PLAYER_ID} .cyan-player-time {
+        color: rgba(36, 50, 58, 0.72);
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+      }
+
+      html.dark #${PLAYER_ID} .cyan-player-time,
+      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-time {
+        color: rgba(228, 237, 241, 0.72);
+      }
+
+      #${PLAYER_ID} input[type="range"] {
+        width: 100%;
+        accent-color: #66889a;
+        cursor: pointer;
+      }
+
+      #${PLAYER_ID} input[type="range"]:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+
+      #${PLAYER_ID} .cyan-player-settings {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 8px 13px;
+      }
+
+      #${PLAYER_ID} .cyan-player-setting {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: rgba(36, 50, 58, 0.74);
+      }
+
+      html.dark #${PLAYER_ID} .cyan-player-setting,
+      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-setting {
+        color: rgba(228, 237, 241, 0.74);
+      }
+
+      #${PLAYER_ID} select {
+        min-height: 28px;
+        padding: 2px 23px 2px 8px;
+        color: inherit;
+        background: rgba(255, 255, 255, 0.66);
+        border: 1px solid rgba(82, 111, 127, 0.24);
+        border-radius: 7px;
+        outline: none;
+      }
+
+      html.dark #${PLAYER_ID} select,
+      html[data-theme="dark"] #${PLAYER_ID} select {
+        background: rgba(20, 25, 28, 0.55);
+        border-color: rgba(151, 177, 190, 0.25);
+      }
+
+      @media (max-width: 640px) {
+        #${PLAYER_ID} {
+          right: 12px;
+          bottom: 78px;
+          width: calc(100vw - 24px);
+        }
+      }
     `;
 
     (document.head || document.documentElement).appendChild(style);
@@ -110,17 +343,11 @@
     if (!(group instanceof Element) || !group.isConnected) return false;
 
     const turn = group.closest('article, [data-testid^="conversation-turn-"]');
-    if (turn?.querySelector('[data-message-author-role="assistant"]')) {
-      return true;
-    }
-
-    if (group.closest('[data-message-author-role="assistant"]')) {
-      return true;
-    }
+    if (turn?.querySelector('[data-message-author-role="assistant"]')) return true;
+    if (group.closest('[data-message-author-role="assistant"]')) return true;
 
     const moreButton = group.querySelector(MORE_BUTTON_SELECTOR);
     const label = normalizeText(group.getAttribute('aria-label'));
-
     return !!moreButton && (label === '回复操作' || label === 'Response actions');
   }
 
@@ -128,28 +355,30 @@
     return group.querySelector(MORE_BUTTON_SELECTOR);
   }
 
-  function createSpeakerIcon() {
+  function createSvgIcon(pathData, viewBox = '0 0 24 24') {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
     svg.setAttribute('width', '20');
     svg.setAttribute('height', '20');
-    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('viewBox', viewBox);
     svg.setAttribute('fill', 'none');
     svg.setAttribute('aria-hidden', 'true');
     svg.classList.add('icon');
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute(
-      'd',
-      'M11 5 6.8 8.5H4.5A1.5 1.5 0 0 0 3 10v4a1.5 1.5 0 0 0 1.5 1.5h2.3L11 19V5Zm4.2 3.2a5.4 5.4 0 0 1 0 7.6M17.9 5.5a9 9 0 0 1 0 13'
-    );
+    path.setAttribute('d', pathData);
     path.setAttribute('stroke', 'currentColor');
     path.setAttribute('stroke-width', '1.8');
     path.setAttribute('stroke-linecap', 'round');
     path.setAttribute('stroke-linejoin', 'round');
-
     svg.appendChild(path);
     return svg;
+  }
+
+  function createSpeakerIcon() {
+    return createSvgIcon(
+      'M11 5 6.8 8.5H4.5A1.5 1.5 0 0 0 3 10v4a1.5 1.5 0 0 0 1.5 1.5h2.3L11 19V5Zm4.2 3.2a5.4 5.4 0 0 1 0 7.6M17.9 5.5a9 9 0 0 1 0 13'
+    );
   }
 
   function createVoiceButton(moreButton) {
@@ -166,7 +395,6 @@
       'flex items-center justify-center touch:w-10 h-8 w-8';
     span.appendChild(createSpeakerIcon());
     button.appendChild(span);
-
     button.addEventListener('click', handleVoiceButtonClick);
     return button;
   }
@@ -185,9 +413,7 @@
     }
 
     if (existingButton) {
-      if (existingButton !== group.lastElementChild) {
-        group.appendChild(existingButton);
-      }
+      if (existingButton !== group.lastElementChild) group.appendChild(existingButton);
       group.setAttribute(PROCESSED_GROUP_ATTRIBUTE, 'true');
       return;
     }
@@ -216,7 +442,6 @@
       ) {
         fallbackGroups.push(root);
       }
-
       for (const group of root.querySelectorAll(FALLBACK_ACTION_GROUP_SELECTOR)) {
         if (group.querySelector(MORE_BUTTON_SELECTOR)) fallbackGroups.push(group);
       }
@@ -230,9 +455,7 @@
   }
 
   function scanRoot(root) {
-    for (const group of collectActionGroups(root)) {
-      enhanceActionGroup(group);
-    }
+    for (const group of collectActionGroups(root)) enhanceActionGroup(group);
   }
 
   function scheduleScan(root) {
@@ -243,11 +466,8 @@
       scanFrame = null;
       const roots = Array.from(pendingScanRoots);
       pendingScanRoots.clear();
-
       for (const scanTarget of roots) {
-        if (scanTarget === document || scanTarget.isConnected) {
-          scanRoot(scanTarget);
-        }
+        if (scanTarget === document || scanTarget.isConnected) scanRoot(scanTarget);
       }
     });
   }
@@ -256,7 +476,6 @@
     if (!(item instanceof HTMLElement) || !item.isConnected) return false;
     if (item.getClientRects().length === 0) return false;
     if (item.closest('[aria-hidden="true"]')) return false;
-
     const style = window.getComputedStyle(item);
     return style.display !== 'none' && style.visibility !== 'hidden';
   }
@@ -361,7 +580,6 @@
 
     const newCandidate = candidates.find((item) => !operation.initialItems.has(item));
     const item = newCandidate || candidates[candidates.length - 1];
-
     activateOfficialVoiceItem(operation, item);
     return true;
   }
@@ -387,10 +605,7 @@
     button.setAttribute('aria-busy', 'true');
     document.documentElement.setAttribute(HIDE_MENU_ATTRIBUTE, 'true');
 
-    operation.observer = new MutationObserver(() => {
-      tryActivateVoiceItem(operation);
-    });
-
+    operation.observer = new MutationObserver(() => tryActivateVoiceItem(operation));
     operation.observer.observe(document.body, {
       childList: true,
       subtree: true,
@@ -424,11 +639,406 @@
     startOfficialVoiceAction(button, moreButton);
   }
 
+  function createPlayerIconButton(label, pathData, extraClass = '') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `cyan-player-icon-button ${extraClass}`.trim();
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.appendChild(createSvgIcon(pathData));
+    return button;
+  }
+
+  function replaceButtonIcon(button, label, pathData) {
+    if (!button) return;
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.replaceChildren(createSvgIcon(pathData));
+  }
+
+  function createOption(value, label) {
+    const option = document.createElement('option');
+    option.value = String(value);
+    option.textContent = label;
+    return option;
+  }
+
+  function createPlayer() {
+    if (player?.isConnected) return player;
+
+    player = document.createElement('section');
+    player.id = PLAYER_ID;
+    player.hidden = true;
+    player.setAttribute('role', 'region');
+    player.setAttribute('aria-label', 'ChatGPT 朗读播放器');
+    player.setAttribute(PLAYER_COLLAPSED_ATTRIBUTE, String(playerCollapsed));
+
+    const header = document.createElement('div');
+    header.className = 'cyan-player-header';
+
+    playerTitle = document.createElement('div');
+    playerTitle.className = 'cyan-player-title';
+    playerTitle.textContent = 'ChatGPT 朗读播放器';
+
+    minimizeButton = createPlayerIconButton(
+      playerCollapsed ? '展开播放器' : '最小化播放器',
+      playerCollapsed ? 'M7 12h10M12 7v10' : 'M7 12h10'
+    );
+    minimizeButton.addEventListener('click', togglePlayerCollapsed);
+
+    const closeButton = createPlayerIconButton(
+      '关闭播放器',
+      'M6 6l12 12M18 6 6 18'
+    );
+    closeButton.addEventListener('click', closePlayer);
+
+    header.append(playerTitle, minimizeButton, closeButton);
+
+    playerBody = document.createElement('div');
+    playerBody.className = 'cyan-player-body';
+
+    const controls = document.createElement('div');
+    controls.className = 'cyan-player-controls';
+
+    backwardButton = createPlayerIconButton(
+      `后退 ${seekStep} 秒`,
+      'M11 7 6 12l5 5v-4.1c3.7 0 6.1 1.2 7.5 4.1-.2-5.2-2.6-8-7.5-8V7Z'
+    );
+    backwardButton.addEventListener('click', () => seekBy(-seekStep));
+
+    playPauseButton = createPlayerIconButton(
+      '播放',
+      'M9 7.5v9l7-4.5-7-4.5Z',
+      'cyan-player-main-button'
+    );
+    playPauseButton.addEventListener('click', togglePlayback);
+
+    forwardButton = createPlayerIconButton(
+      `前进 ${seekStep} 秒`,
+      'm13 7 5 5-5 5v-4.1c-3.7 0-6.1 1.2-7.5 4.1.2-5.2 2.6-8 7.5-8V7Z'
+    );
+    forwardButton.addEventListener('click', () => seekBy(seekStep));
+
+    controls.append(backwardButton, playPauseButton, forwardButton);
+
+    const seekRow = document.createElement('div');
+    seekRow.className = 'cyan-player-seek-row';
+
+    currentTimeLabel = document.createElement('span');
+    currentTimeLabel.className = 'cyan-player-time';
+    currentTimeLabel.textContent = '0:00';
+
+    seekRange = document.createElement('input');
+    seekRange.type = 'range';
+    seekRange.min = '0';
+    seekRange.max = '1000';
+    seekRange.step = '1';
+    seekRange.value = '0';
+    seekRange.setAttribute('aria-label', '播放进度');
+    seekRange.addEventListener('input', handleSeekInput);
+
+    durationLabel = document.createElement('span');
+    durationLabel.className = 'cyan-player-time';
+    durationLabel.textContent = '--:--';
+
+    seekRow.append(currentTimeLabel, seekRange, durationLabel);
+
+    const settings = document.createElement('div');
+    settings.className = 'cyan-player-settings';
+
+    const seekSetting = document.createElement('label');
+    seekSetting.className = 'cyan-player-setting';
+    seekSetting.append(document.createTextNode('跳转'));
+    seekStepSelect = document.createElement('select');
+    seekStepSelect.setAttribute('aria-label', '快进后退秒数');
+    for (const seconds of SEEK_STEP_OPTIONS) {
+      seekStepSelect.appendChild(createOption(seconds, `${seconds} 秒`));
+    }
+    seekStepSelect.value = String(seekStep);
+    seekStepSelect.addEventListener('change', handleSeekStepChange);
+    seekSetting.appendChild(seekStepSelect);
+
+    const speedSetting = document.createElement('label');
+    speedSetting.className = 'cyan-player-setting';
+    speedSetting.append(document.createTextNode('速度'));
+    speedSelect = document.createElement('select');
+    speedSelect.setAttribute('aria-label', '播放速度');
+    for (const rate of PLAYBACK_RATE_OPTIONS) {
+      speedSelect.appendChild(createOption(rate, `${rate}×`));
+    }
+    speedSelect.value = String(playbackRate);
+    speedSelect.addEventListener('change', handlePlaybackRateChange);
+    speedSetting.appendChild(speedSelect);
+
+    settings.append(seekSetting, speedSetting);
+    playerBody.append(controls, seekRow, settings);
+    player.append(header, playerBody);
+    document.body.appendChild(player);
+    updatePlayerState();
+    return player;
+  }
+
+  function formatTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return '--:--';
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${minutes}:${remainingSeconds}`;
+  }
+
+  function hasUsableDuration(audio = currentAudio) {
+    return !!audio && Number.isFinite(audio.duration) && audio.duration > 0;
+  }
+
+  function isUsableAudio(audio) {
+    return audio instanceof HTMLAudioElement && audio.isConnected !== false;
+  }
+
+  function scoreAudio(audio, index) {
+    if (!(audio instanceof HTMLAudioElement)) return -Infinity;
+    let score = index;
+    const source = `${audio.currentSrc || audio.src || ''}`;
+    if (source) score += 100;
+    if (/synthesi[sz]e|speech|audio/i.test(source)) score += 180;
+    if (!audio.paused && !audio.ended) score += 1000;
+    if (audio.currentTime > 0) score += 80;
+    if (audio.readyState > 0) score += 20;
+    if (audio === currentAudio) score += 40;
+    if (audio.ended) score -= 120;
+    return score;
+  }
+
+  function findBestAudio() {
+    const audios = Array.from(document.querySelectorAll('audio'));
+    if (currentAudio && !audios.includes(currentAudio)) audios.push(currentAudio);
+    if (audios.length === 0) return null;
+
+    return audios
+      .map((audio, index) => ({ audio, score: scoreAudio(audio, index) }))
+      .sort((a, b) => b.score - a.score)[0].audio;
+  }
+
+  function bindAudio(audio) {
+    if (!(audio instanceof HTMLAudioElement)) return;
+    createPlayer();
+
+    if (currentAudio === audio) {
+      if (!audio.paused || audio.currentTime > 0) showPlayer();
+      updatePlayerState();
+      return;
+    }
+
+    unbindCurrentAudio();
+    currentAudio = audio;
+    currentAudio.playbackRate = playbackRate;
+
+    for (const eventName of [
+      'play',
+      'pause',
+      'ended',
+      'timeupdate',
+      'durationchange',
+      'loadedmetadata',
+      'ratechange',
+      'emptied',
+    ]) {
+      currentAudio.addEventListener(eventName, handleAudioStateEvent);
+    }
+
+    showPlayer();
+    updatePlayerState();
+  }
+
+  function unbindCurrentAudio() {
+    if (!currentAudio) return;
+    for (const eventName of [
+      'play',
+      'pause',
+      'ended',
+      'timeupdate',
+      'durationchange',
+      'loadedmetadata',
+      'ratechange',
+      'emptied',
+    ]) {
+      currentAudio.removeEventListener(eventName, handleAudioStateEvent);
+    }
+    currentAudio = null;
+  }
+
+  function handleAudioStateEvent(event) {
+    if (event.currentTarget !== currentAudio) return;
+    if (event.type === 'play') showPlayer();
+    updatePlayerState();
+  }
+
+  function showPlayer() {
+    createPlayer();
+    player.hidden = false;
+  }
+
+  function closePlayer() {
+    if (currentAudio && !currentAudio.paused) currentAudio.pause();
+    if (player) player.hidden = true;
+  }
+
+  function togglePlayerCollapsed() {
+    playerCollapsed = !playerCollapsed;
+    localStorage.setItem(STORAGE_PLAYER_COLLAPSED, String(playerCollapsed));
+    player?.setAttribute(PLAYER_COLLAPSED_ATTRIBUTE, String(playerCollapsed));
+    replaceButtonIcon(
+      minimizeButton,
+      playerCollapsed ? '展开播放器' : '最小化播放器',
+      playerCollapsed ? 'M7 12h10M12 7v10' : 'M7 12h10'
+    );
+  }
+
+  function togglePlayback() {
+    if (!currentAudio) return;
+    if (currentAudio.paused || currentAudio.ended) {
+      const playPromise = currentAudio.play();
+      playPromise?.catch((error) => {
+        console.warn(`${SCRIPT_PREFIX} 音频播放失败。`, error);
+      });
+    } else {
+      currentAudio.pause();
+    }
+  }
+
+  function seekBy(seconds) {
+    if (!currentAudio) return;
+    const duration = hasUsableDuration() ? currentAudio.duration : Infinity;
+    const nextTime = Math.max(0, Math.min(currentAudio.currentTime + seconds, duration));
+    if (Number.isFinite(nextTime)) currentAudio.currentTime = nextTime;
+    updatePlayerState();
+  }
+
+  function handleSeekInput() {
+    if (!currentAudio || !hasUsableDuration()) return;
+    const ratio = Number(seekRange.value) / 1000;
+    currentAudio.currentTime = currentAudio.duration * ratio;
+    updatePlayerState();
+  }
+
+  function handleSeekStepChange() {
+    const nextStep = Number(seekStepSelect.value);
+    if (!SEEK_STEP_OPTIONS.includes(nextStep)) return;
+    seekStep = nextStep;
+    localStorage.setItem(STORAGE_SEEK_STEP, String(seekStep));
+    backwardButton.setAttribute('aria-label', `后退 ${seekStep} 秒`);
+    backwardButton.title = `后退 ${seekStep} 秒`;
+    forwardButton.setAttribute('aria-label', `前进 ${seekStep} 秒`);
+    forwardButton.title = `前进 ${seekStep} 秒`;
+  }
+
+  function handlePlaybackRateChange() {
+    const nextRate = Number(speedSelect.value);
+    if (!PLAYBACK_RATE_OPTIONS.includes(nextRate)) return;
+    playbackRate = nextRate;
+    localStorage.setItem(STORAGE_PLAYBACK_RATE, String(playbackRate));
+    if (currentAudio) currentAudio.playbackRate = playbackRate;
+  }
+
+  function updatePlayerState() {
+    if (!player) return;
+
+    const hasAudio = currentAudio instanceof HTMLAudioElement;
+    const isPlaying = hasAudio && !currentAudio.paused && !currentAudio.ended;
+    const canSeek = hasAudio && hasUsableDuration();
+
+    backwardButton.disabled = !hasAudio;
+    forwardButton.disabled = !hasAudio;
+    playPauseButton.disabled = !hasAudio;
+    seekRange.disabled = !canSeek;
+    speedSelect.disabled = !hasAudio;
+
+    replaceButtonIcon(
+      playPauseButton,
+      isPlaying ? '暂停' : '播放',
+      isPlaying ? 'M9 7v10M15 7v10' : 'M9 7.5v9l7-4.5-7-4.5Z'
+    );
+
+    if (!hasAudio) {
+      currentTimeLabel.textContent = '0:00';
+      durationLabel.textContent = '--:--';
+      seekRange.value = '0';
+      playerTitle.textContent = 'ChatGPT 朗读播放器';
+      return;
+    }
+
+    currentTimeLabel.textContent = formatTime(currentAudio.currentTime);
+    durationLabel.textContent = formatTime(currentAudio.duration);
+    seekRange.value = canSeek
+      ? String(Math.round((currentAudio.currentTime / currentAudio.duration) * 1000))
+      : '0';
+    speedSelect.value = String(currentAudio.playbackRate || playbackRate);
+    playerTitle.textContent = isPlaying ? '正在朗读' : 'ChatGPT 朗读播放器';
+  }
+
+  function isEditableTarget(target) {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest(
+      'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]'
+    );
+  }
+
+  function handleGlobalKeydown(event) {
+    if (!player || player.hidden || !currentAudio) return;
+    if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (isEditableTarget(event.target)) return;
+
+    let handled = true;
+    switch (event.key) {
+      case 'ArrowLeft':
+        seekBy(-seekStep);
+        break;
+      case 'ArrowRight':
+        seekBy(seekStep);
+        break;
+      case ' ':
+      case 'Spacebar':
+        togglePlayback();
+        break;
+      case 'Escape':
+        closePlayer();
+        break;
+      default:
+        handled = false;
+    }
+
+    if (handled) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function handleDocumentPlay(event) {
+    const audio = event.target;
+    if (audio instanceof HTMLAudioElement) bindAudio(audio);
+  }
+
+  function scanForAudio() {
+    const audio = findBestAudio();
+    if (!audio) return;
+    if (!audio.paused || audio.currentTime > 0 || audio.readyState > 0) bindAudio(audio);
+  }
+
+  function startAudioTracking() {
+    document.addEventListener('play', handleDocumentPlay, true);
+    document.addEventListener('keydown', handleGlobalKeydown, true);
+    audioScanTimer = window.setInterval(scanForAudio, AUDIO_SCAN_INTERVAL_MS);
+    scanForAudio();
+  }
+
   function observePage() {
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-          if (node instanceof Element) scheduleScan(node);
+          if (node instanceof Element) {
+            scheduleScan(node);
+            if (node.matches('audio')) bindAudio(node);
+            const nestedAudio = node.querySelector?.('audio');
+            if (nestedAudio) bindAudio(nestedAudio);
+          }
         }
       }
     });
@@ -440,6 +1050,8 @@
   }
 
   installStyle();
+  createPlayer();
   scanRoot(document);
   observePage();
+  startAudioTracking();
 })();
