@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      1.1.0
+// @version      1.2.0
 // @description  在 ChatGPT 助手回答的一级操作栏末尾增加朗读按钮，并在后台调用官方“朗读/重播”菜单项。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -25,7 +25,7 @@
 2. 实现方式
  - 通过当前回答操作栏中明确标记为“更多操作”的按钮打开对应菜单。
  - 使用官方稳定标识 data-testid="voice-play-turn-action-button" 定位朗读菜单项。
- - 自动操作期间临时隐藏包含该菜单项的弹出菜单，避免视觉闪烁。
+ - 自动操作期间仅将包含该菜单项的弹出菜单设为透明，避免视觉闪烁且不影响脚本触发。
  - 不读取回答正文，不调用未公开接口，也不自行实现语音合成。
 
 3. 性能与可靠性
@@ -75,18 +75,26 @@
       html[${HIDE_MENU_ATTRIBUTE}] [role="menu"]:has(${OFFICIAL_VOICE_ITEM_SELECTOR}),
       html[${HIDE_MENU_ATTRIBUTE}] [data-radix-menu-content]:has(${OFFICIAL_VOICE_ITEM_SELECTOR}) {
         opacity: 0 !important;
-        visibility: hidden !important;
-        pointer-events: none !important;
         transition: none !important;
         animation: none !important;
       }
 
       button[${CUSTOM_BUTTON_ATTRIBUTE}="true"] {
-        color: color-mix(in srgb, currentColor 76%, #4f7f91 24%);
+        color: #607f91;
       }
 
       button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover {
-        color: color-mix(in srgb, currentColor 68%, #3f778b 32%);
+        color: #4f7185;
+      }
+
+      html.dark button[${CUSTOM_BUTTON_ATTRIBUTE}="true"],
+      html[data-theme="dark"] button[${CUSTOM_BUTTON_ATTRIBUTE}="true"] {
+        color: #88a3b2;
+      }
+
+      html.dark button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover,
+      html[data-theme="dark"] button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover {
+        color: #9bb3c0;
       }
 
       button[${CUSTOM_BUTTON_ATTRIBUTE}="true"][aria-busy="true"] {
@@ -306,6 +314,26 @@
     }
   }
 
+  function dispatchActivationSequence(element) {
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      button: 0,
+      buttons: 1,
+    };
+
+    if (typeof PointerEvent === 'function') {
+      element.dispatchEvent(new PointerEvent('pointerdown', eventInit));
+      element.dispatchEvent(new PointerEvent('pointerup', { ...eventInit, buttons: 0 }));
+    }
+
+    element.dispatchEvent(new MouseEvent('mousedown', eventInit));
+    element.dispatchEvent(new MouseEvent('mouseup', { ...eventInit, buttons: 0 }));
+    element.click();
+  }
+
   function activateOfficialVoiceItem(operation, item) {
     if (operation.completed || operation.activationTimerId !== null) return;
     if (activeOperation !== operation) return;
@@ -316,7 +344,7 @@
       if (!isVisibleVoiceItem(item)) return;
 
       operation.completed = true;
-      item.click();
+      dispatchActivationSequence(item);
 
       window.setTimeout(() => {
         closeOpenMenu();
