@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      1.0.0
-// @description  在 ChatGPT 助手回答的一级操作栏中增加朗读按钮，并在后台调用官方“朗读/重播”菜单项。
+// @version      1.1.0
+// @description  在 ChatGPT 助手回答的一级操作栏末尾增加朗读按钮，并在后台调用官方“朗读/重播”菜单项。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -18,12 +18,12 @@
 脚本说明：
 
 1. 作用
- - 在每条助手回答的一级操作栏中增加一个朗读按钮。
+ - 在每条助手回答的一级操作栏末尾增加一个朗读按钮。
  - 用户只需点击一次，脚本会在后台打开“更多操作”，调用官方“朗读/重播”菜单项。
  - 原“更多操作”菜单中的朗读或重播入口保持不变。
 
 2. 实现方式
- - 通过官方一级操作栏的“更多操作”按钮打开对应菜单。
+ - 通过当前回答操作栏中明确标记为“更多操作”的按钮打开对应菜单。
  - 使用官方稳定标识 data-testid="voice-play-turn-action-button" 定位朗读菜单项。
  - 自动操作期间临时隐藏包含该菜单项的弹出菜单，避免视觉闪烁。
  - 不读取回答正文，不调用未公开接口，也不自行实现语音合成。
@@ -31,7 +31,7 @@
 3. 性能与可靠性
  - 使用 MutationObserver 处理 ChatGPT 单页应用中的动态回答和重新渲染。
  - 只扫描新增节点附近的回复操作栏，并使用标记避免重复插入。
- - 每次点击都设置超时并及时清理临时监听器、样式状态和菜单状态。
+ - 每次点击都设置超时并及时清理临时监听器、样式状态、菜单和焦点状态。
  - 同一时间只执行一次后台菜单操作，避免多个回答之间相互干扰。
 */
 
@@ -45,7 +45,6 @@
   const MORE_BUTTON_SELECTOR = [
     'button[aria-label="更多操作"]',
     'button[aria-label="More actions"]',
-    'button[aria-haspopup="menu"]',
   ].join(', ');
   const OFFICIAL_VOICE_ITEM_SELECTOR =
     '[data-testid="voice-play-turn-action-button"]';
@@ -55,8 +54,9 @@
   const HIDE_MENU_ATTRIBUTE = 'data-cyan-hide-voice-menu';
   const STYLE_ELEMENT_ID = 'cyan-chatgpt-voice-button-style';
 
-  const MENU_WAIT_TIMEOUT_MS = 1600;
-  const MENU_CLOSE_DELAY_MS = 80;
+  const MENU_WAIT_TIMEOUT_MS = 2000;
+  const ITEM_ACTIVATION_DELAY_MS = 32;
+  const MENU_CLOSE_DELAY_MS = 100;
 
   let activeOperation = null;
   let scanFrame = null;
@@ -79,6 +79,14 @@
         pointer-events: none !important;
         transition: none !important;
         animation: none !important;
+      }
+
+      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"] {
+        color: color-mix(in srgb, currentColor 76%, #4f7f91 24%);
+      }
+
+      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover {
+        color: color-mix(in srgb, currentColor 68%, #3f778b 32%);
       }
 
       button[${CUSTOM_BUTTON_ATTRIBUTE}="true"][aria-busy="true"] {
@@ -144,15 +152,12 @@
     button.setAttribute('aria-label', '朗读或重播');
     button.setAttribute('title', '朗读或重播');
 
-    const moreButtonSpan = moreButton.querySelector(':scope > span');
-    if (moreButtonSpan) {
-      const span = document.createElement('span');
-      span.className = moreButtonSpan.className;
-      span.appendChild(createSpeakerIcon());
-      button.appendChild(span);
-    } else {
-      button.appendChild(createSpeakerIcon());
-    }
+    const officialInner = moreButton.querySelector(':scope > span');
+    const span = document.createElement('span');
+    span.className = officialInner?.className ||
+      'flex items-center justify-center touch:w-10 h-8 w-8';
+    span.appendChild(createSpeakerIcon());
+    button.appendChild(span);
 
     button.addEventListener('click', handleVoiceButtonClick);
     return button;
@@ -172,12 +177,14 @@
     }
 
     if (existingButton) {
+      if (existingButton !== group.lastElementChild) {
+        group.appendChild(existingButton);
+      }
       group.setAttribute(PROCESSED_GROUP_ATTRIBUTE, 'true');
       return;
     }
 
-    const button = createVoiceButton(moreButton);
-    moreButton.before(button);
+    group.appendChild(createVoiceButton(moreButton));
     group.setAttribute(PROCESSED_GROUP_ATTRIBUTE, 'true');
   }
 
@@ -237,15 +244,31 @@
     });
   }
 
+  function isVisibleVoiceItem(item) {
+    if (!(item instanceof HTMLElement) || !item.isConnected) return false;
+    if (item.getClientRects().length === 0) return false;
+    if (item.closest('[aria-hidden="true"]')) return false;
+
+    const style = window.getComputedStyle(item);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  }
+
   function getCandidateVoiceItems() {
     return Array.from(document.querySelectorAll(OFFICIAL_VOICE_ITEM_SELECTOR)).filter(
-      (item) => {
-        if (!(item instanceof HTMLElement) || !item.isConnected) return false;
-        if (item.getClientRects().length === 0) return false;
-        if (item.closest('[aria-hidden="true"]')) return false;
-        return true;
-      }
+      isVisibleVoiceItem
     );
+  }
+
+  function dispatchPointerExit(element) {
+    for (const type of ['pointerout', 'pointerleave', 'mouseout', 'mouseleave']) {
+      element.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: type === 'pointerout' || type === 'mouseout',
+          cancelable: false,
+          view: window,
+        })
+      );
+    }
   }
 
   function closeOpenMenu() {
@@ -259,15 +282,23 @@
     );
   }
 
+  function clearMoreButtonVisualState(operation) {
+    dispatchPointerExit(operation.moreButton);
+    operation.moreButton.blur();
+    operation.button.focus({ preventScroll: true });
+  }
+
   function finishOperation(operation, error = null) {
     if (activeOperation !== operation) return;
 
     activeOperation = null;
     operation.observer?.disconnect();
     window.clearTimeout(operation.timeoutId);
+    window.clearTimeout(operation.activationTimerId);
     operation.button.removeAttribute('aria-busy');
     operation.button.disabled = false;
     document.documentElement.removeAttribute(HIDE_MENU_ATTRIBUTE);
+    clearMoreButtonVisualState(operation);
 
     if (error) {
       closeOpenMenu();
@@ -276,18 +307,22 @@
   }
 
   function activateOfficialVoiceItem(operation, item) {
-    if (operation.completed || activeOperation !== operation) return;
+    if (operation.completed || operation.activationTimerId !== null) return;
+    if (activeOperation !== operation) return;
 
-    operation.completed = true;
-    item.click();
+    operation.activationTimerId = window.setTimeout(() => {
+      operation.activationTimerId = null;
+      if (operation.completed || activeOperation !== operation) return;
+      if (!isVisibleVoiceItem(item)) return;
 
-    window.setTimeout(() => {
-      finishOperation(operation);
+      operation.completed = true;
+      item.click();
 
-      if (document.querySelector(OFFICIAL_VOICE_ITEM_SELECTOR)) {
+      window.setTimeout(() => {
         closeOpenMenu();
-      }
-    }, MENU_CLOSE_DELAY_MS);
+        finishOperation(operation);
+      }, MENU_CLOSE_DELAY_MS);
+    }, ITEM_ACTIVATION_DELAY_MS);
   }
 
   function tryActivateVoiceItem(operation) {
@@ -315,6 +350,7 @@
       initialItems: new Set(document.querySelectorAll(OFFICIAL_VOICE_ITEM_SELECTOR)),
       observer: null,
       timeoutId: null,
+      activationTimerId: null,
       completed: false,
     };
 
@@ -330,6 +366,8 @@
     operation.observer.observe(document.body, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: ['data-state', 'aria-hidden', 'style'],
     });
 
     operation.timeoutId = window.setTimeout(() => {
@@ -337,7 +375,7 @@
     }, MENU_WAIT_TIMEOUT_MS);
 
     moreButton.click();
-    tryActivateVoiceItem(operation);
+    window.requestAnimationFrame(() => tryActivateVoiceItem(operation));
   }
 
   function handleVoiceButtonClick(event) {
