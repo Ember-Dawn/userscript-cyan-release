@@ -5,12 +5,13 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.0.0
-// @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、音频下载和键盘快捷键。
+// @version      3.1.0
+// @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
+// @require      https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js
 // @grant        none
 // ==/UserScript==
 
@@ -24,7 +25,7 @@
 
 2. 悬浮播放器
  - 仅在 ChatGPT 官方朗读真正开始播放后显示播放器，不因页面中残留 audio 元素自动弹出。
- - 提供上一条、快退、播放/暂停、快进、下一条、进度条、时间显示、倍速、下载、最小化和关闭。
+ - 提供上一条、快退、播放/暂停、快进、下一条、进度条、时间显示、倍速、MP3 下载、最小化和关闭。
  - 前进/后退步长可选 3、5、10 秒，默认 3 秒，并保存到 localStorage。
 
 3. 键盘快捷键
@@ -38,6 +39,10 @@
  - 关闭后再次主动朗读会创建新的播放会话，旧关闭状态不会误伤新播放。
  - 内部菜单清理不再派发全局 Escape，避免误触播放器关闭快捷键。
  - 消息列表仅在切换时即时扫描；切换聊天、追加消息和重新回答时会重新解析当前可见消息。
+
+5. MP3 下载
+ - 下载时在浏览器本地将当前官方朗读音频转换为单声道 96 kbps MP3。
+ - 使用通过 @require 单独加载的 lamejs 1.2.1，不上传音频到第三方服务器。
 */
 
 (() => {
@@ -765,19 +770,16 @@
     return `${currentAudio.currentSrc || currentAudio.src || ''}`.trim();
   }
 
-  function getDownloadExtension(source, mimeType = '') {
-    const normalizedMime = mimeType.toLowerCase();
-    if (normalizedMime.includes('mpeg')) return 'mp3';
-    if (normalizedMime.includes('wav')) return 'wav';
-    if (normalizedMime.includes('ogg')) return 'ogg';
-    if (normalizedMime.includes('webm')) return 'webm';
-    if (normalizedMime.includes('mp4') || normalizedMime.includes('aac')) return 'm4a';
+  const MP3_BITRATE_KBPS = 96;
+  const MP3_SAMPLE_BLOCK_SIZE = 1152;
+  const MP3_YIELD_EVERY_BLOCKS = 32;
 
-    try {
-      const match = new URL(source, location.href).pathname.match(/\.([a-z0-9]{2,5})$/i);
-      if (match) return match[1].toLowerCase();
-    } catch {}
-    return 'm4a';
+  function getLameJs() {
+    const library = globalThis.lamejs || window.lamejs;
+    if (!library?.Mp3Encoder) {
+      throw new Error('lamejs is unavailable');
+    }
+    return library;
   }
 
   function buildDownloadFilename(extension) {
@@ -791,16 +793,91 @@
     return `${base}-${stamp}.${extension}`;
   }
 
-  function triggerBlobDownload(blob, source = '') {
+  function triggerMp3Download(blob) {
     const objectUrl = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = objectUrl;
-    link.download = buildDownloadFilename(getDownloadExtension(source, blob.type));
+    link.download = buildDownloadFilename('mp3');
     link.style.display = 'none';
     document.body.appendChild(link);
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+  }
+
+  function floatToInt16(sample) {
+    const clamped = Math.max(-1, Math.min(1, sample));
+    return clamped < 0
+      ? Math.round(clamped * 0x8000)
+      : Math.round(clamped * 0x7fff);
+  }
+
+  function downmixAudioBufferToMono(audioBuffer) {
+    const channelCount = audioBuffer.numberOfChannels;
+    const sampleCount = audioBuffer.length;
+    const mono = new Int16Array(sampleCount);
+    const channels = Array.from(
+      { length: channelCount },
+      (_, index) => audioBuffer.getChannelData(index)
+    );
+
+    for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+      let mixedSample = 0;
+      for (const channel of channels) {
+        mixedSample += channel[sampleIndex] || 0;
+      }
+      mono[sampleIndex] = floatToInt16(mixedSample / channelCount);
+    }
+
+    return mono;
+  }
+
+  function yieldToBrowser() {
+    return new Promise((resolve) => {
+      if (document.hidden) {
+        window.setTimeout(resolve, 0);
+      } else {
+        window.requestAnimationFrame(() => resolve());
+      }
+    });
+  }
+
+  async function encodeAudioBufferToMp3(audioBuffer) {
+    const { Mp3Encoder } = getLameJs();
+    const monoSamples = downmixAudioBufferToMono(audioBuffer);
+    const encoder = new Mp3Encoder(1, audioBuffer.sampleRate, MP3_BITRATE_KBPS);
+    const chunks = [];
+    const totalBlocks = Math.ceil(monoSamples.length / MP3_SAMPLE_BLOCK_SIZE);
+
+    for (let offset = 0, blockIndex = 0;
+      offset < monoSamples.length;
+      offset += MP3_SAMPLE_BLOCK_SIZE, blockIndex += 1) {
+      const block = monoSamples.subarray(offset, offset + MP3_SAMPLE_BLOCK_SIZE);
+      const encoded = encoder.encodeBuffer(block);
+      if (encoded.length > 0) chunks.push(new Uint8Array(encoded));
+
+      if (blockIndex % MP3_YIELD_EVERY_BLOCKS === 0) {
+        const progress = Math.min(99, Math.round(((blockIndex + 1) / totalBlocks) * 100));
+        setPlayerStatus(`正在转换 MP3… ${progress}%`, 0);
+        await yieldToBrowser();
+      }
+    }
+
+    const finalChunk = encoder.flush();
+    if (finalChunk.length > 0) chunks.push(new Uint8Array(finalChunk));
+    return new Blob(chunks, { type: 'audio/mpeg' });
+  }
+
+  async function decodeAudioBlob(blob) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error('Web Audio API is unavailable');
+
+    const context = new AudioContextClass();
+    try {
+      return await context.decodeAudioData(await blob.arrayBuffer());
+    } finally {
+      await context.close().catch(() => {});
+    }
   }
 
   async function downloadCurrentAudio() {
@@ -812,19 +889,28 @@
     }
 
     downloadInProgress = true;
-    setPlayerStatus('正在准备下载…', 0);
+    setPlayerStatus('正在读取音频…', 0);
     updatePlayerState();
 
     try {
       const response = await fetch(source, { credentials: 'include' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const blob = await response.blob();
-      if (!blob.size) throw new Error('empty audio blob');
-      triggerBlobDownload(blob, source);
-      setPlayerStatus('已开始下载');
+      const sourceBlob = await response.blob();
+      if (!sourceBlob.size) throw new Error('empty audio blob');
+
+      setPlayerStatus('正在解码音频…', 0);
+      const audioBuffer = await decodeAudioBlob(sourceBlob);
+      const mp3Blob = await encodeAudioBufferToMp3(audioBuffer);
+      if (!mp3Blob.size) throw new Error('empty MP3 blob');
+
+      triggerMp3Download(mp3Blob);
+      setPlayerStatus('MP3 已开始下载');
     } catch (error) {
-      console.warn(`${SCRIPT_PREFIX} 音频下载失败。`, error);
-      setPlayerStatus('下载失败');
+      console.warn(`${SCRIPT_PREFIX} MP3 下载失败。`, error);
+      const message = /lamejs/i.test(String(error?.message || error))
+        ? 'MP3 编码器加载失败'
+        : 'MP3 下载失败';
+      setPlayerStatus(message);
     } finally {
       downloadInProgress = false;
       updatePlayerState();
@@ -872,7 +958,7 @@
     speedSetting.appendChild(speedSelect);
 
     downloadButton = createPlayerIconButton(
-      '下载当前音频',
+      '下载当前音频为 MP3',
       'M12 3v12M8 11l4 4 4-4M5 20h14'
     );
     downloadButton.addEventListener('click', downloadCurrentAudio);
