@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-voice-button.user.js
-// @version      2.0.0
-// @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并为官方朗读音频提供悬浮播放器、进度控制、倍速和快捷键。
+// @version      2.1.0
+// @description  在 ChatGPT 助手回答的一级操作栏增加朗读按钮，并为官方朗读音频提供紧凑悬浮播放器、进度控制、倍速和快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -23,7 +23,7 @@
  - 原菜单中的官方朗读或重播入口保持不变。
 
 2. 悬浮播放器
- - 自动接管 ChatGPT 官方朗读所创建的 audio 元素，不自行合成语音。
+ - 仅在 ChatGPT 官方朗读真正开始播放后显示播放器，不因页面中残留 audio 元素自动弹出。
  - 提供后退、播放/暂停、前进、进度条、时间显示、倍速、最小化和关闭。
  - 前进/后退步长可选 3、5、10 秒，默认 3 秒，并保存到 localStorage。
 
@@ -75,7 +75,6 @@
 
   let currentAudio = null;
   let player = null;
-  let playerTitle = null;
   let playerBody = null;
   let playPauseButton = null;
   let backwardButton = null;
@@ -87,6 +86,8 @@
   let speedSelect = null;
   let minimizeButton = null;
   let audioScanTimer = null;
+  let dismissedAudio = null;
+  let reopenRequestUntil = 0;
 
   let seekStep = readNumberSetting(STORAGE_SEEK_STEP, 3, SEEK_STEP_OPTIONS);
   let playbackRate = readNumberSetting(
@@ -118,86 +119,72 @@
         animation: none !important;
       }
 
-      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"] {
-        color: #607f91;
-      }
-
-      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover {
-        color: #4f7185;
-      }
-
+      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"] { color: #607f91; }
+      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover { color: #4f7185; }
       html.dark button[${CUSTOM_BUTTON_ATTRIBUTE}="true"],
-      html[data-theme="dark"] button[${CUSTOM_BUTTON_ATTRIBUTE}="true"] {
-        color: #88a3b2;
-      }
-
+      html[data-theme="dark"] button[${CUSTOM_BUTTON_ATTRIBUTE}="true"] { color: #88a3b2; }
       html.dark button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover,
-      html[data-theme="dark"] button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover {
-        color: #9bb3c0;
-      }
-
-      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"][aria-busy="true"] {
-        opacity: 0.55;
-        pointer-events: none;
-      }
+      html[data-theme="dark"] button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]:hover { color: #9bb3c0; }
+      button[${CUSTOM_BUTTON_ATTRIBUTE}="true"][aria-busy="true"] { opacity: 0.55; pointer-events: none; }
 
       #${PLAYER_ID} {
         position: fixed;
-        right: 20px;
-        bottom: 92px;
+        right: 18px;
+        bottom: 86px;
         z-index: 2147483000;
-        width: min(390px, calc(100vw - 32px));
-        color: #24323a;
-        background: rgba(247, 249, 250, 0.96);
-        border: 1px solid rgba(82, 111, 127, 0.24);
-        border-radius: 14px;
-        box-shadow: 0 12px 34px rgba(21, 34, 41, 0.18);
+        width: min(344px, calc(100vw - 28px));
+        color: #e7eef2;
+        background: rgba(39, 53, 62, 0.97);
+        border: 1px solid rgba(157, 183, 196, 0.28);
+        border-radius: 12px;
+        box-shadow: 0 12px 30px rgba(10, 18, 23, 0.34);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
-        font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 12px/1.3 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         overflow: hidden;
       }
-
-      html.dark #${PLAYER_ID},
-      html[data-theme="dark"] #${PLAYER_ID} {
-        color: #e4edf1;
-        background: rgba(35, 43, 48, 0.96);
-        border-color: rgba(151, 177, 190, 0.24);
-        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.36);
-      }
-
-      #${PLAYER_ID}[hidden] {
-        display: none !important;
-      }
+      #${PLAYER_ID}[hidden] { display: none !important; }
 
       #${PLAYER_ID} .cyan-player-header {
         display: flex;
         align-items: center;
         gap: 8px;
-        min-height: 42px;
-        padding: 7px 8px 7px 13px;
-        border-bottom: 1px solid rgba(82, 111, 127, 0.15);
+        min-height: 36px;
+        padding: 5px 6px 5px 10px;
+        background: rgba(24, 35, 42, 0.34);
+        border-bottom: 1px solid rgba(178, 199, 209, 0.14);
       }
-
-      html.dark #${PLAYER_ID} .cyan-player-header,
-      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-header {
-        border-bottom-color: rgba(151, 177, 190, 0.14);
-      }
-
-      #${PLAYER_ID} .cyan-player-title {
+      #${PLAYER_ID} .cyan-player-header-settings {
+        display: flex;
+        align-items: center;
+        gap: 9px;
         min-width: 0;
         flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
+      }
+      #${PLAYER_ID} .cyan-player-setting {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
         white-space: nowrap;
-        font-weight: 600;
-        color: #547587;
+        color: rgba(231, 238, 242, 0.78);
       }
-
-      html.dark #${PLAYER_ID} .cyan-player-title,
-      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-title {
-        color: #9bb6c4;
+      #${PLAYER_ID} .cyan-player-window-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 1px;
       }
+      #${PLAYER_ID} select {
+        height: 26px;
+        padding: 1px 22px 1px 7px;
+        color: #eaf1f4;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid rgba(178, 199, 209, 0.22);
+        border-radius: 7px;
+        outline: none;
+        font: inherit;
+      }
+      #${PLAYER_ID} select:hover { background: rgba(255, 255, 255, 0.11); }
+      #${PLAYER_ID} select:disabled { opacity: 0.48; }
 
       #${PLAYER_ID} .cyan-player-icon-button {
         display: inline-flex;
@@ -206,133 +193,79 @@
         width: 30px;
         height: 30px;
         padding: 0;
-        color: inherit;
+        color: #dce8ed;
         background: transparent;
         border: 0;
         border-radius: 8px;
         cursor: pointer;
       }
+      #${PLAYER_ID} .cyan-player-icon-button:hover { background: rgba(188, 211, 221, 0.12); }
+      #${PLAYER_ID} .cyan-player-icon-button:disabled { opacity: 0.4; cursor: default; }
+      #${PLAYER_ID} .cyan-player-icon-button svg { width: 23px; height: 23px; }
 
-      #${PLAYER_ID} .cyan-player-icon-button:hover {
-        background: rgba(83, 111, 126, 0.12);
-      }
-
-      html.dark #${PLAYER_ID} .cyan-player-icon-button:hover,
-      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-icon-button:hover {
-        background: rgba(180, 201, 211, 0.12);
-      }
-
-      #${PLAYER_ID} .cyan-player-icon-button:disabled {
-        opacity: 0.42;
-        cursor: default;
-      }
-
-      #${PLAYER_ID} .cyan-player-body {
-        padding: 12px 13px 13px;
-      }
-
-      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-body {
-        display: none;
-      }
-
-      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-header {
-        border-bottom: 0;
-      }
+      #${PLAYER_ID} .cyan-player-body { padding: 8px 10px 9px; }
+      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-body { display: none; }
+      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-header { border-bottom: 0; }
 
       #${PLAYER_ID} .cyan-player-controls {
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 9px;
-        margin-bottom: 10px;
+        gap: 16px;
+        margin-bottom: 7px;
       }
-
+      #${PLAYER_ID} .cyan-player-control-button {
+        position: relative;
+        width: 36px;
+        height: 36px;
+        color: #d9e7ed;
+        background: rgba(177, 205, 217, 0.08);
+        border: 1px solid rgba(177, 205, 217, 0.13);
+        border-radius: 10px;
+      }
       #${PLAYER_ID} .cyan-player-main-button {
-        width: 38px;
-        height: 38px;
-        color: #56798b;
-        background: rgba(96, 127, 145, 0.11);
+        width: 42px;
+        height: 42px;
+        color: #eef6f8;
+        background: rgba(119, 157, 176, 0.26);
+        border-color: rgba(169, 199, 212, 0.26);
         border-radius: 50%;
       }
-
-      html.dark #${PLAYER_ID} .cyan-player-main-button,
-      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-main-button {
-        color: #a7c0cc;
-        background: rgba(151, 177, 190, 0.12);
+      #${PLAYER_ID} .cyan-player-main-button:hover { background: rgba(119, 157, 176, 0.36); }
+      #${PLAYER_ID} .cyan-player-step-number {
+        position: absolute;
+        left: 50%;
+        top: 51%;
+        transform: translate(-50%, -50%);
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1;
+        color: currentColor;
+        pointer-events: none;
       }
 
       #${PLAYER_ID} .cyan-player-seek-row {
         display: grid;
-        grid-template-columns: 42px minmax(0, 1fr) 42px;
+        grid-template-columns: 36px minmax(0, 1fr) 36px;
         align-items: center;
-        gap: 8px;
-        margin-bottom: 11px;
+        gap: 6px;
       }
-
       #${PLAYER_ID} .cyan-player-time {
-        color: rgba(36, 50, 58, 0.72);
+        color: rgba(231, 238, 242, 0.72);
         font-variant-numeric: tabular-nums;
         text-align: center;
       }
-
-      html.dark #${PLAYER_ID} .cyan-player-time,
-      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-time {
-        color: rgba(228, 237, 241, 0.72);
-      }
-
       #${PLAYER_ID} input[type="range"] {
         width: 100%;
-        accent-color: #66889a;
+        height: 18px;
+        margin: 0;
+        accent-color: #7f9faf;
         cursor: pointer;
       }
-
-      #${PLAYER_ID} input[type="range"]:disabled {
-        opacity: 0.45;
-        cursor: default;
-      }
-
-      #${PLAYER_ID} .cyan-player-settings {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-wrap: wrap;
-        gap: 8px 13px;
-      }
-
-      #${PLAYER_ID} .cyan-player-setting {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        color: rgba(36, 50, 58, 0.74);
-      }
-
-      html.dark #${PLAYER_ID} .cyan-player-setting,
-      html[data-theme="dark"] #${PLAYER_ID} .cyan-player-setting {
-        color: rgba(228, 237, 241, 0.74);
-      }
-
-      #${PLAYER_ID} select {
-        min-height: 28px;
-        padding: 2px 23px 2px 8px;
-        color: inherit;
-        background: rgba(255, 255, 255, 0.66);
-        border: 1px solid rgba(82, 111, 127, 0.24);
-        border-radius: 7px;
-        outline: none;
-      }
-
-      html.dark #${PLAYER_ID} select,
-      html[data-theme="dark"] #${PLAYER_ID} select {
-        background: rgba(20, 25, 28, 0.55);
-        border-color: rgba(151, 177, 190, 0.25);
-      }
+      #${PLAYER_ID} input[type="range"]:disabled { opacity: 0.4; cursor: default; }
 
       @media (max-width: 640px) {
-        #${PLAYER_ID} {
-          right: 12px;
-          bottom: 78px;
-          width: calc(100vw - 24px);
-        }
+        #${PLAYER_ID} { right: 10px; bottom: 74px; width: calc(100vw - 20px); }
       }
     `;
 
@@ -368,7 +301,7 @@
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', pathData);
     path.setAttribute('stroke', 'currentColor');
-    path.setAttribute('stroke-width', '1.8');
+    path.setAttribute('stroke-width', '2.15');
     path.setAttribute('stroke-linecap', 'round');
     path.setAttribute('stroke-linejoin', 'round');
     svg.appendChild(path);
@@ -636,6 +569,8 @@
       return;
     }
 
+    reopenRequestUntil = Date.now() + 10000;
+    if (dismissedAudio === currentAudio) dismissedAudio = null;
     startOfficialVoiceAction(button, moreButton);
   }
 
@@ -663,6 +598,36 @@
     return option;
   }
 
+  function createSeekControl(direction) {
+    const isBackward = direction < 0;
+    const button = createPlayerIconButton(
+      `${isBackward ? '后退' : '前进'} ${seekStep} 秒`,
+      isBackward
+        ? 'M9.5 8H5.7l2.1-2.1M5.8 8l2.1 2.1M6.1 8.1a7 7 0 1 1-.7 6.2'
+        : 'M14.5 8h3.8l-2.1-2.1M18.2 8l-2.1 2.1M17.9 8.1a7 7 0 1 0 .7 6.2',
+      'cyan-player-control-button'
+    );
+    const number = document.createElement('span');
+    number.className = 'cyan-player-step-number';
+    number.textContent = String(seekStep);
+    button.appendChild(number);
+    button.addEventListener('click', () => seekBy(direction * seekStep));
+    return button;
+  }
+
+  function updateSeekControlLabels() {
+    for (const [button, prefix] of [
+      [backwardButton, '后退'],
+      [forwardButton, '前进'],
+    ]) {
+      if (!button) continue;
+      button.setAttribute('aria-label', `${prefix} ${seekStep} 秒`);
+      button.title = `${prefix} ${seekStep} 秒`;
+      const number = button.querySelector('.cyan-player-step-number');
+      if (number) number.textContent = String(seekStep);
+    }
+  }
+
   function createPlayer() {
     if (player?.isConnected) return player;
 
@@ -676,75 +641,8 @@
     const header = document.createElement('div');
     header.className = 'cyan-player-header';
 
-    playerTitle = document.createElement('div');
-    playerTitle.className = 'cyan-player-title';
-    playerTitle.textContent = 'ChatGPT 朗读播放器';
-
-    minimizeButton = createPlayerIconButton(
-      playerCollapsed ? '展开播放器' : '最小化播放器',
-      playerCollapsed ? 'M7 12h10M12 7v10' : 'M7 12h10'
-    );
-    minimizeButton.addEventListener('click', togglePlayerCollapsed);
-
-    const closeButton = createPlayerIconButton(
-      '关闭播放器',
-      'M6 6l12 12M18 6 6 18'
-    );
-    closeButton.addEventListener('click', closePlayer);
-
-    header.append(playerTitle, minimizeButton, closeButton);
-
-    playerBody = document.createElement('div');
-    playerBody.className = 'cyan-player-body';
-
-    const controls = document.createElement('div');
-    controls.className = 'cyan-player-controls';
-
-    backwardButton = createPlayerIconButton(
-      `后退 ${seekStep} 秒`,
-      'M11 7 6 12l5 5v-4.1c3.7 0 6.1 1.2 7.5 4.1-.2-5.2-2.6-8-7.5-8V7Z'
-    );
-    backwardButton.addEventListener('click', () => seekBy(-seekStep));
-
-    playPauseButton = createPlayerIconButton(
-      '播放',
-      'M9 7.5v9l7-4.5-7-4.5Z',
-      'cyan-player-main-button'
-    );
-    playPauseButton.addEventListener('click', togglePlayback);
-
-    forwardButton = createPlayerIconButton(
-      `前进 ${seekStep} 秒`,
-      'm13 7 5 5-5 5v-4.1c-3.7 0-6.1 1.2-7.5 4.1.2-5.2 2.6-8 7.5-8V7Z'
-    );
-    forwardButton.addEventListener('click', () => seekBy(seekStep));
-
-    controls.append(backwardButton, playPauseButton, forwardButton);
-
-    const seekRow = document.createElement('div');
-    seekRow.className = 'cyan-player-seek-row';
-
-    currentTimeLabel = document.createElement('span');
-    currentTimeLabel.className = 'cyan-player-time';
-    currentTimeLabel.textContent = '0:00';
-
-    seekRange = document.createElement('input');
-    seekRange.type = 'range';
-    seekRange.min = '0';
-    seekRange.max = '1000';
-    seekRange.step = '1';
-    seekRange.value = '0';
-    seekRange.setAttribute('aria-label', '播放进度');
-    seekRange.addEventListener('input', handleSeekInput);
-
-    durationLabel = document.createElement('span');
-    durationLabel.className = 'cyan-player-time';
-    durationLabel.textContent = '--:--';
-
-    seekRow.append(currentTimeLabel, seekRange, durationLabel);
-
-    const settings = document.createElement('div');
-    settings.className = 'cyan-player-settings';
+    const headerSettings = document.createElement('div');
+    headerSettings.className = 'cyan-player-header-settings';
 
     const seekSetting = document.createElement('label');
     seekSetting.className = 'cyan-player-setting';
@@ -770,8 +668,57 @@
     speedSelect.addEventListener('change', handlePlaybackRateChange);
     speedSetting.appendChild(speedSelect);
 
-    settings.append(seekSetting, speedSetting);
-    playerBody.append(controls, seekRow, settings);
+    headerSettings.append(seekSetting, speedSetting);
+
+    const windowActions = document.createElement('div');
+    windowActions.className = 'cyan-player-window-actions';
+
+    minimizeButton = createPlayerIconButton(
+      playerCollapsed ? '展开播放器' : '最小化播放器',
+      playerCollapsed ? 'M7 12h10M12 7v10' : 'M7 12h10'
+    );
+    minimizeButton.addEventListener('click', togglePlayerCollapsed);
+
+    const closeButton = createPlayerIconButton('关闭播放器', 'M6 6l12 12M18 6 6 18');
+    closeButton.addEventListener('click', closePlayer);
+    windowActions.append(minimizeButton, closeButton);
+    header.append(headerSettings, windowActions);
+
+    playerBody = document.createElement('div');
+    playerBody.className = 'cyan-player-body';
+
+    const controls = document.createElement('div');
+    controls.className = 'cyan-player-controls';
+
+    backwardButton = createSeekControl(-1);
+    playPauseButton = createPlayerIconButton(
+      '播放',
+      'M9 7.5v9l7-4.5-7-4.5Z',
+      'cyan-player-control-button cyan-player-main-button'
+    );
+    playPauseButton.addEventListener('click', togglePlayback);
+    forwardButton = createSeekControl(1);
+    controls.append(backwardButton, playPauseButton, forwardButton);
+
+    const seekRow = document.createElement('div');
+    seekRow.className = 'cyan-player-seek-row';
+    currentTimeLabel = document.createElement('span');
+    currentTimeLabel.className = 'cyan-player-time';
+    currentTimeLabel.textContent = '0:00';
+    seekRange = document.createElement('input');
+    seekRange.type = 'range';
+    seekRange.min = '0';
+    seekRange.max = '1000';
+    seekRange.step = '1';
+    seekRange.value = '0';
+    seekRange.setAttribute('aria-label', '播放进度');
+    seekRange.addEventListener('input', handleSeekInput);
+    durationLabel = document.createElement('span');
+    durationLabel.className = 'cyan-player-time';
+    durationLabel.textContent = '--:--';
+    seekRow.append(currentTimeLabel, seekRange, durationLabel);
+
+    playerBody.append(controls, seekRow);
     player.append(header, playerBody);
     document.body.appendChild(player);
     updatePlayerState();
@@ -817,12 +764,11 @@
       .sort((a, b) => b.score - a.score)[0].audio;
   }
 
-  function bindAudio(audio) {
+  function bindAudio(audio, shouldShow = false) {
     if (!(audio instanceof HTMLAudioElement)) return;
-    createPlayer();
 
     if (currentAudio === audio) {
-      if (!audio.paused || audio.currentTime > 0) showPlayer();
+      if (shouldShow && dismissedAudio !== audio) showPlayer();
       updatePlayerState();
       return;
     }
@@ -844,7 +790,7 @@
       currentAudio.addEventListener(eventName, handleAudioStateEvent);
     }
 
-    showPlayer();
+    if (shouldShow && dismissedAudio !== audio) showPlayer();
     updatePlayerState();
   }
 
@@ -867,7 +813,12 @@
 
   function handleAudioStateEvent(event) {
     if (event.currentTarget !== currentAudio) return;
-    if (event.type === 'play') showPlayer();
+    if (event.type === 'play') {
+      if (dismissedAudio === currentAudio && Date.now() <= reopenRequestUntil) {
+        dismissedAudio = null;
+      }
+      if (dismissedAudio !== currentAudio) showPlayer();
+    }
     updatePlayerState();
   }
 
@@ -877,7 +828,11 @@
   }
 
   function closePlayer() {
-    if (currentAudio && !currentAudio.paused) currentAudio.pause();
+    if (currentAudio) {
+      dismissedAudio = currentAudio;
+      if (!currentAudio.paused) currentAudio.pause();
+    }
+    reopenRequestUntil = 0;
     if (player) player.hidden = true;
   }
 
@@ -924,10 +879,7 @@
     if (!SEEK_STEP_OPTIONS.includes(nextStep)) return;
     seekStep = nextStep;
     localStorage.setItem(STORAGE_SEEK_STEP, String(seekStep));
-    backwardButton.setAttribute('aria-label', `后退 ${seekStep} 秒`);
-    backwardButton.title = `后退 ${seekStep} 秒`;
-    forwardButton.setAttribute('aria-label', `前进 ${seekStep} 秒`);
-    forwardButton.title = `前进 ${seekStep} 秒`;
+    updateSeekControlLabels();
   }
 
   function handlePlaybackRateChange() {
@@ -961,7 +913,6 @@
       currentTimeLabel.textContent = '0:00';
       durationLabel.textContent = '--:--';
       seekRange.value = '0';
-      playerTitle.textContent = 'ChatGPT 朗读播放器';
       return;
     }
 
@@ -971,7 +922,6 @@
       ? String(Math.round((currentAudio.currentTime / currentAudio.duration) * 1000))
       : '0';
     speedSelect.value = String(currentAudio.playbackRate || playbackRate);
-    playerTitle.textContent = isPlaying ? '正在朗读' : 'ChatGPT 朗读播放器';
   }
 
   function isEditableTarget(target) {
@@ -1013,13 +963,15 @@
 
   function handleDocumentPlay(event) {
     const audio = event.target;
-    if (audio instanceof HTMLAudioElement) bindAudio(audio);
+    if (!(audio instanceof HTMLAudioElement)) return;
+    if (dismissedAudio === audio && Date.now() <= reopenRequestUntil) dismissedAudio = null;
+    bindAudio(audio, dismissedAudio !== audio);
   }
 
   function scanForAudio() {
     const audio = findBestAudio();
-    if (!audio) return;
-    if (!audio.paused || audio.currentTime > 0 || audio.readyState > 0) bindAudio(audio);
+    if (!audio || audio.paused || audio.ended) return;
+    bindAudio(audio, dismissedAudio !== audio);
   }
 
   function startAudioTracking() {
@@ -1035,9 +987,6 @@
         for (const node of mutation.addedNodes) {
           if (node instanceof Element) {
             scheduleScan(node);
-            if (node.matches('audio')) bindAudio(node);
-            const nestedAudio = node.querySelector?.('audio');
-            if (nestedAudio) bindAudio(nestedAudio);
           }
         }
       }
@@ -1050,7 +999,6 @@
   }
 
   installStyle();
-  createPlayer();
   scanRoot(document);
   observePage();
   startAudioTracking();
