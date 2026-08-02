@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.1.0
+// @version      3.2.0
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -302,6 +302,18 @@
       #${PLAYER_ID} .cyan-player-icon-button:hover { background: rgba(188, 211, 221, 0.12); }
       #${PLAYER_ID} .cyan-player-icon-button:disabled { opacity: 0.4; cursor: default; }
       #${PLAYER_ID} .cyan-player-icon-button svg { width: 23px; height: 23px; }
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"] svg {
+        animation: cyan-player-download-spin 0.85s linear infinite;
+      }
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="success"] {
+        color: #9fc6ad;
+      }
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="error"] {
+        color: #d6a5a5;
+      }
+      @keyframes cyan-player-download-spin {
+        to { transform: rotate(360deg); }
+      }
 
       #${PLAYER_ID} .cyan-player-body { padding: 8px 10px 9px; }
       #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-body { display: none; }
@@ -773,6 +785,10 @@
   const MP3_BITRATE_KBPS = 96;
   const MP3_SAMPLE_BLOCK_SIZE = 1152;
   const MP3_YIELD_EVERY_BLOCKS = 32;
+  const DOWNLOAD_ICON_PATH = 'M12 3v12M8 11l4 4 4-4M5 20h14';
+  const DOWNLOAD_WORKING_ICON_PATH = 'M12 3a9 9 0 1 0 9 9';
+  const DOWNLOAD_SUCCESS_ICON_PATH = 'M5 12l4 4L19 6';
+  const DOWNLOAD_ERROR_ICON_PATH = 'M12 7v6M12 17h.01';
 
   function getLameJs() {
     const library = globalThis.lamejs || window.lamejs;
@@ -793,16 +809,62 @@
     return `${base}-${stamp}.${extension}`;
   }
 
-  function triggerMp3Download(blob) {
+  function setDownloadButtonState(state, detail = '') {
+    if (!downloadButton) return;
+    const config = {
+      idle: ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH],
+      working: [detail || '正在生成 MP3', DOWNLOAD_WORKING_ICON_PATH],
+      success: ['MP3 已保存', DOWNLOAD_SUCCESS_ICON_PATH],
+      error: [detail || 'MP3 下载失败', DOWNLOAD_ERROR_ICON_PATH],
+    }[state] || ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH];
+
+    downloadButton.dataset.cyanDownloadState = state;
+    replaceButtonIcon(downloadButton, config[0], config[1]);
+  }
+
+  async function requestMp3SaveHandle(filename) {
+    if (typeof window.showSaveFilePicker !== 'function' || !window.isSecureContext) {
+      return null;
+    }
+
+    return window.showSaveFilePicker({
+      suggestedName: filename,
+      types: [{
+        description: 'MP3 音频',
+        accept: { 'audio/mpeg': ['.mp3'] },
+      }],
+      excludeAcceptAllOption: false,
+    });
+  }
+
+  async function saveMp3Blob(blob, filename, saveHandle) {
+    if (!(blob instanceof Blob) || blob.size <= 0) {
+      throw new Error('empty MP3 blob');
+    }
+
+    if (saveHandle) {
+      const writable = await saveHandle.createWritable();
+      try {
+        await writable.write(blob);
+      } finally {
+        await writable.close();
+      }
+      return;
+    }
+
     const objectUrl = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = objectUrl;
-    link.download = buildDownloadFilename('mp3');
+    link.download = filename;
+    link.rel = 'noopener';
     link.style.display = 'none';
     document.body.appendChild(link);
     link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+
+    window.setTimeout(() => {
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    }, 60000);
   }
 
   function floatToInt16(sample) {
@@ -842,12 +904,12 @@
     });
   }
 
-  async function encodeAudioBufferToMp3(audioBuffer) {
+  async function encodeAudioBufferToMp3(audioBuffer, onProgress) {
     const { Mp3Encoder } = getLameJs();
     const monoSamples = downmixAudioBufferToMono(audioBuffer);
     const encoder = new Mp3Encoder(1, audioBuffer.sampleRate, MP3_BITRATE_KBPS);
     const chunks = [];
-    const totalBlocks = Math.ceil(monoSamples.length / MP3_SAMPLE_BLOCK_SIZE);
+    const totalBlocks = Math.max(1, Math.ceil(monoSamples.length / MP3_SAMPLE_BLOCK_SIZE));
 
     for (let offset = 0, blockIndex = 0;
       offset < monoSamples.length;
@@ -858,13 +920,14 @@
 
       if (blockIndex % MP3_YIELD_EVERY_BLOCKS === 0) {
         const progress = Math.min(99, Math.round(((blockIndex + 1) / totalBlocks) * 100));
-        setPlayerStatus(`正在转换 MP3… ${progress}%`, 0);
+        onProgress?.(progress);
         await yieldToBrowser();
       }
     }
 
     const finalChunk = encoder.flush();
     if (finalChunk.length > 0) chunks.push(new Uint8Array(finalChunk));
+    if (!chunks.length) throw new Error('empty MP3 output');
     return new Blob(chunks, { type: 'audio/mpeg' });
   }
 
@@ -888,8 +951,20 @@
       return;
     }
 
+    const filename = buildDownloadFilename('mp3');
+    let saveHandle = null;
+
+    try {
+      // 必须在用户点击事件仍处于激活状态时立即请求保存位置。
+      saveHandle = await requestMp3SaveHandle(filename);
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      console.warn(`${SCRIPT_PREFIX} 无法打开保存对话框，将回退到浏览器下载。`, error);
+    }
+
     downloadInProgress = true;
-    setPlayerStatus('正在读取音频…', 0);
+    setDownloadButtonState('working', '正在读取音频');
+    setPlayerStatus('');
     updatePlayerState();
 
     try {
@@ -898,22 +973,28 @@
       const sourceBlob = await response.blob();
       if (!sourceBlob.size) throw new Error('empty audio blob');
 
-      setPlayerStatus('正在解码音频…', 0);
+      setDownloadButtonState('working', '正在解码音频');
       const audioBuffer = await decodeAudioBlob(sourceBlob);
-      const mp3Blob = await encodeAudioBufferToMp3(audioBuffer);
-      if (!mp3Blob.size) throw new Error('empty MP3 blob');
+      const mp3Blob = await encodeAudioBufferToMp3(audioBuffer, (progress) => {
+        setDownloadButtonState('working', `正在生成 MP3：${progress}%`);
+      });
 
-      triggerMp3Download(mp3Blob);
-      setPlayerStatus('MP3 已开始下载');
+      await saveMp3Blob(mp3Blob, filename, saveHandle);
+      setDownloadButtonState('success');
+      setPlayerStatus('MP3 已保存');
     } catch (error) {
       console.warn(`${SCRIPT_PREFIX} MP3 下载失败。`, error);
       const message = /lamejs/i.test(String(error?.message || error))
         ? 'MP3 编码器加载失败'
         : 'MP3 下载失败';
+      setDownloadButtonState('error', message);
       setPlayerStatus(message);
     } finally {
       downloadInProgress = false;
       updatePlayerState();
+      window.setTimeout(() => {
+        if (!downloadInProgress) setDownloadButtonState('idle');
+      }, 1800);
     }
   }
 
@@ -959,8 +1040,10 @@
 
     downloadButton = createPlayerIconButton(
       '下载当前音频为 MP3',
-      'M12 3v12M8 11l4 4 4-4M5 20h14'
+      DOWNLOAD_ICON_PATH,
+      'cyan-player-download-button'
     );
+    downloadButton.dataset.cyanDownloadState = 'idle';
     downloadButton.addEventListener('click', downloadCurrentAudio);
 
     headerSettings.append(seekSetting, speedSetting, downloadButton);

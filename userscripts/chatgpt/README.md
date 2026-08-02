@@ -1,79 +1,23 @@
 # ChatGPT 用户脚本说明
 
-## ChatGPT 朗读增强助手
+本目录保存用于 ChatGPT 网页版的 Tampermonkey 用户脚本。简单脚本在本页提供索引；功能较复杂的脚本使用独立文档记录操作、限制和维护说明。
 
-文件：`chatgpt-read-aloud-enhancer.user.js`
+## 脚本索引
 
-该脚本增强 ChatGPT 网页版的官方“朗读”功能，不自行生成语音，也不替换 ChatGPT 的声音。脚本在每条助手回答的一级操作栏末尾增加快捷朗读按钮，并在官方音频开始播放后显示紧凑悬浮播放器。
+| 中文名称 | 文件 | 用途 |
+|---|---|---|
+| ChatGPT 宽屏 | `chatgpt-wide.user.js` | 放宽对话区和输入区，改善长文本与代码阅读。 |
+| ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。 |
+| ChatGPT 文件链接高亮助手 | `chatgpt-file-link-highlighter.user.js` | 高亮助手回答中的文件链接和官方文件入口。 |
+| ChatGPT GitHub 自动允许助手 | `chatgpt-auto-allow-github.user.js` | 自动处理 ChatGPT 中明确指向 GitHub 的授权卡片。 |
+| ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度。 |
+| ChatGPT 朗读增强助手 | `chatgpt-read-aloud-enhancer.user.js` | 增加一级朗读入口、悬浮播放器、消息切换、快捷键和本地 MP3 下载。参见[详细说明](./chatgpt-read-aloud-enhancer.md)。 |
 
-### 主要功能
+## 维护原则
 
-- 一级“朗读 / 重播”快捷按钮；
-- 播放、暂停、进度拖动和时间显示；
-- 快退、快进，步长可选 3、5、10 秒，默认 3 秒；
-- 播放速度可选 0.75×、1×、1.25×、1.5×、2×；
-- 播放上一条或下一条当前可见的助手回答；
-- 最小化、关闭和聊天切换状态清理；
-- 将当前朗读音频转换为 MP3 并下载。
-
-### 键盘快捷键
-
-| 按键 | 功能 |
-|---|---|
-| `↑` | 播放上一条助手消息 |
-| `↓` | 播放下一条助手消息 |
-| `←` | 按当前跳转步长快退 |
-| `→` | 按当前跳转步长快进 |
-| `Space` | 播放或暂停 |
-| `Esc` | 关闭播放器并暂停 |
-
-焦点位于输入框、文本域、下拉框或可编辑区域时，脚本不会接管这些快捷键。
-
-### 上一条与下一条
-
-消息列表只在用户点击切换按钮或按下 `↑` / `↓` 时即时扫描，不会持续高频遍历页面。脚本只处理当前页面中可见、带有有效回复操作栏的助手回答。
-
-- 到达第一条或最后一条时停止，不循环；
-- 新增消息后会在下一次切换时重新读取；
-- 重新回答或切换回答版本后，会按当前可见消息重新计算；
-- 切换聊天时会停止并解绑旧聊天中的音频，隐藏播放器并重置消息上下文。
-
-### MP3 下载
-
-点击播放器顶部的下载按钮后，脚本会：
-
-1. 在当前浏览器中读取 ChatGPT 官方朗读音频；
-2. 使用 Web Audio API 解码；
-3. 在本地转换为单声道、96 kbps MP3；
-4. 以当前聊天标题和时间戳命名并下载。
-
-音频不会上传到第三方服务器。较长音频的转换需要一定时间，播放器状态区会显示转换进度。转换期间下载按钮会暂时禁用。
-
-MP3 编码通过 userscript 头部的 `@require` 单独加载 `lamejs 1.2.1`。该依赖采用 LGPL-3.0 许可，脚本不修改或内嵌其源码：
-
-- 项目：`https://github.com/zhuker/lamejs`
-- 加载地址：`https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js`
-
-### 数据与隐私
-
-- 跳转秒数、播放速度和播放器折叠状态仅保存在浏览器 `localStorage`；
-- 脚本不保存 ChatGPT 对话正文；
-- 脚本不上传朗读音频；
-- 下载转换在当前浏览器标签页本地完成。
-
-### 已知限制
-
-- ChatGPT 页面结构或官方朗读实现变化后，DOM 选择器可能需要更新；
-- 官方流式音频刚开始播放时，总时长可能暂时不可用，进度条会在时长可用后恢复；
-- 音频源无法被浏览器读取、解码器不支持源格式或 MP3 编码依赖加载失败时，下载会失败并在播放器中显示提示；
-- 长音频转换会短暂占用 CPU 和内存，但编码循环会定期让出主线程，减少界面卡顿。
-
-### 安装与更新
-
-公开发布文件：
-
-`https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js`
-
-私有开发源文件：
-
-`userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js`
+- ChatGPT 是单页应用，新增控件应兼容消息和操作栏的动态重建。
+- DOM 选择器应优先使用稳定的 `data-testid`、`aria-label`、角色和语义结构，避免依赖易变的样式类名。
+- MutationObserver 热路径只处理新增或变化的局部节点，不持续遍历完整对话正文。
+- 不调用未公开接口时，优先复用页面已有的官方操作和媒体元素。
+- 修改用户可见行为后提升脚本版本号，并检查 `@updateURL` 与 `@downloadURL`。
+- 不提交 Cookie、Token、Authorization Header、完整会话响应或其他凭据。
