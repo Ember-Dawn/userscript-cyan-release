@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.6.0
-// @description  ChatGPT 普通聊天文件夹管理：v0.6.0；支持 Chrome/Safari WebDAV 多端自动检查、操作级合并、删除墓碑与真实的一键同步。
+// @version      0.6.1
+// @description  ChatGPT 普通聊天文件夹管理：v0.6.1；修复标题清洗并保留真实标题中的 ChatGPT，同时支持 WebDAV 多端自动检查、操作级合并与删除墓碑。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -23,7 +23,7 @@
 /*
 ================================================================================
 ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
-适用版本：v0.6.0 附近
+适用版本：v0.6.1 附近
 ================================================================================
 
 这是一个用于 ChatGPT 网页端普通聊天的 Tampermonkey 用户脚本。它在 ChatGPT 左侧侧边栏中增加一个“文件夹”区域，用于本地管理聊天链接。它不是 ChatGPT 官方 Project 功能，也不会修改 ChatGPT 后端数据；它只保存“聊天标题 + 链接 + conversation id + 文件夹结构 + 部分 UI 设置”。
@@ -193,7 +193,25 @@ ChatGPT 最近对话菜单是 Radix/React Portal 渲染的菜单，一般不在�
 - 不能让该菜单项点击事件冒泡到 ChatGPT 官方菜单导致误关闭或误触发。
 
 --------------------------------------------------------------------------------
-六、文件夹排序规则
+六、聊天标题提取与清洗
+--------------------------------------------------------------------------------
+
+聊天标题来自不同 DOM 来源，必须按来源分别处理，不能使用同一套品牌清理规则：
+
+1. ChatGPT 原生侧边栏链接的可见文本属于用户真实标题：
+   - 只压缩异常空白并限制长度。
+   - 必须保留标题开头、结尾或中间由用户输入的“ChatGPT”。
+   - 例如“ChatGPT文件夹开发”“ChatGPT API 测试”“如何使用 ChatGPT”都应原样保存。
+2. aria-label 可能包含辅助功能包装文字：
+   - 只在完整匹配“打开……的对话选项”或英文 Open … options 结构时解包。
+   - 不得直接删除 /^Open/，否则会误伤“OpenAI 调研”等真实标题。
+3. document.title 可能附带网站品牌：
+   - 仅允许移除由明确分隔符连接的末尾 ChatGPT 品牌后缀，例如“标题 - ChatGPT”或“标题 | ChatGPT”。
+   - 不得删除开头的“ChatGPT”，因为它可能是用户标题的一部分。
+4. 已被旧版本截断的文件夹标题不会凭空恢复；升级后可点击聊天行右侧的“刷新标题”，重新从 ChatGPT 原生标题读取。
+
+--------------------------------------------------------------------------------
+七、文件夹排序规则
 --------------------------------------------------------------------------------
 
 只对“同级文件夹”排序。
@@ -213,7 +231,7 @@ ChatGPT 最近对话菜单是 Radix/React Portal 渲染的菜单，一般不在�
 - 不要在每次 render 时重复 sort，以免造成不必要性能开销。
 
 --------------------------------------------------------------------------------
-七、性能设计原则
+八、性能设计原则
 --------------------------------------------------------------------------------
 
 这是本脚本最重要的维护原则。
@@ -255,7 +273,7 @@ ChatGPT 最近对话菜单是 Radix/React Portal 渲染的菜单，一般不在�
 10. 取消 / 点击遮罩关闭设置弹窗只关闭，不保存、不重绘、不 dirty。
 
 --------------------------------------------------------------------------------
-八、侧边栏挂载位置
+九、侧边栏挂载位置
 --------------------------------------------------------------------------------
 
 脚本文件夹区域应挂载到 ChatGPT 官方展开的历史列表容器内部，尽量插在“最近”section 之前。
@@ -289,7 +307,7 @@ ChatGPT 当前侧边栏大致结构：
 5. 为了性能优先，不使用长期 MutationObserver；延长重试只增加少量 setTimeout 检查，挂载成功后后续检查基本为空操作。
 
 --------------------------------------------------------------------------------
-九、侧边栏宽度控制
+十、侧边栏宽度控制
 --------------------------------------------------------------------------------
 
 ChatGPT 原生侧边栏宽度主要由 CSS 变量 --sidebar-width 控制。
@@ -330,7 +348,7 @@ ChatGPT 原生侧边栏宽度主要由 CSS 变量 --sidebar-width 控制。
 - 取消时恢复打开设置前的宽度预览。
 
 --------------------------------------------------------------------------------
-十、WebDAV 同步设计
+十一、WebDAV 同步设计
 --------------------------------------------------------------------------------
 
 WebDAV 设置中只填写“WebDAV 文件夹路径”，不填写具体 JSON 文件名。
@@ -400,7 +418,7 @@ WebDAV 操作应异步执行：
 这些按钮不应关闭设置弹窗，也不应阻塞 UI。操作过程中只更新按钮 loading 状态和同步圆点。
 
 --------------------------------------------------------------------------------
-十一、远程 JSON 数据结构建议
+十二、远程 JSON 数据结构建议
 --------------------------------------------------------------------------------
 
 当前导出 / WebDAV payload 以 exportPayload(profile) 为准，通常包含 app、version、exportedAt、account、profile 等字段。profile 内保存 folders、conversations、settings。
@@ -487,7 +505,7 @@ WebDAV 操作应异步执行：
 当前代码在 exportPayload 中应清空 settings.webdav.username 和 settings.webdav.password，避免远程 JSON 或导出 JSON 泄露凭据。
 
 --------------------------------------------------------------------------------
-十二、设置弹窗
+十三、设置弹窗
 --------------------------------------------------------------------------------
 
 设置弹窗应复用 DOM，不要每次打开都重建。
@@ -530,7 +548,7 @@ WebDAV 按钮：
 - 操作中更新按钮文案和同步圆点，不关闭设置弹窗。
 
 --------------------------------------------------------------------------------
-十三、文件夹标题和顶部工具栏
+十四、文件夹标题和顶部工具栏
 --------------------------------------------------------------------------------
 
 文件夹区域标题为：
@@ -552,7 +570,7 @@ WebDAV 按钮：
 WebDAV 状态圆点应放在设置按钮左侧，并与其他工具按钮视觉尺寸一致。
 
 --------------------------------------------------------------------------------
-十四、文件夹菜单
+十五、文件夹菜单
 --------------------------------------------------------------------------------
 
 每个文件夹右侧始终显示三个点按钮。
@@ -584,7 +602,7 @@ WebDAV 状态圆点应放在设置按钮左侧，并与其他工具按钮视觉�
 - 同级文件夹创建 / 重命名后使用 Intl.Collator 排序。
 
 --------------------------------------------------------------------------------
-十五、聊天链接点击
+十六、聊天链接点击
 --------------------------------------------------------------------------------
 
 文件夹中的聊天链接只是引用 ChatGPT conversation。
@@ -604,7 +622,7 @@ WebDAV 状态圆点应放在设置按钮左侧，并与其他工具按钮视觉�
 ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面状态不一致。
 
 --------------------------------------------------------------------------------
-十六、导入 / 导出
+十七、导入 / 导出
 --------------------------------------------------------------------------------
 
 导出 JSON 应包含：
@@ -634,7 +652,7 @@ ChatGPT 的 SPA 路由状态不只是 URL，强行 pushState 可能导致页面�
 - 不在导入回调中立即发起网络请求，等待 debounce 自动同步或用户点击立即同步。
 
 --------------------------------------------------------------------------------
-十七、本地存储
+十八、本地存储
 --------------------------------------------------------------------------------
 
 v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile 存储。
@@ -663,7 +681,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - 折叠 / 展开不应触发 WebDAV dirty。
 
 --------------------------------------------------------------------------------
-十八、代码维护建议
+十九、代码维护建议
 --------------------------------------------------------------------------------
 
 脚本虽然是单文件，但建议内部按模块分区：
@@ -677,11 +695,12 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 7. Firefox 原生聊天拖拽
 8. 文件夹拖拽移动
 9. 最近对话三点菜单“移至文件夹”注入
-10. 导入 / 导出
-11. WebDAV 同步
-12. 设置弹窗
-13. 侧边栏宽度和可见性同步
-14. 稀疏有限重挂载、休眠恢复自愈与 boot
+10. 按 DOM 来源区分的聊天标题提取与清洗
+11. 导入 / 导出
+12. WebDAV 同步
+13. 设置弹窗
+14. 侧边栏宽度和可见性同步
+15. 稀疏有限重挂载、休眠恢复自愈与 boot
 
 尽量保持：
 
@@ -694,7 +713,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - 临时 observer 必须有 disconnect / timeout。
 
 --------------------------------------------------------------------------------
-十九、已知敏感点
+二十、已知敏感点
 --------------------------------------------------------------------------------
 
 以下改动容易重新引入 bug 或卡顿：
@@ -715,7 +734,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 14. 多标签页同步回调里无条件重绘或无条件保存，导致卡顿或旧状态覆盖新状态。
 
 --------------------------------------------------------------------------------
-二十、当前期望行为总览
+二十一、当前期望行为总览
 --------------------------------------------------------------------------------
 - ChatGPT 官方侧边栏展开：显示脚本“文件夹”区域。
 - ChatGPT 官方侧边栏收起：文件夹区域随之隐藏，并释放左侧宽度，不占空白外壳。
@@ -743,6 +762,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - 性能优先，避免高频监听和大规模 DOM 注入。
 - v0.5.1 起文件夹树不再设置独立 max-height / overflow:auto；树按内容自然增高，并与 ChatGPT 原生侧边栏共用外层滚动条。设置弹窗与浮层菜单仍保留自己的最大高度和滚动。
 - v0.6.0 起 WebDAV 改为真正的多端同步：圆圈按钮执行真实同步；前台定时 GET；本地与远端同时变化时通过操作日志、三方快照和删除墓碑自动合并；412 会重新 GET、重新合并并有限重试。
+- v0.6.1 起按来源拆分标题清洗：侧边栏可见文本保留用户输入的 ChatGPT / OpenAI；aria-label 只移除完整 UI 包装；document.title 只移除明确的末尾 ChatGPT 品牌后缀。
 
 ================================================================================
 */
@@ -753,7 +773,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.6.0';
+  const VERSION = '0.6.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -2629,7 +2649,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     if (fromAnchor) return fromAnchor;
     if (!id) return null;
     const aria = button.getAttribute('aria-label') || '';
-    const title = cleanText(aria.replace(/^打开[“"]?/, '').replace(/[”"]?的对话选项.*$/, '').replace(/^Open[“"]?/, '').replace(/[”"]?.*options.*$/i, '')) || 'Untitled chat';
+    const title = cleanConversationAriaLabel(aria) || 'Untitled chat';
     return { id, title, url: '/c/' + id };
   }
 
@@ -2853,13 +2873,24 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
   }
 
   function cleanConversationTitle(title) {
-    return cleanText(title || '')
-      .replace(/\s*[|｜·•-]\s*ChatGPT\s*$/i, '')
-      .replace(/^ChatGPT\s*[|｜·•-]?\s*/i, '')
-      .replace(/^打开[“"]?/, '')
-      .replace(/[”"]?的对话选项.*$/, '')
-      .replace(/^Open[“"]?/, '')
-      .replace(/[”"]?.*options.*$/i, '')
+    return cleanText(title || '').slice(0, 200);
+  }
+
+  function cleanConversationAriaLabel(label) {
+    const value = cleanText(label || '');
+    const chinese = value.match(/^打开[“"]?(.+?)[”"]?的对话选项(?:.*)?$/);
+    if (chinese) return cleanConversationTitle(chinese[1]);
+
+    const englishFor = value.match(/^Open\s+(?:(?:conversation|chat)\s+)?options\s+for\s+[“"]?(.+?)[”"]?(?:[.!])?$/i);
+    if (englishFor) return cleanConversationTitle(englishFor[1]);
+
+    const english = value.match(/^Open(?:\s+[“"]?|[“"])(.+?)[”"]?(?:['’]s)?\s+(?:(?:conversation|chat)\s+)?options(?:[.!])?$/i);
+    return english ? cleanConversationTitle(english[1]) : cleanConversationTitle(value);
+  }
+
+  function cleanDocumentConversationTitle(title) {
+    return cleanConversationTitle(title)
+      .replace(/\s*(?:[|｜·•]|[-–—])\s*ChatGPT\s*$/i, '')
       .trim()
       .slice(0, 200);
   }
@@ -2869,7 +2900,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     const clone = anchor.cloneNode(true);
     clone.querySelectorAll('[data-cgfm], button, svg, [aria-hidden="true"]').forEach(n => n.remove());
     const visibleText = cleanConversationTitle(clone.textContent || anchor.textContent || '');
-    const ariaText = cleanConversationTitle(anchor.getAttribute('aria-label') || '');
+    const ariaText = cleanConversationAriaLabel(anchor.getAttribute('aria-label') || '');
     // ChatGPT sometimes updates visible menu/sidebar text before aria-label, so prefer
     // visible text and use aria-label only as a fallback.
     return visibleText || ariaText;
@@ -2879,7 +2910,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     try {
       const currentId = extractConversationId(location.pathname + location.search + location.hash);
       if (currentId !== id) return '';
-      const title = cleanConversationTitle(document.title || '');
+      const title = cleanDocumentConversationTitle(document.title || '');
       if (!title || /^ChatGPT$/i.test(title)) return '';
       return title;
     } catch (_) { return ''; }
