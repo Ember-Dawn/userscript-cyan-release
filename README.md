@@ -38,7 +38,7 @@ userscript-cyan-release/
 | ChatGPT 文件夹 | [`chatgpt-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js) | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。 |
 | ChatGPT 文件链接高亮助手 | [`chatgpt-file-link-highlighter.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-file-link-highlighter.user.js) | 高亮助手回答中的文件链接和 ChatGPT 官方下载入口。 |
 | ChatGPT GitHub 自动允许助手 | [`chatgpt-auto-allow-github.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-auto-allow-github.user.js) | 自动处理 ChatGPT 的 GitHub 权限卡片。 |
-| ChatGPT 顺序任务助手 | [`chatgpt-sequential-task-queue.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js) | 每个非空行作为一轮命令，等待当前回答停止后依次发送，并提供紧凑的圆形进度入口、暂停和恢复。 |
+| ChatGPT 顺序任务助手 | [`chatgpt-sequential-task-queue.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js) | 每个非空行作为一轮命令，按对话独立保存并顺序发送；提供面板内确认弹窗和绿黄分段进度。 |
 
 ### GitHub
 

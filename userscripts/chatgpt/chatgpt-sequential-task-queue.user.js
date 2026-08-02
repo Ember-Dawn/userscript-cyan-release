@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.1.0
-// @description  在 ChatGPT 中按队列逐条发送任务；每行一条命令，等待当前回答停止后再继续，并提供紧凑进度入口、暂停、恢复和状态刷新。
+// @version      1.2.0
+// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持面板内确认弹窗、独立会话状态及绿黄分段进度。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -20,7 +20,7 @@
 1. 任务输入
  - 面板默认收起为右下角圆形进度环；点击圆环展开。
  - 在面板中粘贴多行文本，每个非空行作为一轮独立命令。
- - “开始/恢复”会自动载入新任务、恢复现有队列，或在确认后用已修改文本替换队列。
+ - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
 
 2. 顺序执行
  - 脚本把命令写入 ChatGPT 的 ProseMirror 输入框并点击发送按钮。
@@ -30,17 +30,18 @@
 3. 暂停与恢复
  - “暂停”只阻止发送下一轮，不会点击 ChatGPT 自带的停止按钮。
  - 若第 4 轮已经发出，点击暂停后仍等待第 4 轮完成；恢复时从第 5 轮开始。
- - 页面刷新后队列会安全恢复为暂停状态，避免自动误发；用户可先刷新状态，再手动恢复。
+ - 页面重新加载且没有其他标签页接管时，队列会安全恢复为暂停状态。
 
-4. 界面
- - 收起状态显示圆形任务进度，环内为“已完成数/总数”；运行时有轻微动画。
+4. 会话隔离
+ - 每个 /c/会话ID 拥有独立的任务文本、进度、等待时间和运行锁。
+ - 同一标签页切换对话时，面板自动切换到对应对话的状态。
+ - 新对话尚无 ID 时使用当前标签页的临时状态；首次消息创建 ID 后自动迁移并绑定。
+ - 不同对话可以分别运行；同一对话在多个标签页中只允许一个标签页实际发送。
+
+5. 界面
+ - 所有确认和提示均显示在展开面板正中央，不使用浏览器原生弹窗。
+ - 已完成进度为绿色，当前执行轮次为黄色，未执行部分为灰色；圆环和横向进度条使用相同语义。
  - 展开后只保留“开始/恢复、暂停、刷新状态、清空”四个操作按钮。
- - 当前任务和下一任务默认收在“任务详情”中，会话只显示绑定状态，不展示会话 ID。
-
-5. 安全限制
- - 切换到其他 ChatGPT 会话时自动暂停，避免把后续任务发送到错误对话。
- - 输入框已有用户文字、页面正在运行非队列回答、状态无法确认或发送失败时，均采用暂停而不是猜测。
- - 同一时刻只允许一个标签页接管队列；标签页锁会在失联后自动过期。
 
 6. 调试方法
  - 可在 Console 运行：window.__cgSequentialTaskQueue.getState()
@@ -49,10 +50,13 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const PREFIX = 'cg-stq';
-  const STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
-  const LOCK_KEY = 'cyan.chatgptSequentialTaskQueue.lock.v1';
+  const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
+  const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
+  const TEMP_STATE_KEY = 'cyan.chatgptSequentialTaskQueue.temporaryState.v2';
+  const LOCK_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.lock.v2.';
+  const TEMP_LOCK_KEY = 'cyan.chatgptSequentialTaskQueue.temporaryLock.v2';
   const TAB_ID_KEY = 'cyan.chatgptSequentialTaskQueue.tabId.v1';
 
   const PANEL_ID = `${PREFIX}-panel`;
@@ -94,26 +98,32 @@
     error: '状态异常',
   };
 
-  let state = loadState();
   let monitorTimer = null;
   let dispatchTimer = null;
   let lockHeartbeatTimer = null;
+  let ownedLockConversationId = undefined;
+  let ownedLockKey = null;
   let idleSince = 0;
   let sendingEpoch = 0;
   let internalInputUntil = 0;
   let locationSnapshot = location.href;
+  let dialogResolver = null;
 
   const tabId = getOrCreateTabId();
+  let currentConversationId = getConversationId();
+  let state = loadStateForContext(currentConversationId);
+  reconcileLoadedState('页面已重新加载');
 
-  function createDefaultState() {
+  function createDefaultState(conversationId = currentConversationId) {
     return {
-      version: 1,
+      version: 2,
       sourceText: '',
+      draftText: '',
       tasks: [],
       nextIndex: 0,
       activeIndex: null,
       mode: 'idle',
-      conversationId: null,
+      conversationId: conversationId || null,
       delayMs: DEFAULT_BETWEEN_TASK_DELAY_MS,
       notice: '请粘贴任务，每个非空行作为一轮命令。',
       createdAt: 0,
@@ -136,14 +146,16 @@
     };
   }
 
-  function normalizeState(raw) {
-    const fallback = createDefaultState();
+  function normalizeState(raw, conversationId = currentConversationId) {
+    const fallback = createDefaultState(conversationId);
     if (!raw || typeof raw !== 'object') return fallback;
 
     const tasks = Array.isArray(raw.tasks)
       ? raw.tasks.map(sanitizeTask).filter((task) => task.text.trim())
       : [];
-
+    const sourceText = typeof raw.sourceText === 'string'
+      ? raw.sourceText
+      : tasks.map((task) => task.text).join('\n');
     const nextIndex = clampInteger(raw.nextIndex, 0, tasks.length);
     const activeIndex = Number.isInteger(raw.activeIndex) && raw.activeIndex >= 0 && raw.activeIndex < tasks.length
       ? raw.activeIndex
@@ -153,51 +165,19 @@
       : 'paused';
 
     return {
-      version: 1,
-      sourceText: typeof raw.sourceText === 'string'
-        ? raw.sourceText
-        : tasks.map((task) => task.text).join('\n'),
+      version: 2,
+      sourceText,
+      draftText: typeof raw.draftText === 'string' ? raw.draftText : sourceText,
       tasks,
       nextIndex,
       activeIndex,
       mode: validMode,
-      conversationId: typeof raw.conversationId === 'string' && raw.conversationId
-        ? raw.conversationId
-        : null,
+      conversationId: conversationId || null,
       delayMs: clampInteger(raw.delayMs, 1000, 30000, DEFAULT_BETWEEN_TASK_DELAY_MS),
       notice: typeof raw.notice === 'string' ? raw.notice : fallback.notice,
       createdAt: Number(raw.createdAt) || 0,
       updatedAt: Number(raw.updatedAt) || Date.now(),
     };
-  }
-
-  function loadState() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-      const loaded = normalizeState(parsed);
-
-      if (loaded.mode === 'running' || loaded.mode === 'pausing') {
-        loaded.mode = 'paused';
-        loaded.notice = '页面已重新加载，队列已安全暂停。请先刷新状态，再决定是否恢复。';
-      }
-
-      return loaded;
-    } catch (error) {
-      console.warn('[ChatGPT 顺序任务助手] 无法读取本地状态，将使用空队列。', error);
-      return createDefaultState();
-    }
-  }
-
-  function saveState({ render = true } = {}) {
-    state.updatedAt = Date.now();
-
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch (error) {
-      console.warn('[ChatGPT 顺序任务助手] 无法保存本地状态。', error);
-    }
-
-    if (render) renderPanel();
   }
 
   function clampInteger(value, min, max, fallback = min) {
@@ -219,32 +199,132 @@
     }
   }
 
-  function readLock() {
+  function getConversationId() {
+    const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/i);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function getStateStorage(conversationId) {
+    return conversationId ? localStorage : sessionStorage;
+  }
+
+  function getStateStorageKey(conversationId) {
+    return conversationId
+      ? `${STATE_KEY_PREFIX}${encodeURIComponent(conversationId)}`
+      : TEMP_STATE_KEY;
+  }
+
+  function getLockStorage(conversationId) {
+    return conversationId ? localStorage : sessionStorage;
+  }
+
+  function getLockStorageKey(conversationId) {
+    return conversationId
+      ? `${LOCK_KEY_PREFIX}${encodeURIComponent(conversationId)}`
+      : TEMP_LOCK_KEY;
+  }
+
+  function tryLoadLegacyState(conversationId) {
     try {
-      return JSON.parse(localStorage.getItem(LOCK_KEY) || 'null');
+      const raw = JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || 'null');
+      if (!raw || typeof raw !== 'object') return null;
+
+      const legacyId = typeof raw.conversationId === 'string' && raw.conversationId
+        ? raw.conversationId
+        : null;
+
+      if (legacyId !== (conversationId || null)) return null;
+      return normalizeState(raw, conversationId);
     } catch (_) {
       return null;
     }
   }
 
-  function isForeignLockActive() {
-    const lock = readLock();
+  function loadStateForContext(conversationId) {
+    try {
+      const storage = getStateStorage(conversationId);
+      const key = getStateStorageKey(conversationId);
+      const parsed = JSON.parse(storage.getItem(key) || 'null');
+      if (parsed) return normalizeState(parsed, conversationId);
+
+      const legacy = tryLoadLegacyState(conversationId);
+      if (legacy) {
+        storage.setItem(key, JSON.stringify(legacy));
+        return legacy;
+      }
+    } catch (error) {
+      console.warn('[ChatGPT 顺序任务助手] 无法读取当前会话状态。', error);
+    }
+
+    return createDefaultState(conversationId);
+  }
+
+  function writeStateForContext(targetState, conversationId, { render = false } = {}) {
+    targetState.version = 2;
+    targetState.conversationId = conversationId || null;
+    targetState.updatedAt = Date.now();
+
+    try {
+      getStateStorage(conversationId).setItem(
+        getStateStorageKey(conversationId),
+        JSON.stringify(targetState)
+      );
+    } catch (error) {
+      console.warn('[ChatGPT 顺序任务助手] 无法保存当前会话状态。', error);
+    }
+
+    if (render) renderPanel();
+  }
+
+  function saveState({ render = true } = {}) {
+    writeStateForContext(state, currentConversationId, { render });
+  }
+
+  function hasStateContent(targetState) {
     return Boolean(
-      lock &&
-      lock.tabId &&
-      lock.tabId !== tabId &&
-      Date.now() - Number(lock.updatedAt || 0) < LOCK_STALE_MS
+      targetState.tasks.length ||
+      normalizeText(targetState.draftText) ||
+      normalizeText(targetState.sourceText)
     );
+  }
+
+  function readLock(conversationId = currentConversationId) {
+    try {
+      return JSON.parse(
+        getLockStorage(conversationId).getItem(getLockStorageKey(conversationId)) || 'null'
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isLockFresh(lock) {
+    return Boolean(lock && Date.now() - Number(lock.updatedAt || 0) < LOCK_STALE_MS);
+  }
+
+  function isForeignLockActive(conversationId = currentConversationId) {
+    const lock = readLock(conversationId);
+    return Boolean(lock?.tabId && lock.tabId !== tabId && isLockFresh(lock));
+  }
+
+  function ownsLock(conversationId = currentConversationId) {
+    const lock = readLock(conversationId);
+    return Boolean(lock?.tabId === tabId && isLockFresh(lock));
   }
 
   function acquireLock() {
     if (isForeignLockActive()) return false;
 
+    const key = getLockStorageKey(currentConversationId);
+
     try {
-      localStorage.setItem(LOCK_KEY, JSON.stringify({
+      const storage = getLockStorage(currentConversationId);
+      storage.setItem(key, JSON.stringify({
         tabId,
         updatedAt: Date.now(),
       }));
+      ownedLockConversationId = currentConversationId;
+      ownedLockKey = key;
       startLockHeartbeat();
       return true;
     } catch (_) {
@@ -253,35 +333,47 @@
   }
 
   function refreshLock() {
-    const lock = readLock();
-    if (lock?.tabId !== tabId) return;
+    if (!ownedLockKey) return;
+
+    const storage = getLockStorage(ownedLockConversationId);
+    const lock = readLock(ownedLockConversationId);
+    if (lock?.tabId !== tabId) {
+      stopLockHeartbeat();
+      ownedLockKey = null;
+      ownedLockConversationId = undefined;
+      return;
+    }
 
     try {
-      localStorage.setItem(LOCK_KEY, JSON.stringify({
+      storage.setItem(ownedLockKey, JSON.stringify({
         tabId,
         updatedAt: Date.now(),
       }));
     } catch (_) {
-      // localStorage 不可用时不阻断当前页面运行。
+      // 存储暂时不可用时不阻断当前页面运行。
     }
   }
 
   function releaseLock() {
     stopLockHeartbeat();
 
+    const conversationId = ownedLockKey ? ownedLockConversationId : currentConversationId;
+    const key = ownedLockKey || getLockStorageKey(conversationId);
+
     try {
-      const lock = readLock();
-      if (lock?.tabId === tabId) {
-        localStorage.removeItem(LOCK_KEY);
-      }
+      const storage = getLockStorage(conversationId);
+      const lock = JSON.parse(storage.getItem(key) || 'null');
+      if (lock?.tabId === tabId) storage.removeItem(key);
     } catch (_) {
-      // 忽略锁清理失败，旧锁会在超时后自动失效。
+      // 旧锁会在超时后自动失效。
     }
+
+    ownedLockKey = null;
+    ownedLockConversationId = undefined;
   }
 
   function startLockHeartbeat() {
     if (lockHeartbeatTimer !== null) return;
-
     lockHeartbeatTimer = window.setInterval(refreshLock, LOCK_HEARTBEAT_MS);
   }
 
@@ -293,15 +385,22 @@
   }
 
   function shouldOwnLock() {
-    return state.mode === 'running' || state.activeIndex !== null;
+    return state.mode === 'running' || state.mode === 'pausing' || state.activeIndex !== null;
   }
 
   function syncLockToState() {
-    if (shouldOwnLock()) {
-      acquireLock();
-    } else {
-      releaseLock();
-    }
+    if (shouldOwnLock()) acquireLock();
+    else releaseLock();
+  }
+
+  function reconcileLoadedState(reason) {
+    if (state.mode !== 'running' && state.mode !== 'pausing') return;
+    if (isForeignLockActive(currentConversationId)) return;
+
+    state.mode = 'paused';
+    state.notice = `${reason}，当前会话队列已安全暂停。请刷新状态后再决定是否恢复。`;
+    writeStateForContext(state, currentConversationId);
+    releaseLock();
   }
 
   function parseTasks(text) {
@@ -315,32 +414,100 @@
     return String(text || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
-  function getConversationId() {
-    const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/i);
-    return match ? decodeURIComponent(match[1]) : null;
-  }
-
   function getConversationStatus({ allowBind = true } = {}) {
     const currentId = getConversationId();
 
-    if (state.conversationId) {
-      return {
-        ok: currentId === state.conversationId,
-        currentId,
-        expectedId: state.conversationId,
-      };
-    }
-
-    if (allowBind && currentId) {
-      state.conversationId = currentId;
-      saveState({ render: false });
+    if (allowBind && currentConversationId === null && currentId) {
+      migrateTemporaryStateToConversation(currentId);
     }
 
     return {
-      ok: true,
+      ok: currentId === currentConversationId,
       currentId,
-      expectedId: state.conversationId,
+      expectedId: currentConversationId,
     };
+  }
+
+  function resetPanelForContext() {
+    const panel = document.getElementById(PANEL_ID);
+    const textarea = panel?.querySelector(`#${PREFIX}-input`);
+    const details = panel?.querySelector(`[data-field="details"]`);
+
+    if (textarea) {
+      textarea.dataset.initialized = 'false';
+      textarea.dataset.dirty = 'false';
+    }
+    if (details) details.open = false;
+    closePanelDialog(false);
+  }
+
+  function migrateTemporaryStateToConversation(newConversationId) {
+    if (currentConversationId !== null || !newConversationId) return false;
+
+    const temporaryState = state;
+    const useTemporaryState = hasStateContent(temporaryState) || temporaryState.activeIndex !== null;
+
+    releaseLock();
+    currentConversationId = newConversationId;
+
+    if (useTemporaryState) {
+      state = normalizeState(temporaryState, newConversationId);
+      state.notice = state.activeIndex !== null
+        ? state.notice
+        : '新对话已创建并自动绑定当前任务状态。';
+      writeStateForContext(state, newConversationId);
+    } else {
+      state = loadStateForContext(newConversationId);
+      reconcileLoadedState('已切换到正式会话');
+    }
+
+    try {
+      sessionStorage.removeItem(TEMP_STATE_KEY);
+      sessionStorage.removeItem(TEMP_LOCK_KEY);
+    } catch (_) {
+      // 忽略临时状态清理失败。
+    }
+
+    if (shouldOwnLock()) acquireLock();
+    locationSnapshot = location.href;
+    resetPanelForContext();
+    renderPanel();
+    return true;
+  }
+
+  function pauseCurrentContextBeforeLeaving() {
+    if (!ownsLock(currentConversationId)) return;
+
+    resetDispatchTimer();
+    stopMonitor();
+
+    if (state.mode === 'running' || state.mode === 'pausing') {
+      state.mode = 'paused';
+      state.notice = state.activeIndex !== null
+        ? '已离开此会话；当前轮状态保留，返回后请先刷新状态。'
+        : '已离开此会话，队列已暂停。';
+      writeStateForContext(state, currentConversationId);
+    }
+  }
+
+  function switchToConversationContext(newConversationId) {
+    if (newConversationId === currentConversationId) return;
+
+    if (currentConversationId === null && newConversationId) {
+      if (migrateTemporaryStateToConversation(newConversationId)) return;
+    }
+
+    pauseCurrentContextBeforeLeaving();
+    sendingEpoch += 1;
+    stopMonitor();
+    resetDispatchTimer();
+    releaseLock();
+
+    currentConversationId = newConversationId;
+    state = loadStateForContext(newConversationId);
+    reconcileLoadedState('已切换会话');
+    resetPanelForContext();
+    renderPanel();
   }
 
   function isVisibleAndEnabled(element) {
@@ -751,8 +918,9 @@
 
     const now = Date.now();
     state = {
-      version: 1,
+      version: 2,
       sourceText: draft.sourceText,
+      draftText: draft.sourceText,
       tasks: draft.lines.map((text, index) => ({
         id: index + 1,
         text,
@@ -764,7 +932,7 @@
       nextIndex: 0,
       activeIndex: null,
       mode: 'paused',
-      conversationId: getConversationId(),
+      conversationId: currentConversationId,
       delayMs: draft.delayMs,
       notice: `已载入 ${draft.lines.length} 条任务，准备从第 1 轮开始。`,
       createdAt: now,
@@ -772,14 +940,14 @@
     };
 
     if (draft.textarea) {
-      draft.textarea.value = state.sourceText;
+      draft.textarea.value = state.draftText;
       draft.textarea.dataset.dirty = 'false';
     }
 
     saveState();
   }
 
-  function startOrResumeQueue() {
+  async function startOrResumeQueue() {
     const draft = readPanelQueueDraft();
     const hasQueue = state.tasks.length > 0;
     const sourceChanged = draft.sourceText !== state.sourceText;
@@ -793,7 +961,11 @@
 
     if (!hasQueue) {
       if (draft.lines.length === 0) {
-        window.alert('没有识别到任务。请确保每个非空行是一条命令。');
+        await showPanelDialog({
+          title: '没有可执行的任务',
+          message: '请粘贴任务，并确保每个非空行是一条命令。',
+          alertOnly: true,
+        });
         return;
       }
 
@@ -804,15 +976,25 @@
 
     if (queueFinished) {
       if (draft.lines.length === 0) {
-        window.alert('任务输入为空。请粘贴新任务后再开始。');
+        await showPanelDialog({
+          title: '任务输入为空',
+          message: '请粘贴新任务后再开始。',
+          alertOnly: true,
+        });
         return;
       }
 
       const message = sourceChanged
-        ? `将载入 ${draft.lines.length} 条新任务并从第 1 轮开始，是否继续？`
-        : `当前队列已经完成。是否重新执行这 ${draft.lines.length} 条任务？`;
+        ? `将载入 ${draft.lines.length} 条新任务并从第 1 轮开始。`
+        : `当前队列已经完成，将重新执行这 ${draft.lines.length} 条任务。`;
 
-      if (!window.confirm(message)) return;
+      const confirmed = await showPanelDialog({
+        title: sourceChanged ? '替换已完成队列' : '重新执行队列',
+        message,
+        confirmText: '继续',
+      });
+      if (!confirmed) return;
+
       replaceQueueFromPanel(draft);
       resumeQueue();
       return;
@@ -820,13 +1002,21 @@
 
     if (sourceChanged) {
       if (draft.lines.length === 0) {
-        window.alert('修改后的任务输入为空，不能替换当前队列。');
+        await showPanelDialog({
+          title: '无法替换队列',
+          message: '修改后的任务输入为空。',
+          alertOnly: true,
+        });
         return;
       }
 
-      if (!window.confirm(`任务文本已修改。是否用 ${draft.lines.length} 条任务替换当前队列并从第 1 轮开始？`)) {
-        return;
-      }
+      const confirmed = await showPanelDialog({
+        title: '替换当前队列',
+        message: `任务文本已修改。将用 ${draft.lines.length} 条任务替换当前队列，并从第 1 轮开始。`,
+        confirmText: '替换并开始',
+        danger: true,
+      });
+      if (!confirmed) return;
 
       replaceQueueFromPanel(draft);
       resumeQueue();
@@ -834,10 +1024,13 @@
     }
 
     if (activeTask && !stopButton && !activeTask.hasSeenStop) {
-      if (!window.confirm(`无法确认第 ${state.activeIndex + 1} 轮是否真正开始。是否重新发送这一轮？`)) {
-        return;
-      }
-
+      const confirmed = await showPanelDialog({
+        title: '重新发送当前轮',
+        message: `无法确认第 ${state.activeIndex + 1} 轮是否真正开始。是否重新发送这一轮？`,
+        confirmText: '重新发送',
+        danger: true,
+      });
+      if (!confirmed) return;
       resetActiveTaskForRetry();
     }
 
@@ -1031,7 +1224,7 @@
     return true;
   }
 
-  function clearQueue() {
+  async function clearQueue() {
     const activeTask = getActiveTask();
     const answerRunning = Boolean(activeTask && findStopButton());
     const hasAnything = state.tasks.length > 0 || Boolean(normalizeText(
@@ -1045,20 +1238,24 @@
     }
 
     const message = answerRunning
-      ? '当前回答仍会继续生成，但脚本将清空队列并停止后续发送。是否继续？'
-      : '确定清空任务文本、队列和本地进度吗？';
+      ? '当前回答仍会继续生成，但脚本将清空本会话的队列并停止后续发送。'
+      : '将清空本会话的任务文本、队列和进度。';
 
-    if (!window.confirm(message)) return;
+    const confirmed = await showPanelDialog({
+      title: '清空当前会话队列',
+      message,
+      confirmText: '清空',
+      danger: true,
+    });
+    if (!confirmed) return;
 
-    if (activeTask && !answerRunning) {
-      clearEditorIfMatches(activeTask.text);
-    }
+    if (activeTask && !answerRunning) clearEditorIfMatches(activeTask.text);
 
     sendingEpoch += 1;
     stopMonitor();
     resetDispatchTimer();
     releaseLock();
-    state = createDefaultState();
+    state = createDefaultState(currentConversationId);
 
     const textarea = document.getElementById(`${PREFIX}-input`);
     if (textarea) {
@@ -1067,6 +1264,37 @@
     }
 
     saveState();
+  }
+
+  function getProgressSnapshot() {
+    const totalCount = state.tasks.length;
+    const completedCount = state.tasks.filter((task) => task.status === 'completed').length;
+    const activeTask = getActiveTask();
+    const activeVisible = Boolean(
+      activeTask && ['sending', 'submitted', 'running'].includes(activeTask.status)
+    );
+    const activePosition = activeVisible && state.activeIndex !== null
+      ? state.activeIndex + 1
+      : completedCount;
+    const completedPercent = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
+    const activeStartPercent = totalCount > 0 && activeVisible
+      ? (state.activeIndex / totalCount) * 100
+      : completedPercent;
+    const activeWidthPercent = totalCount > 0 && activeVisible ? 100 / totalCount : 0;
+
+    return {
+      totalCount,
+      completedCount,
+      activeVisible,
+      activePosition,
+      completedPercent: Math.min(100, Math.max(0, completedPercent)),
+      activeStartPercent: Math.min(100, Math.max(0, activeStartPercent)),
+      activeWidthPercent: Math.min(100, Math.max(0, activeWidthPercent)),
+      completedAngle: totalCount > 0 ? (completedCount / totalCount) * 360 : 0,
+      activeAngle: totalCount > 0 && activeVisible
+        ? ((state.activeIndex + 1) / totalCount) * 360
+        : (totalCount > 0 ? (completedCount / totalCount) * 360 : 0),
+    };
   }
 
   function getCompletedCount() {
@@ -1086,7 +1314,10 @@
     style.textContent = `
       #${PANEL_ID} {
         --${PREFIX}-accent: #10a37f;
-        --${PREFIX}-progress-angle: 0deg;
+        --${PREFIX}-progress-complete: #12b76a;
+        --${PREFIX}-progress-active: #f5b700;
+        --${PREFIX}-progress-complete-angle: 0deg;
+        --${PREFIX}-progress-active-angle: 0deg;
         position: fixed;
         right: max(16px, env(safe-area-inset-right));
         bottom: max(16px, env(safe-area-inset-bottom));
@@ -1135,8 +1366,9 @@
         border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
         border-radius: 50%;
         background: conic-gradient(
-          var(--${PREFIX}-accent) var(--${PREFIX}-progress-angle),
-          color-mix(in srgb, var(--main-surface-primary, #ffffff) 78%, currentColor 22%) 0
+          var(--${PREFIX}-progress-complete) 0 var(--${PREFIX}-progress-complete-angle),
+          var(--${PREFIX}-progress-active) var(--${PREFIX}-progress-complete-angle) var(--${PREFIX}-progress-active-angle),
+          color-mix(in srgb, var(--main-surface-primary, #ffffff) 78%, currentColor 22%) var(--${PREFIX}-progress-active-angle) 360deg
         );
         color: inherit;
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
@@ -1274,6 +1506,8 @@
       }
 
       #${PANEL_ID} button {
+        appearance: none;
+        -webkit-appearance: none;
         min-height: 32px;
         border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
         border-radius: 8px;
@@ -1293,14 +1527,30 @@
         opacity: 0.45;
       }
 
-      #${PANEL_ID} .${PREFIX}-primary {
-        border-color: var(--${PREFIX}-accent);
-        background: var(--${PREFIX}-accent);
-        color: #ffffff;
+      #${PANEL_ID} button.${PREFIX}-primary {
+        border-color: #0d8f70 !important;
+        background-color: #10a37f !important;
+        color: #ffffff !important;
+        filter: none !important;
       }
 
-      #${PANEL_ID} .${PREFIX}-primary:hover:not(:disabled) {
-        filter: brightness(0.9);
+      #${PANEL_ID} button.${PREFIX}-primary:hover:not(:disabled),
+      #${PANEL_ID} button.${PREFIX}-primary:focus-visible:not(:disabled) {
+        border-color: #0b7c62 !important;
+        background-color: #0d8f70 !important;
+        color: #ffffff !important;
+        filter: none !important;
+      }
+
+      #${PANEL_ID} button.${PREFIX}-primary:active:not(:disabled) {
+        border-color: #096b56 !important;
+        background-color: #0b7c62 !important;
+        color: #ffffff !important;
+      }
+
+      #${PANEL_ID} button.${PREFIX}-primary:focus-visible {
+        outline: 2px solid color-mix(in srgb, #10a37f 45%, transparent);
+        outline-offset: 2px;
       }
 
       #${PANEL_ID} .${PREFIX}-danger {
@@ -1321,13 +1571,22 @@
         background: color-mix(in srgb, var(--main-surface-primary, #ffffff) 87%, currentColor 13%);
       }
 
-      #${PANEL_ID} .${PREFIX}-progress-fill {
+      #${PANEL_ID} .${PREFIX}-progress-completed,
+      #${PANEL_ID} .${PREFIX}-progress-active {
         position: absolute;
-        inset: 0 auto 0 0;
+        inset-block: 0;
         width: 0;
-        border-radius: inherit;
-        background: color-mix(in srgb, var(--${PREFIX}-accent) 78%, transparent);
-        transition: width 220ms ease;
+        transition: left 220ms ease, width 220ms ease;
+      }
+
+      #${PANEL_ID} .${PREFIX}-progress-completed {
+        left: 0;
+        background: var(--${PREFIX}-progress-complete);
+      }
+
+      #${PANEL_ID} .${PREFIX}-progress-active {
+        left: 0;
+        background: var(--${PREFIX}-progress-active);
       }
 
       #${PANEL_ID} .${PREFIX}-progress-text {
@@ -1400,6 +1659,70 @@
         overflow-wrap: anywhere;
       }
 
+
+      #${PANEL_ID} .${PREFIX}-modal-layer {
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        display: none;
+        place-items: center;
+        padding: 18px;
+        background: rgba(0, 0, 0, 0.38);
+        backdrop-filter: blur(1.5px);
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-layer[data-open="true"] {
+        display: grid;
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-card {
+        width: min(300px, 100%);
+        max-height: calc(100% - 8px);
+        overflow: auto;
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        border-radius: 12px;
+        background: var(--main-surface-primary, #ffffff);
+        color: inherit;
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3);
+        padding: 16px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-title {
+        margin: 0 0 8px;
+        font-size: 15px;
+        font-weight: 750;
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-message {
+        margin: 0;
+        color: var(--text-secondary, #4b5563);
+        overflow-wrap: anywhere;
+        white-space: pre-line;
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-actions button {
+        min-width: 72px;
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-confirm[data-danger="true"] {
+        border-color: #b42318 !important;
+        background-color: #d92d20 !important;
+        color: #ffffff !important;
+      }
+
+      #${PANEL_ID} .${PREFIX}-modal-confirm[data-danger="true"]:hover,
+      #${PANEL_ID} .${PREFIX}-modal-confirm[data-danger="true"]:focus-visible {
+        background-color: #b42318 !important;
+        color: #ffffff !important;
+      }
+
       #${PANEL_ID} .${PREFIX}-task-text {
         overflow-wrap: anywhere;
       }
@@ -1430,6 +1753,10 @@
         }
 
         #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher::before {
+          background: var(--main-surface-primary, #212121);
+        }
+
+        #${PANEL_ID} .${PREFIX}-modal-card {
           background: var(--main-surface-primary, #212121);
         }
 
@@ -1478,7 +1805,8 @@
         </div>
         <div class="${PREFIX}-progress-section">
           <div class="${PREFIX}-progress-track" data-field="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
-            <div class="${PREFIX}-progress-fill" data-field="progress-fill"></div>
+            <div class="${PREFIX}-progress-completed" data-field="progress-completed"></div>
+            <div class="${PREFIX}-progress-active" data-field="progress-active"></div>
             <span class="${PREFIX}-progress-text" data-field="progress"></span>
           </div>
           <div class="${PREFIX}-conversation" data-field="conversation-wrap" data-state="unbound">
@@ -1501,6 +1829,16 @@
         </details>
         <div class="${PREFIX}-notice" data-field="notice"></div>
       </div>
+      <div class="${PREFIX}-modal-layer" data-field="modal-layer" data-open="false" aria-hidden="true">
+        <div class="${PREFIX}-modal-card" role="dialog" aria-modal="true" aria-labelledby="${PREFIX}-modal-title">
+          <h2 id="${PREFIX}-modal-title" class="${PREFIX}-modal-title" data-field="modal-title"></h2>
+          <p class="${PREFIX}-modal-message" data-field="modal-message"></p>
+          <div class="${PREFIX}-modal-actions">
+            <button type="button" data-action="dialog-cancel" data-field="modal-cancel">取消</button>
+            <button type="button" data-action="dialog-confirm" data-field="modal-confirm" class="${PREFIX}-modal-confirm">确认</button>
+          </div>
+        </div>
+      </div>
     `;
 
     panel.addEventListener('click', (event) => {
@@ -1508,17 +1846,21 @@
       if (!button) return;
 
       const action = button.dataset.action;
-      if (action === 'start') startOrResumeQueue();
+      if (action === 'start') void startOrResumeQueue();
       if (action === 'pause') pauseQueue();
       if (action === 'refresh') refreshRuntimeStatus();
-      if (action === 'clear') clearQueue();
+      if (action === 'clear') void clearQueue();
       if (action === 'expand') panel.dataset.collapsed = 'false';
       if (action === 'collapse') panel.dataset.collapsed = 'true';
+      if (action === 'dialog-cancel') closePanelDialog(false);
+      if (action === 'dialog-confirm') closePanelDialog(true);
     });
 
     panel.addEventListener('input', (event) => {
       if (event.target.id === `${PREFIX}-input`) {
         event.target.dataset.dirty = 'true';
+        state.draftText = event.target.value;
+        saveState({ render: false });
       }
     });
 
@@ -1538,6 +1880,70 @@
     renderPanel();
   }
 
+  function showPanelDialog({
+    title,
+    message,
+    confirmText = '确认',
+    cancelText = '取消',
+    danger = false,
+    alertOnly = false,
+  }) {
+    createPanel();
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) return Promise.resolve(false);
+
+    if (dialogResolver) closePanelDialog(false);
+    panel.dataset.collapsed = 'false';
+
+    const layer = panel.querySelector(`[data-field="modal-layer"]`);
+    const cancelButton = panel.querySelector(`[data-field="modal-cancel"]`);
+    const confirmButton = panel.querySelector(`[data-field="modal-confirm"]`);
+
+    setPanelField(panel, 'modal-title', title || '提示');
+    setPanelField(panel, 'modal-message', message || '');
+    if (cancelButton) {
+      cancelButton.textContent = cancelText;
+      cancelButton.hidden = alertOnly;
+    }
+    if (confirmButton) {
+      confirmButton.textContent = alertOnly ? '知道了' : confirmText;
+      confirmButton.dataset.danger = danger ? 'true' : 'false';
+    }
+    if (layer) {
+      layer.dataset.open = 'true';
+      layer.setAttribute('aria-hidden', 'false');
+    }
+
+    return new Promise((resolve) => {
+      dialogResolver = resolve;
+      window.requestAnimationFrame(() => confirmButton?.focus());
+    });
+  }
+
+  function closePanelDialog(result) {
+    const panel = document.getElementById(PANEL_ID);
+    const layer = panel?.querySelector(`[data-field="modal-layer"]`);
+    if (layer) {
+      layer.dataset.open = 'false';
+      layer.setAttribute('aria-hidden', 'true');
+    }
+
+    const resolver = dialogResolver;
+    dialogResolver = null;
+    if (resolver) resolver(Boolean(result));
+  }
+
+  function handleDialogKeydown(event) {
+    if (!dialogResolver) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePanelDialog(false);
+    } else if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      closePanelDialog(true);
+    }
+  }
+
   function renderPanel() {
     const panel = document.getElementById(PANEL_ID);
     if (!panel) return;
@@ -1546,16 +1952,16 @@
     const delayInput = panel.querySelector(`#${PREFIX}-delay`);
 
     if (textarea && !textarea.dataset.initialized) {
-      textarea.value = state.sourceText;
+      textarea.value = state.draftText;
       textarea.dataset.initialized = 'true';
       textarea.dataset.dirty = 'false';
     } else if (
       textarea &&
       textarea.dataset.dirty !== 'true' &&
       document.activeElement !== textarea &&
-      textarea.value !== state.sourceText
+      textarea.value !== state.draftText
     ) {
-      textarea.value = state.sourceText;
+      textarea.value = state.draftText;
     }
 
     if (delayInput && document.activeElement !== delayInput) {
@@ -1565,20 +1971,18 @@
     const activeTask = getActiveTask();
     const nextTask = state.tasks[state.nextIndex] || null;
     const conversation = getConversationStatus({ allowBind: false });
-    const completedCount = getCompletedCount();
-    const totalCount = state.tasks.length;
-    const progressPercent = totalCount > 0
-      ? Math.min(100, Math.max(0, (completedCount / totalCount) * 100))
-      : 0;
+    const progress = getProgressSnapshot();
+    const { totalCount, completedCount } = progress;
     const progressText = totalCount > 0
-      ? `${completedCount} / ${totalCount}`
+      ? `${progress.activePosition} / ${totalCount}`
       : '尚未载入';
     const launcherText = state.mode === 'error'
       ? '!'
-      : (totalCount > 0 ? `${completedCount}/${totalCount}` : '+');
+      : (totalCount > 0 ? `${progress.activePosition}/${totalCount}` : '+');
 
     panel.dataset.mode = state.mode;
-    panel.style.setProperty(`--${PREFIX}-progress-angle`, `${progressPercent * 3.6}deg`);
+    panel.style.setProperty(`--${PREFIX}-progress-complete-angle`, `${progress.completedAngle}deg`);
+    panel.style.setProperty(`--${PREFIX}-progress-active-angle`, `${progress.activeAngle}deg`);
 
     setPanelField(panel, 'mode', MODE_LABELS[state.mode] || state.mode);
     setPanelField(panel, 'launcher-progress', launcherText);
@@ -1598,12 +2002,12 @@
         : '无'
     );
 
-    const conversationState = !state.conversationId
+    const conversationState = !currentConversationId
       ? 'unbound'
       : (conversation.ok ? 'bound' : 'mismatch');
     const conversationText = conversationState === 'bound'
       ? '会话已绑定'
-      : (conversationState === 'mismatch' ? '会话不匹配' : '会话未绑定');
+      : (conversationState === 'mismatch' ? '会话状态切换中' : '新对话待绑定');
 
     setPanelField(panel, 'conversation', conversationText);
     setPanelField(panel, 'notice', state.notice || '—');
@@ -1614,21 +2018,29 @@
     const progressTrack = panel.querySelector(`[data-field="progress-track"]`);
     if (progressTrack) {
       progressTrack.setAttribute('aria-valuemax', String(totalCount));
-      progressTrack.setAttribute('aria-valuenow', String(completedCount));
+      progressTrack.setAttribute('aria-valuenow', String(progress.activePosition));
       progressTrack.setAttribute('aria-label', totalCount > 0
-        ? `已完成 ${completedCount} / ${totalCount}`
+        ? (progress.activeVisible
+          ? `已完成 ${completedCount} 轮，正在执行第 ${progress.activePosition} / ${totalCount} 轮`
+          : `已完成 ${completedCount} / ${totalCount}`)
         : '尚未载入任务');
     }
 
-    const progressFill = panel.querySelector(`[data-field="progress-fill"]`);
-    if (progressFill) progressFill.style.width = `${progressPercent}%`;
+    const completedFill = panel.querySelector(`[data-field="progress-completed"]`);
+    if (completedFill) completedFill.style.width = `${progress.completedPercent}%`;
+
+    const activeFill = panel.querySelector(`[data-field="progress-active"]`);
+    if (activeFill) {
+      activeFill.style.left = `${progress.activeStartPercent}%`;
+      activeFill.style.width = `${progress.activeWidthPercent}%`;
+    }
 
     const launcher = panel.querySelector(`.${PREFIX}-launcher`);
     if (launcher) {
       launcher.setAttribute(
         'aria-label',
         totalCount > 0
-          ? `展开 ChatGPT 顺序任务助手，已完成 ${completedCount} / ${totalCount}，当前状态：${MODE_LABELS[state.mode] || state.mode}`
+          ? `展开 ChatGPT 顺序任务助手，进度 ${progress.activePosition} / ${totalCount}，已完成 ${completedCount} 轮，当前状态：${MODE_LABELS[state.mode] || state.mode}`
           : '展开 ChatGPT 顺序任务助手'
       );
     }
@@ -1667,25 +2079,12 @@
   }
 
   function handleLocationChange() {
-    if (location.href === locationSnapshot) return;
-    locationSnapshot = location.href;
+    const newHref = location.href;
+    const newConversationId = getConversationId();
+    if (newHref === locationSnapshot && newConversationId === currentConversationId) return;
 
-    if (state.tasks.length === 0) {
-      renderPanel();
-      return;
-    }
-
-    const conversation = getConversationStatus({ allowBind: state.activeIndex !== null });
-    if (!conversation.ok) {
-      resetDispatchTimer();
-      state.mode = 'paused';
-      state.notice = '检测到切换了 ChatGPT 会话，队列已暂停。返回原会话后点击“刷新状态”。';
-      releaseLock();
-      saveState();
-      return;
-    }
-
-    renderPanel();
+    locationSnapshot = newHref;
+    switchToConversationContext(newConversationId);
   }
 
   function handleTrustedEditorInput(event) {
@@ -1704,9 +2103,9 @@
     createPanel();
     handleLocationChange();
 
-    if (state.activeIndex !== null) {
-      if (acquireLock()) startMonitor();
-    } else {
+    if (state.activeIndex !== null && ownsLock(currentConversationId)) {
+      startMonitor();
+    } else if (!shouldOwnLock()) {
       releaseLock();
     }
 
@@ -1750,6 +2149,7 @@
 
   installHistoryHooks();
   document.addEventListener('input', handleTrustedEditorInput, true);
+  document.addEventListener('keydown', handleDialogKeydown, true);
   window.addEventListener('popstate', handleLocationChange);
   window.addEventListener('focus', recoverRuntime);
   window.addEventListener('pageshow', recoverRuntime);
@@ -1758,27 +2158,42 @@
   });
 
   window.addEventListener('storage', (event) => {
-    if (event.key === STORAGE_KEY && event.newValue) {
+    if (!currentConversationId) return;
+
+    const currentStateKey = getStateStorageKey(currentConversationId);
+    const currentLockKey = getLockStorageKey(currentConversationId);
+
+    if (event.key === currentStateKey) {
       try {
-        state = normalizeState(JSON.parse(event.newValue));
-        state.mode = 'paused';
-        state.notice = '检测到其他标签页修改了队列，本页已暂停并重新载入状态。';
-        stopMonitor();
-        resetDispatchTimer();
-        releaseLock();
+        state = event.newValue
+          ? normalizeState(JSON.parse(event.newValue), currentConversationId)
+          : createDefaultState(currentConversationId);
+
+        if (ownsLock(currentConversationId) && state.activeIndex !== null) {
+          startMonitor();
+        } else if (!shouldOwnLock()) {
+          stopMonitor();
+          resetDispatchTimer();
+          releaseLock();
+        }
+
         renderPanel();
       } catch (_) {
         // 忽略其他标签页写入的无效状态。
       }
     }
 
-    if (event.key === LOCK_KEY) renderPanel();
+    if (event.key === currentLockKey) renderPanel();
   });
 
   window.__cgSequentialTaskQueue = {
     version: VERSION,
     getState() {
-      return JSON.parse(JSON.stringify(state));
+      return {
+        conversationId: currentConversationId,
+        lockOwnedByThisTab: ownsLock(currentConversationId),
+        state: JSON.parse(JSON.stringify(state)),
+      };
     },
     pause: pauseQueue,
     start: startOrResumeQueue,
