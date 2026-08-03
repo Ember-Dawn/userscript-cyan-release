@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.0
+// @version      4.0.1
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -31,7 +31,7 @@ Current behavior contract:
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.0';
+  const SCRIPT_VERSION = '4.0.1';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -263,7 +263,7 @@ Current behavior contract:
       }
       #${PLAYER_ID}[hidden] { display: none !important; }
 
-      #${PLAYER_ID} .cyan-ui.player-header {
+      #${PLAYER_ID} .cyan-player-header {
         display: flex;
         align-items: center;
         gap: 8px;
@@ -272,29 +272,29 @@ Current behavior contract:
         background: rgba(24, 35, 42, 0.34);
         border-bottom: 1px solid rgba(178, 199, 209, 0.14);
       }
-      #${PLAYER_ID} .cyan-ui.player-header-settings {
+      #${PLAYER_ID} .cyan-player-header-settings {
         display: flex;
         align-items: center;
         gap: 9px;
         min-width: 0;
         flex: 1;
       }
-      #${PLAYER_ID} .cyan-ui.player-setting {
+      #${PLAYER_ID} .cyan-player-setting {
         display: inline-flex;
         align-items: center;
         gap: 4px;
         white-space: nowrap;
         color: rgba(231, 238, 242, 0.78);
       }
-      #${PLAYER_ID} .cyan-ui.player-window-actions {
+      #${PLAYER_ID} .cyan-player-window-actions {
         display: inline-flex;
         align-items: center;
         gap: 1px;
       }
-      #${PLAYER_ID} .cyan-ui.player-select {
+      #${PLAYER_ID} .cyan-player-select {
         display: inline-flex;
       }
-      #${PLAYER_ID} .cyan-ui.player-select-button {
+      #${PLAYER_ID} .cyan-player-select-button {
         height: 26px;
         min-width: 0;
         padding: 1px 7px;
@@ -307,19 +307,19 @@ Current behavior contract:
         text-align: left;
         cursor: pointer;
       }
-      #${PLAYER_ID} .cyan-ui.player-select-button:hover,
-      #${PLAYER_ID} .cyan-ui.player-select-button[aria-expanded="true"] {
+      #${PLAYER_ID} .cyan-player-select-button:hover,
+      #${PLAYER_ID} .cyan-player-select-button[aria-expanded="true"] {
         background: rgba(255, 255, 255, 0.12);
         border-color: rgba(178, 199, 209, 0.34);
       }
-      #${PLAYER_ID} .cyan-ui.player-select-button:disabled {
+      #${PLAYER_ID} .cyan-player-select-button:disabled {
         opacity: 0.48;
         cursor: default;
       }
-      #${PLAYER_ID} .cyan-ui.player-select--seek .cyan-ui.player-select-button { width: 58px; }
-      #${PLAYER_ID} .cyan-ui.player-select--speed .cyan-ui.player-select-button { width: 56px; }
+      #${PLAYER_ID} .cyan-player-select--seek .cyan-player-select-button { width: 58px; }
+      #${PLAYER_ID} .cyan-player-select--speed .cyan-player-select-button { width: 56px; }
 
-      .cyan-ui.player-floating-menu {
+      .cyan-player-floating-menu {
         position: fixed;
         z-index: 2147483001;
         min-width: 56px;
@@ -333,8 +333,8 @@ Current behavior contract:
         box-shadow: 0 8px 22px rgba(8, 15, 20, 0.34);
         font: 12px/1.3 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
-      .cyan-ui.player-floating-menu[hidden] { display: none !important; }
-      .cyan-ui.player-floating-option {
+      .cyan-player-floating-menu[hidden] { display: none !important; }
+      .cyan-player-floating-option {
         display: block;
         width: 100%;
         padding: 5px 7px;
@@ -347,16 +347,16 @@ Current behavior contract:
         white-space: nowrap;
         cursor: pointer;
       }
-      .cyan-ui.player-floating-option:hover,
-      .cyan-ui.player-floating-option:focus-visible {
+      .cyan-player-floating-option:hover,
+      .cyan-player-floating-option:focus-visible {
         background: rgba(188, 211, 221, 0.13);
         outline: none;
       }
-      .cyan-ui.player-floating-option[aria-selected="true"] {
+      .cyan-player-floating-option[aria-selected="true"] {
         background: rgba(119, 157, 176, 0.24);
       }
 
-      #${PLAYER_ID} .cyan-ui.player-icon-button {
+      #${PLAYER_ID} .cyan-player-icon-button {
         position: relative;
         display: inline-flex;
         align-items: center;
@@ -370,9 +370,9 @@ Current behavior contract:
         border-radius: 8px;
         cursor: pointer;
       }
-      #${PLAYER_ID} .cyan-ui.player-icon-button:hover { background: rgba(188, 211, 221, 0.12); }
-      #${PLAYER_ID} .cyan-ui.player-icon-button:disabled { opacity: 0.4; cursor: default; }
-      #${PLAYER_ID} .cyan-ui.player-icon-button svg { width: 23px; height: 23px; }
+      #${PLAYER_ID} .cyan-player-icon-button:hover { background: rgba(188, 211, 221, 0.12); }
+      #${PLAYER_ID} .cyan-player-icon-button:disabled { opacity: 0.4; cursor: default; }
+      #${PLAYER_ID} .cyan-player-icon-button svg { width: 23px; height: 23px; }
       #${PLAYER_ID} .cyan-download-visual {
         display: none;
         align-items: center;
@@ -381,10 +381,10 @@ Current behavior contract:
         height: 23px;
         pointer-events: none;
       }
-      #${PLAYER_ID} .cyan-ui.player-download-button[data-cyan-download-state="idle"] .cyan-download-idle,
-      #${PLAYER_ID} .cyan-ui.player-download-button[data-cyan-download-state="working"] .cyan-download-working,
-      #${PLAYER_ID} .cyan-ui.player-download-button[data-cyan-download-state="success"] .cyan-download-success,
-      #${PLAYER_ID} .cyan-ui.player-download-button[data-cyan-download-state="error"] .cyan-download-error {
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="idle"] .cyan-download-idle,
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"] .cyan-download-working,
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="success"] .cyan-download-success,
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="error"] .cyan-download-error {
         display: inline-flex;
       }
       #${PLAYER_ID} .cyan-download-spinner {
@@ -395,33 +395,33 @@ Current behavior contract:
         border: 2px solid rgba(220, 232, 237, 0.28);
         border-top-color: currentColor;
         border-radius: 50%;
-        animation: cyan-ui.player-download-spin 0.72s linear infinite;
+        animation: cyan-player-download-spin 0.72s linear infinite;
         transform-origin: 50% 50%;
         will-change: transform;
       }
-      #${PLAYER_ID} .cyan-ui.player-download-button[data-cyan-download-state="success"] {
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="success"] {
         color: #9fc6ad;
       }
-      #${PLAYER_ID} .cyan-ui.player-download-button[data-cyan-download-state="error"] {
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="error"] {
         color: #d6a5a5;
       }
-      @keyframes cyan-ui.player-download-spin {
+      @keyframes cyan-player-download-spin {
         from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
       }
 
-      #${PLAYER_ID} .cyan-ui.player-body { padding: 8px 10px 9px; }
-      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-ui.player-body { display: none; }
-      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-ui.player-header { border-bottom: 0; }
+      #${PLAYER_ID} .cyan-player-body { padding: 8px 10px 9px; }
+      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-body { display: none; }
+      #${PLAYER_ID}[${PLAYER_COLLAPSED_ATTRIBUTE}="true"] .cyan-player-header { border-bottom: 0; }
 
-      #${PLAYER_ID} .cyan-ui.player-controls {
+      #${PLAYER_ID} .cyan-player-controls {
         display: flex;
         align-items: center;
         justify-content: center;
         gap: 8px;
         margin-bottom: 7px;
       }
-      #${PLAYER_ID} .cyan-ui.player-control-button {
+      #${PLAYER_ID} .cyan-player-control-button {
         position: relative;
         width: 36px;
         height: 36px;
@@ -430,7 +430,7 @@ Current behavior contract:
         border: 1px solid rgba(177, 205, 217, 0.13);
         border-radius: 10px;
       }
-      #${PLAYER_ID} .cyan-ui.player-main-button {
+      #${PLAYER_ID} .cyan-player-main-button {
         width: 42px;
         height: 42px;
         color: #eef6f8;
@@ -438,15 +438,15 @@ Current behavior contract:
         border-color: rgba(169, 199, 212, 0.26);
         border-radius: 50%;
       }
-      #${PLAYER_ID} .cyan-ui.player-main-button:hover { background: rgba(119, 157, 176, 0.36); }
-      #${PLAYER_ID} .cyan-ui.player-message-button {
+      #${PLAYER_ID} .cyan-player-main-button:hover { background: rgba(119, 157, 176, 0.36); }
+      #${PLAYER_ID} .cyan-player-message-button {
         width: 32px;
         height: 32px;
         background: transparent;
         border-color: transparent;
       }
-      #${PLAYER_ID} .cyan-ui.player-message-button svg { width: 21px; height: 21px; }
-      #${PLAYER_ID} .cyan-ui.player-status {
+      #${PLAYER_ID} .cyan-player-message-button svg { width: 21px; height: 21px; }
+      #${PLAYER_ID} .cyan-player-status {
         flex: 0 1 auto;
         max-width: 66px;
         overflow: hidden;
@@ -454,15 +454,15 @@ Current behavior contract:
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      #${PLAYER_ID} .cyan-ui.player-status:empty { display: none; }
+      #${PLAYER_ID} .cyan-player-status:empty { display: none; }
 
-      #${PLAYER_ID} .cyan-ui.player-seek-row {
+      #${PLAYER_ID} .cyan-player-seek-row {
         display: grid;
         grid-template-columns: 36px minmax(0, 1fr) 36px;
         align-items: center;
         gap: 6px;
       }
-      #${PLAYER_ID} .cyan-ui.player-time {
+      #${PLAYER_ID} .cyan-player-time {
         color: rgba(231, 238, 242, 0.72);
         font-variant-numeric: tabular-nums;
         text-align: center;
@@ -819,7 +819,7 @@ Current behavior contract:
   function createPlayerIconButton(label, pathData, extraClass = '') {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `cyan-ui.player-icon-button ${extraClass}`.trim();
+    button.className = `cyan-player-icon-button ${extraClass}`.trim();
     button.setAttribute('aria-label', label);
     button.title = label;
     button.appendChild(createSvgIcon(pathData));
@@ -867,18 +867,18 @@ Current behavior contract:
 
   function createFloatingSelect(options, initialValue, ariaLabel, className, onChange) {
     const root = document.createElement('div');
-    root.className = `cyan-ui.player-select ${className}`;
+    root.className = `cyan-player-select ${className}`;
 
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'cyan-ui.player-select-button';
+    button.className = 'cyan-player-select-button';
     button.setAttribute('aria-label', ariaLabel);
     button.setAttribute('aria-haspopup', 'listbox');
     button.setAttribute('aria-expanded', 'false');
 
     const menu = document.createElement('div');
-    menu.id = `cyan-ui.player-floating-menu-${++state.overlay.nextSelectId}`;
-    menu.className = 'cyan-ui.player-floating-menu';
+    menu.id = `cyan-player-floating-menu-${++state.overlay.nextSelectId}`;
+    menu.className = 'cyan-player-floating-menu';
     menu.setAttribute('role', 'listbox');
     menu.hidden = true;
     button.setAttribute('aria-controls', menu.id);
@@ -899,7 +899,7 @@ Current behavior contract:
     for (const option of options) {
       const optionButton = document.createElement('button');
       optionButton.type = 'button';
-      optionButton.className = 'cyan-ui.player-floating-option';
+      optionButton.className = 'cyan-player-floating-option';
       optionButton.setAttribute('role', 'option');
       optionButton.textContent = option.label;
       const value = String(option.value);
@@ -960,7 +960,7 @@ Current behavior contract:
       isBackward
         ? 'M11 7 6 12l5 5M18 7l-5 5 5 5'
         : 'M6 7l5 5-5 5M13 7l5 5-5 5',
-      'cyan-ui.player-control-button'
+      'cyan-player-control-button'
     );
     button.addEventListener('click', () => seekBy(direction * settings.seekStep));
     return button;
@@ -985,7 +985,7 @@ Current behavior contract:
       isPrevious
         ? 'M7 6v12M18 7l-8 5 8 5V7Z'
         : 'M17 6v12M6 7l8 5-8 5V7Z',
-      'cyan-ui.player-control-button cyan-ui.player-message-button'
+      'cyan-player-control-button cyan-player-message-button'
     );
     button.addEventListener('click', () => switchMessage(direction));
     return button;
@@ -1052,7 +1052,7 @@ Current behavior contract:
   function createDownloadButton() {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'cyan-ui.player-icon-button cyan-ui.player-download-button';
+    button.className = 'cyan-player-icon-button cyan-player-download-button';
     button.dataset.cyanDownloadState = 'idle';
 
     const createVisual = (className, pathData = null) => {
@@ -1450,31 +1450,31 @@ Current behavior contract:
     ui.player.setAttribute(PLAYER_COLLAPSED_ATTRIBUTE, String(settings.playerCollapsed));
 
     const header = document.createElement('div');
-    header.className = 'cyan-ui.player-header';
+    header.className = 'cyan-player-header';
 
     const headerSettings = document.createElement('div');
-    headerSettings.className = 'cyan-ui.player-header-settings';
+    headerSettings.className = 'cyan-player-header-settings';
 
     const seekSetting = document.createElement('label');
-    seekSetting.className = 'cyan-ui.player-setting';
+    seekSetting.className = 'cyan-player-setting';
     seekSetting.append(document.createTextNode('跳转'));
     ui.seekStepSelect = createFloatingSelect(
       SEEK_STEP_OPTIONS.map((seconds) => ({ value: seconds, label: `${seconds} 秒` })),
       settings.seekStep,
       '快进后退秒数',
-      'cyan-ui.player-select--seek',
+      'cyan-player-select--seek',
       handleSeekStepChange
     );
     seekSetting.appendChild(ui.seekStepSelect.parentElement);
 
     const speedSetting = document.createElement('label');
-    speedSetting.className = 'cyan-ui.player-setting';
+    speedSetting.className = 'cyan-player-setting';
     speedSetting.append(document.createTextNode('速度'));
     ui.speedSelect = createFloatingSelect(
       PLAYBACK_RATE_OPTIONS.map((rate) => ({ value: rate, label: `${rate}×` })),
       settings.playbackRate,
       '播放速度',
-      'cyan-ui.player-select--speed',
+      'cyan-player-select--speed',
       handlePlaybackRateChange
     );
     speedSetting.appendChild(ui.speedSelect.parentElement);
@@ -1485,7 +1485,7 @@ Current behavior contract:
     ui.diagnosticLogButton = createPlayerIconButton(
       '导出 MP3 诊断日志',
       DIAGNOSTIC_LOG_ICON_PATH,
-      'cyan-ui.player-diagnostic-button'
+      'cyan-player-diagnostic-button'
     );
     ui.diagnosticLogButton.addEventListener('click', exportLatestMp3DiagnosticLog);
     ui.diagnosticLogButton.hidden = !localStorage.getItem(MP3_LOG_STORAGE_KEY);
@@ -1498,12 +1498,12 @@ Current behavior contract:
     );
 
     ui.playerStatus = document.createElement('span');
-    ui.playerStatus.className = 'cyan-ui.player-status';
+    ui.playerStatus.className = 'cyan-player-status';
     ui.playerStatus.setAttribute('role', 'status');
     ui.playerStatus.setAttribute('aria-live', 'polite');
 
     const windowActions = document.createElement('div');
-    windowActions.className = 'cyan-ui.player-window-actions';
+    windowActions.className = 'cyan-player-window-actions';
 
     ui.minimizeButton = createPlayerIconButton(
       settings.playerCollapsed ? '展开播放器' : '最小化播放器',
@@ -1517,17 +1517,17 @@ Current behavior contract:
     header.append(headerSettings, ui.playerStatus, windowActions);
 
     ui.playerBody = document.createElement('div');
-    ui.playerBody.className = 'cyan-ui.player-body';
+    ui.playerBody.className = 'cyan-player-body';
 
     const controls = document.createElement('div');
-    controls.className = 'cyan-ui.player-controls';
+    controls.className = 'cyan-player-controls';
 
     ui.previousMessageButton = createMessageNavigationButton(-1);
     ui.backwardButton = createSeekControl(-1);
     ui.playPauseButton = createPlayerIconButton(
       '播放',
       'M9 7.5v9l7-4.5-7-4.5Z',
-      'cyan-ui.player-control-button cyan-ui.player-main-button'
+      'cyan-player-control-button cyan-player-main-button'
     );
     ui.playPauseButton.addEventListener('click', togglePlayback);
     ui.forwardButton = createSeekControl(1);
@@ -1541,9 +1541,9 @@ Current behavior contract:
     );
 
     const seekRow = document.createElement('div');
-    seekRow.className = 'cyan-ui.player-seek-row';
+    seekRow.className = 'cyan-player-seek-row';
     ui.currentTimeLabel = document.createElement('span');
-    ui.currentTimeLabel.className = 'cyan-ui.player-time';
+    ui.currentTimeLabel.className = 'cyan-player-time';
     ui.currentTimeLabel.textContent = '0:00';
     ui.seekRange = document.createElement('input');
     ui.seekRange.type = 'range';
@@ -1554,7 +1554,7 @@ Current behavior contract:
     ui.seekRange.setAttribute('aria-label', '播放进度');
     ui.seekRange.addEventListener('input', handleSeekInput);
     ui.durationLabel = document.createElement('span');
-    ui.durationLabel.className = 'cyan-ui.player-time';
+    ui.durationLabel.className = 'cyan-player-time';
     ui.durationLabel.textContent = '--:--';
     seekRow.append(ui.currentTimeLabel, ui.seekRange, ui.durationLabel);
 
