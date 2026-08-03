@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.5.2
+// @version      3.5.3
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -50,7 +50,7 @@
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '3.5.2';
+  const SCRIPT_VERSION = '3.5.3';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -89,7 +89,7 @@
   const STORAGE_PLAYER_COLLAPSED = 'cyanChatgptVoicePlayerCollapsed';
 
   const SEEK_STEP_OPTIONS = [3, 5, 10];
-  const PLAYBACK_RATE_OPTIONS = [0.75, 1, 1.25, 1.5, 2];
+  const PLAYBACK_RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
   const MENU_WAIT_TIMEOUT_MS = 2000;
   const ITEM_ACTIVATION_DELAY_MS = 32;
   const MENU_CLOSE_DELAY_MS = 100;
