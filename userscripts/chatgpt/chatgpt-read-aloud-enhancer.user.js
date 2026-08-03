@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.5.1
+// @version      3.5.2
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -50,7 +50,7 @@
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '3.4.0';
+  const SCRIPT_VERSION = '3.5.2';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -371,12 +371,22 @@
       #${PLAYER_ID} .cyan-player-icon-button:hover { background: rgba(188, 211, 221, 0.12); }
       #${PLAYER_ID} .cyan-player-icon-button:disabled { opacity: 0.4; cursor: default; }
       #${PLAYER_ID} .cyan-player-icon-button svg { width: 23px; height: 23px; }
-      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"] svg {
-        visibility: hidden;
+      #${PLAYER_ID} .cyan-download-visual {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 23px;
+        height: 23px;
+        pointer-events: none;
       }
-      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"]::before {
-        content: '';
-        position: absolute;
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="idle"] .cyan-download-idle,
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"] .cyan-download-working,
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="success"] .cyan-download-success,
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="error"] .cyan-download-error {
+        display: inline-flex;
+      }
+      #${PLAYER_ID} .cyan-download-spinner {
+        display: block;
         width: 16px;
         height: 16px;
         box-sizing: border-box;
@@ -384,10 +394,8 @@
         border-top-color: currentColor;
         border-radius: 50%;
         animation: cyan-player-download-spin 0.72s linear infinite;
-        transform: translateZ(0);
-        transform-origin: center;
+        transform-origin: 50% 50%;
         will-change: transform;
-        pointer-events: none;
       }
       #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="success"] {
         color: #9fc6ad;
@@ -396,6 +404,7 @@
         color: #d6a5a5;
       }
       @keyframes cyan-player-download-spin {
+        from { transform: rotate(0deg); }
         to { transform: rotate(360deg); }
       }
 
@@ -999,22 +1008,45 @@
     return `${base}-${stamp}.${extension}`;
   }
 
+  function createDownloadButton() {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cyan-player-icon-button cyan-player-download-button';
+    button.dataset.cyanDownloadState = 'idle';
+
+    const createVisual = (className, pathData = null) => {
+      const visual = document.createElement('span');
+      visual.className = `cyan-download-visual ${className}`;
+      visual.setAttribute('aria-hidden', 'true');
+      if (pathData) visual.appendChild(createSvgIcon(pathData));
+      return visual;
+    };
+
+    const idleVisual = createVisual('cyan-download-idle', DOWNLOAD_ICON_PATH);
+    const workingVisual = createVisual('cyan-download-working');
+    const spinner = document.createElement('span');
+    spinner.className = 'cyan-download-spinner';
+    workingVisual.appendChild(spinner);
+    const successVisual = createVisual('cyan-download-success', DOWNLOAD_SUCCESS_ICON_PATH);
+    const errorVisual = createVisual('cyan-download-error', DOWNLOAD_ERROR_ICON_PATH);
+
+    button.append(idleVisual, workingVisual, successVisual, errorVisual);
+    button.addEventListener('click', downloadCurrentAudio);
+    return button;
+  }
+
   function setDownloadButtonState(state, detail = '') {
     if (!downloadButton) return;
-    const config = {
-      idle: ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH],
-      working: [detail || '正在生成 MP3', DOWNLOAD_WORKING_ICON_PATH],
-      success: ['MP3 下载已开始', DOWNLOAD_SUCCESS_ICON_PATH],
-      error: [detail || 'MP3 下载失败', DOWNLOAD_ERROR_ICON_PATH],
-    }[state] || ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH];
+    const label = {
+      idle: '下载当前音频为 MP3',
+      working: detail || '正在生成 MP3',
+      success: 'MP3 下载已开始',
+      error: detail || 'MP3 下载失败',
+    }[state] || '下载当前音频为 MP3';
 
-    const previousState = downloadButton.dataset.cyanDownloadState;
     downloadButton.dataset.cyanDownloadState = state;
-    downloadButton.setAttribute('aria-label', config[0]);
-    downloadButton.title = config[0];
-    if (previousState !== state) {
-      downloadButton.replaceChildren(createSvgIcon(config[1]));
-    }
+    downloadButton.setAttribute('aria-label', label);
+    downloadButton.title = label;
   }
 
   function sanitizeAudioSource(source) {
@@ -1402,13 +1434,8 @@
     );
     speedSetting.appendChild(speedSelect.parentElement);
 
-    downloadButton = createPlayerIconButton(
-      '下载当前音频为 MP3',
-      DOWNLOAD_ICON_PATH,
-      'cyan-player-download-button'
-    );
-    downloadButton.dataset.cyanDownloadState = 'idle';
-    downloadButton.addEventListener('click', downloadCurrentAudio);
+    downloadButton = createDownloadButton();
+    setDownloadButtonState('idle');
 
     diagnosticLogButton = createPlayerIconButton(
       '导出 MP3 诊断日志',
