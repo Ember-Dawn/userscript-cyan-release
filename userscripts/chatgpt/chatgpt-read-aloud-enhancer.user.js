@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.4.0
+// @version      3.5.0
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -41,7 +41,7 @@
  - 消息列表仅在切换时即时扫描；切换聊天、追加消息和重新回答时会重新解析当前可见消息。
 
 5. MP3 下载
- - 下载时在浏览器本地将当前官方朗读音频转换为单声道 96 kbps MP3。
+ - 下载时在浏览器本地通过内联 Worker 将当前官方朗读音频转换为单声道 96 kbps MP3。
  - 使用修正版纯 JavaScript LAME 编码器，不上传音频到第三方服务器。
  - MP3 失败诊断仅保存在本地，失败后可通过播放器中的日志按钮导出。
 */
@@ -112,6 +112,7 @@
   let durationLabel = null;
   let seekStepSelect = null;
   let speedSelect = null;
+  let openCustomSelect = null;
   let minimizeButton = null;
   let downloadButton = null;
   let diagnosticLogButton = null;
@@ -292,18 +293,66 @@
         align-items: center;
         gap: 1px;
       }
-      #${PLAYER_ID} select {
+      #${PLAYER_ID} .cyan-player-select {
+        position: relative;
+        display: inline-flex;
+      }
+      #${PLAYER_ID} .cyan-player-select-button {
         height: 26px;
-        padding: 1px 22px 1px 7px;
+        min-width: 0;
+        padding: 1px 7px;
         color: #eaf1f4;
         background: rgba(255, 255, 255, 0.07);
         border: 1px solid rgba(178, 199, 209, 0.22);
         border-radius: 7px;
         outline: none;
         font: inherit;
+        text-align: left;
+        cursor: pointer;
       }
-      #${PLAYER_ID} select:hover { background: rgba(255, 255, 255, 0.11); }
-      #${PLAYER_ID} select:disabled { opacity: 0.48; }
+      #${PLAYER_ID} .cyan-player-select-button:hover,
+      #${PLAYER_ID} .cyan-player-select-button[aria-expanded="true"] {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(178, 199, 209, 0.34);
+      }
+      #${PLAYER_ID} .cyan-player-select-button:disabled { opacity: 0.48; cursor: default; }
+      #${PLAYER_ID} .cyan-player-select--seek .cyan-player-select-button { width: 58px; }
+      #${PLAYER_ID} .cyan-player-select--speed .cyan-player-select-button { width: 56px; }
+      #${PLAYER_ID} .cyan-player-select-menu {
+        position: absolute;
+        top: calc(100% + 5px);
+        left: 0;
+        z-index: 4;
+        min-width: 100%;
+        padding: 4px;
+        color: #eaf1f4;
+        background: rgb(42, 57, 67);
+        border: 1px solid rgba(178, 199, 209, 0.24);
+        border-radius: 8px;
+        box-shadow: 0 8px 22px rgba(8, 15, 20, 0.34);
+      }
+      #${PLAYER_ID} .cyan-player-select-menu[hidden] { display: none !important; }
+      #${PLAYER_ID} .cyan-player-select-option {
+        display: block;
+        width: 100%;
+        padding: 5px 7px;
+        color: inherit;
+        background: transparent;
+        border: 0;
+        border-radius: 5px;
+        font: inherit;
+        text-align: left;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      #${PLAYER_ID} .cyan-player-select-option:hover,
+      #${PLAYER_ID} .cyan-player-select-option:focus-visible {
+        background: rgba(188, 211, 221, 0.13);
+        outline: none;
+      }
+      #${PLAYER_ID} .cyan-player-select-option[aria-selected="true"] {
+        background: rgba(119, 157, 176, 0.24);
+      }
 
       #${PLAYER_ID} .cyan-player-icon-button {
         display: inline-flex;
@@ -753,11 +802,94 @@
     button.replaceChildren(createSvgIcon(pathData));
   }
 
-  function createOption(value, label) {
-    const option = document.createElement('option');
-    option.value = String(value);
-    option.textContent = label;
-    return option;
+  function closeCustomSelect(control = openCustomSelect) {
+    if (!control) return;
+    control.menu.hidden = true;
+    control.button.setAttribute('aria-expanded', 'false');
+    if (openCustomSelect === control) openCustomSelect = null;
+  }
+
+  function createCustomSelect(options, initialValue, ariaLabel, className, onChange) {
+    const root = document.createElement('div');
+    root.className = `cyan-player-select ${className}`;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cyan-player-select-button';
+    button.setAttribute('aria-label', ariaLabel);
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.setAttribute('aria-expanded', 'false');
+
+    const menu = document.createElement('div');
+    menu.className = 'cyan-player-select-menu';
+    menu.setAttribute('role', 'listbox');
+    menu.hidden = true;
+
+    let selectedValue = String(initialValue);
+    const optionButtons = new Map();
+
+    function renderValue() {
+      const selected = options.find((item) => String(item.value) === selectedValue) || options[0];
+      button.textContent = selected.label;
+      button.title = `${ariaLabel}：${selected.label}`;
+      for (const [value, optionButton] of optionButtons) {
+        optionButton.setAttribute('aria-selected', String(value === selectedValue));
+      }
+    }
+
+    for (const option of options) {
+      const optionButton = document.createElement('button');
+      optionButton.type = 'button';
+      optionButton.className = 'cyan-player-select-option';
+      optionButton.setAttribute('role', 'option');
+      optionButton.textContent = option.label;
+      const value = String(option.value);
+      optionButtons.set(value, optionButton);
+      optionButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectedValue = value;
+        renderValue();
+        closeCustomSelect(control);
+        onChange?.();
+        button.focus({ preventScroll: true });
+      });
+      menu.appendChild(optionButton);
+    }
+
+    const control = { root, button, menu };
+    Object.defineProperty(button, 'value', {
+      get: () => selectedValue,
+      set: (value) => {
+        const normalized = String(value);
+        if (optionButtons.has(normalized)) {
+          selectedValue = normalized;
+          renderValue();
+        }
+      },
+    });
+
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (button.disabled) return;
+      const shouldOpen = menu.hidden;
+      if (openCustomSelect && openCustomSelect !== control) closeCustomSelect(openCustomSelect);
+      menu.hidden = !shouldOpen;
+      button.setAttribute('aria-expanded', String(shouldOpen));
+      openCustomSelect = shouldOpen ? control : null;
+      if (shouldOpen) optionButtons.get(selectedValue)?.focus({ preventScroll: true });
+    });
+
+    button.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        closeCustomSelect(control);
+        button.focus({ preventScroll: true });
+        event.stopPropagation();
+      }
+    });
+
+    root.append(button, menu);
+    renderValue();
+    return button;
   }
 
   function createSeekControl(direction) {
@@ -805,7 +937,6 @@
 
   const MP3_BITRATE_KBPS = 96;
   const MP3_SAMPLE_BLOCK_SIZE = 1152;
-  const MP3_YIELD_EVERY_BLOCKS = 256;
   const MP3_LOG_STORAGE_KEY = 'cyanChatgptMp3LastErrorLog';
   const MP3_ENCODER_BUILD = 'lamejs-fixed@1.2.2';
   let mp3EncoderSelfTestPassed = false;
@@ -999,40 +1130,154 @@
     mp3EncoderSelfTestPassed = true;
   }
 
-  async function encodeAudioBufferToMp3(audioBuffer, onProgress, log) {
-    runMp3EncoderSelfTest();
-    addDiagnosticStage(log, 'encoder-self-test-ok');
+  function createMp3Worker() {
+    const workerSource = `
+      self.onmessage = async (event) => {
+        const { channels, sampleRate, bitrate, blockSize, encoderUrl } = event.data;
+        try {
+          importScripts(encoderUrl);
+          let library = self.lamejs || null;
+          if (!library?.Mp3Encoder && typeof library === 'function') {
+            const exports = {};
+            library.call(exports);
+            library = exports;
+          }
+          if (!library?.Mp3Encoder) throw new Error('MP3 encoder is unavailable in worker');
+
+          const channelViews = channels.map((buffer) => new Float32Array(buffer));
+          const sampleCount = channelViews[0]?.length || 0;
+          const mono = new Int16Array(sampleCount);
+          for (let i = 0; i < sampleCount; i += 1) {
+            let mixed = 0;
+            for (const channel of channelViews) mixed += channel[i] || 0;
+            const sample = Math.max(-1, Math.min(1, mixed / channelViews.length));
+            mono[i] = sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff);
+          }
+
+          const encoder = new library.Mp3Encoder(1, sampleRate, bitrate);
+          const chunks = [];
+          const totalBlocks = Math.max(1, Math.ceil(mono.length / blockSize));
+          for (let offset = 0, index = 0; offset < mono.length; offset += blockSize, index += 1) {
+            const encoded = encoder.encodeBuffer(mono.subarray(offset, offset + blockSize));
+            if (encoded?.length) chunks.push(new Uint8Array(encoded));
+            if (index % 32 === 0) {
+              self.postMessage({ type: 'progress', value: Math.min(99, Math.round(((index + 1) / totalBlocks) * 100)) });
+            }
+          }
+          const finalChunk = encoder.flush();
+          if (finalChunk?.length) chunks.push(new Uint8Array(finalChunk));
+          const totalBytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+          if (totalBytes < 128) throw new Error('invalid MP3 output');
+          const output = new Uint8Array(totalBytes);
+          let cursor = 0;
+          for (const chunk of chunks) {
+            output.set(chunk, cursor);
+            cursor += chunk.byteLength;
+          }
+          self.postMessage({ type: 'done', buffer: output.buffer, chunks: chunks.length }, [output.buffer]);
+        } catch (error) {
+          self.postMessage({ type: 'error', name: error?.name || 'Error', message: String(error?.message || error), stack: String(error?.stack || '') });
+        }
+      };
+    `;
+    const url = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    URL.revokeObjectURL(url);
+    return worker;
+  }
+
+  function encodeAudioBufferToMp3InWorker(audioBuffer, onProgress, log) {
+    return new Promise((resolve, reject) => {
+      let worker;
+      try {
+        worker = createMp3Worker();
+      } catch (error) {
+        reject(error);
+        return;
+      }
+
+      const channels = Array.from({ length: audioBuffer.numberOfChannels }, (_, index) => {
+        const copy = new Float32Array(audioBuffer.getChannelData(index));
+        return copy.buffer;
+      });
+      const cleanup = () => worker.terminate();
+
+      worker.onmessage = (event) => {
+        const data = event.data || {};
+        if (data.type === 'progress') {
+          onProgress?.(data.value);
+          return;
+        }
+        cleanup();
+        if (data.type === 'done') {
+          const blob = new Blob([data.buffer], { type: 'audio/mpeg' });
+          addDiagnosticStage(log, 'mp3-ready', { bytes: blob.size, chunks: data.chunks, worker: true });
+          resolve(blob);
+        } else {
+          const error = new Error(data.message || 'MP3 worker failed');
+          error.name = data.name || 'Error';
+          error.stack = data.stack || error.stack;
+          reject(error);
+        }
+      };
+      worker.onerror = (event) => {
+        cleanup();
+        reject(new Error(event.message || 'MP3 worker crashed'));
+      };
+
+      worker.postMessage({
+        channels,
+        sampleRate: audioBuffer.sampleRate,
+        bitrate: MP3_BITRATE_KBPS,
+        blockSize: MP3_SAMPLE_BLOCK_SIZE,
+        encoderUrl: 'https://cdn.jsdelivr.net/npm/lamejs-fixed@1.2.2/lame.min.js',
+      }, channels);
+    });
+  }
+
+  async function encodeAudioBufferToMp3OnMainThread(audioBuffer, onProgress, log) {
     const { Mp3Encoder } = getLameJs();
     const monoSamples = downmixAudioBufferToMono(audioBuffer);
-    addDiagnosticStage(log, 'pcm-ready', {
-      samples: monoSamples.length,
-      sampleRate: audioBuffer.sampleRate,
-      channels: audioBuffer.numberOfChannels,
-      duration: audioBuffer.duration,
-    });
     const encoder = new Mp3Encoder(1, audioBuffer.sampleRate, MP3_BITRATE_KBPS);
     const chunks = [];
     const totalBlocks = Math.max(1, Math.ceil(monoSamples.length / MP3_SAMPLE_BLOCK_SIZE));
-
     for (let offset = 0, blockIndex = 0;
       offset < monoSamples.length;
       offset += MP3_SAMPLE_BLOCK_SIZE, blockIndex += 1) {
-      const block = monoSamples.subarray(offset, offset + MP3_SAMPLE_BLOCK_SIZE);
-      const encoded = encoder.encodeBuffer(block);
-      if (encoded?.length > 0) chunks.push(new Uint8Array(encoded));
-      if (blockIndex % MP3_YIELD_EVERY_BLOCKS === 0) {
+      const encoded = encoder.encodeBuffer(
+        monoSamples.subarray(offset, offset + MP3_SAMPLE_BLOCK_SIZE)
+      );
+      if (encoded?.length) chunks.push(new Uint8Array(encoded));
+      if (blockIndex % 512 === 0) {
         onProgress?.(Math.min(99, Math.round(((blockIndex + 1) / totalBlocks) * 100)));
         await yieldToBrowser();
       }
     }
-
     const finalChunk = encoder.flush();
-    if (finalChunk?.length > 0) chunks.push(new Uint8Array(finalChunk));
-    if (!chunks.length) throw new Error('empty MP3 output');
+    if (finalChunk?.length) chunks.push(new Uint8Array(finalChunk));
     const blob = new Blob(chunks, { type: 'audio/mpeg' });
     if (blob.size < 128) throw new Error(`invalid MP3 output size: ${blob.size}`);
-    addDiagnosticStage(log, 'mp3-ready', { bytes: blob.size, chunks: chunks.length });
+    addDiagnosticStage(log, 'mp3-ready', { bytes: blob.size, chunks: chunks.length, worker: false });
     return blob;
+  }
+
+  async function encodeAudioBufferToMp3(audioBuffer, onProgress, log) {
+    runMp3EncoderSelfTest();
+    addDiagnosticStage(log, 'encoder-self-test-ok');
+    addDiagnosticStage(log, 'pcm-ready', {
+      samples: audioBuffer.length,
+      sampleRate: audioBuffer.sampleRate,
+      channels: audioBuffer.numberOfChannels,
+      duration: audioBuffer.duration,
+    });
+    try {
+      return await encodeAudioBufferToMp3InWorker(audioBuffer, onProgress, log);
+    } catch (workerError) {
+      addDiagnosticStage(log, 'worker-fallback', {
+        message: String(workerError?.message || workerError),
+      });
+      return encodeAudioBufferToMp3OnMainThread(audioBuffer, onProgress, log);
+    }
   }
 
   async function decodeAudioBlob(blob, log) {
@@ -1134,26 +1379,26 @@
     const seekSetting = document.createElement('label');
     seekSetting.className = 'cyan-player-setting';
     seekSetting.append(document.createTextNode('跳转'));
-    seekStepSelect = document.createElement('select');
-    seekStepSelect.setAttribute('aria-label', '快进后退秒数');
-    for (const seconds of SEEK_STEP_OPTIONS) {
-      seekStepSelect.appendChild(createOption(seconds, `${seconds} 秒`));
-    }
-    seekStepSelect.value = String(seekStep);
-    seekStepSelect.addEventListener('change', handleSeekStepChange);
-    seekSetting.appendChild(seekStepSelect);
+    seekStepSelect = createCustomSelect(
+      SEEK_STEP_OPTIONS.map((seconds) => ({ value: seconds, label: `${seconds} 秒` })),
+      seekStep,
+      '快进后退秒数',
+      'cyan-player-select--seek',
+      handleSeekStepChange
+    );
+    seekSetting.appendChild(seekStepSelect.parentElement);
 
     const speedSetting = document.createElement('label');
     speedSetting.className = 'cyan-player-setting';
     speedSetting.append(document.createTextNode('速度'));
-    speedSelect = document.createElement('select');
-    speedSelect.setAttribute('aria-label', '播放速度');
-    for (const rate of PLAYBACK_RATE_OPTIONS) {
-      speedSelect.appendChild(createOption(rate, `${rate}×`));
-    }
-    speedSelect.value = String(playbackRate);
-    speedSelect.addEventListener('change', handlePlaybackRateChange);
-    speedSetting.appendChild(speedSelect);
+    speedSelect = createCustomSelect(
+      PLAYBACK_RATE_OPTIONS.map((rate) => ({ value: rate, label: `${rate}×` })),
+      playbackRate,
+      '播放速度',
+      'cyan-player-select--speed',
+      handlePlaybackRateChange
+    );
+    speedSetting.appendChild(speedSelect.parentElement);
 
     downloadButton = createPlayerIconButton(
       '下载当前音频为 MP3',
@@ -1685,6 +1930,7 @@
   function startAudioTracking() {
     document.addEventListener('play', handleDocumentPlay, true);
     document.addEventListener('keydown', handleGlobalKeydown, true);
+    document.addEventListener('click', () => closeCustomSelect());
     audioScanTimer = window.setInterval(scanForAudio, AUDIO_SCAN_INTERVAL_MS);
     scanForAudio();
   }
