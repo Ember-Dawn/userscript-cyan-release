@@ -5,14 +5,14 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.3.1
+// @version      3.4.0
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
 // @require      https://cdn.jsdelivr.net/npm/lamejs-fixed@1.2.2/lame.min.js
-// @grant        GM_registerMenuCommand
+// @grant        none
 // ==/UserScript==
 
 /*
@@ -43,14 +43,14 @@
 5. MP3 下载
  - 下载时在浏览器本地将当前官方朗读音频转换为单声道 96 kbps MP3。
  - 使用修正版纯 JavaScript LAME 编码器，不上传音频到第三方服务器。
- - MP3 失败诊断仅保存在本地，可通过 Tampermonkey 菜单导出。
+ - MP3 失败诊断仅保存在本地，失败后可通过播放器中的日志按钮导出。
 */
 
 (() => {
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '3.3.1';
+  const SCRIPT_VERSION = '3.4.0';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -114,6 +114,7 @@
   let speedSelect = null;
   let minimizeButton = null;
   let downloadButton = null;
+  let diagnosticLogButton = null;
   let downloadInProgress = false;
   let previousMessageButton = null;
   let nextMessageButton = null;
@@ -321,7 +322,9 @@
       #${PLAYER_ID} .cyan-player-icon-button:disabled { opacity: 0.4; cursor: default; }
       #${PLAYER_ID} .cyan-player-icon-button svg { width: 23px; height: 23px; }
       #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"] svg {
-        animation: cyan-player-download-spin 0.85s linear infinite;
+        animation: cyan-player-download-spin 0.75s linear infinite;
+        transform-box: fill-box;
+        transform-origin: center;
       }
       #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="success"] {
         color: #9fc6ad;
@@ -802,7 +805,7 @@
 
   const MP3_BITRATE_KBPS = 96;
   const MP3_SAMPLE_BLOCK_SIZE = 1152;
-  const MP3_YIELD_EVERY_BLOCKS = 32;
+  const MP3_YIELD_EVERY_BLOCKS = 256;
   const MP3_LOG_STORAGE_KEY = 'cyanChatgptMp3LastErrorLog';
   const MP3_ENCODER_BUILD = 'lamejs-fixed@1.2.2';
   let mp3EncoderSelfTestPassed = false;
@@ -810,6 +813,7 @@
   const DOWNLOAD_WORKING_ICON_PATH = 'M12 3a9 9 0 1 0 9 9';
   const DOWNLOAD_SUCCESS_ICON_PATH = 'M5 12l4 4L19 6';
   const DOWNLOAD_ERROR_ICON_PATH = 'M12 7v6M12 17h.01';
+  const DIAGNOSTIC_LOG_ICON_PATH = 'M7 3h7l4 4v14H7V3Zm7 0v5h5M10 12h5M10 16h5';
 
   function getLameJs() {
     let library = null;
@@ -855,12 +859,17 @@
     const config = {
       idle: ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH],
       working: [detail || '正在生成 MP3', DOWNLOAD_WORKING_ICON_PATH],
-      success: ['MP3 已加入下载列表', DOWNLOAD_SUCCESS_ICON_PATH],
+      success: ['MP3 下载已开始', DOWNLOAD_SUCCESS_ICON_PATH],
       error: [detail || 'MP3 下载失败', DOWNLOAD_ERROR_ICON_PATH],
     }[state] || ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH];
 
+    const previousState = downloadButton.dataset.cyanDownloadState;
     downloadButton.dataset.cyanDownloadState = state;
-    replaceButtonIcon(downloadButton, config[0], config[1]);
+    downloadButton.setAttribute('aria-label', config[0]);
+    downloadButton.title = config[0];
+    if (previousState !== state) {
+      downloadButton.replaceChildren(createSvgIcon(config[1]));
+    }
   }
 
   function sanitizeAudioSource(source) {
@@ -905,6 +914,20 @@
     console.groupCollapsed(`${SCRIPT_PREFIX} MP3 下载失败诊断`);
     console.error(payload);
     console.groupEnd();
+  }
+
+  function updateDiagnosticLogButtonVisibility() {
+    if (!diagnosticLogButton) return;
+    diagnosticLogButton.hidden = !localStorage.getItem(MP3_LOG_STORAGE_KEY);
+  }
+
+  function clearDiagnosticLog() {
+    try {
+      localStorage.removeItem(MP3_LOG_STORAGE_KEY);
+    } catch (_) {
+      // localStorage 不可用时忽略，不影响下载和播放。
+    }
+    updateDiagnosticLogButtonVisibility();
   }
 
   function triggerBrowserDownload(blob, filename) {
@@ -956,10 +979,8 @@
   }
 
   function yieldToBrowser() {
-    return new Promise((resolve) => {
-      if (document.hidden) window.setTimeout(resolve, 0);
-      else window.requestAnimationFrame(() => resolve());
-    });
+    if (globalThis.scheduler?.yield) return globalThis.scheduler.yield();
+    return new Promise((resolve) => window.setTimeout(resolve, 0));
   }
 
   function runMp3EncoderSelfTest() {
@@ -1066,11 +1087,12 @@
       await triggerBrowserDownload(mp3Blob, filename);
       addDiagnosticStage(log, 'download-complete');
       setDownloadButtonState('success');
-      setPlayerStatus('MP3 已加入下载列表');
+      clearDiagnosticLog();
     } catch (error) {
       saveDiagnosticLog(log, error);
       setDownloadButtonState('error', 'MP3 下载失败');
-      setPlayerStatus('MP3 下载失败，日志已保存');
+      setPlayerStatus('MP3 下载失败');
+      updateDiagnosticLogButtonVisibility();
     } finally {
       downloadInProgress = false;
       updatePlayerState();
@@ -1083,7 +1105,6 @@
   function exportLatestMp3DiagnosticLog() {
     const raw = localStorage.getItem(MP3_LOG_STORAGE_KEY);
     if (!raw) {
-      window.alert('当前没有可导出的 MP3 诊断日志。');
       return;
     }
     const blob = new Blob([raw], { type: 'application/json;charset=utf-8' });
@@ -1142,7 +1163,20 @@
     downloadButton.dataset.cyanDownloadState = 'idle';
     downloadButton.addEventListener('click', downloadCurrentAudio);
 
-    headerSettings.append(seekSetting, speedSetting, downloadButton);
+    diagnosticLogButton = createPlayerIconButton(
+      '导出 MP3 诊断日志',
+      DIAGNOSTIC_LOG_ICON_PATH,
+      'cyan-player-diagnostic-button'
+    );
+    diagnosticLogButton.addEventListener('click', exportLatestMp3DiagnosticLog);
+    diagnosticLogButton.hidden = !localStorage.getItem(MP3_LOG_STORAGE_KEY);
+
+    headerSettings.append(
+      seekSetting,
+      speedSetting,
+      downloadButton,
+      diagnosticLogButton
+    );
 
     playerStatus = document.createElement('span');
     playerStatus.className = 'cyan-player-status';
@@ -1673,15 +1707,7 @@
     });
   }
 
-  try {
-    if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('导出最近一次 MP3 诊断日志', exportLatestMp3DiagnosticLog);
-    }
-  } catch (error) {
-    console.warn(`${SCRIPT_PREFIX} 注册诊断日志菜单失败。`, error);
-  }
-
-  // 播放器核心初始化与 MP3/菜单模块隔离，下载模块异常不会阻止朗读按钮和播放器启动。
+  // 播放器核心初始化与 MP3 模块隔离，下载模块异常不会阻止朗读按钮和播放器启动。
   installStyle();
   scanRoot(document);
   observePage();
