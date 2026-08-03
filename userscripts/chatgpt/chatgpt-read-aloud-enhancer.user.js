@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.5.3
+// @version      3.5.4
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -50,7 +50,7 @@
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '3.5.3';
+  const SCRIPT_VERSION = '3.5.4';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -292,69 +292,69 @@
         align-items: center;
         gap: 1px;
       }
-      #${PLAYER_ID} .cyan-player-stepper {
-        display: inline-grid;
-        grid-template-columns: minmax(0, 1fr) 18px;
+      #${PLAYER_ID} .cyan-player-select {
+        display: inline-flex;
+      }
+      #${PLAYER_ID} .cyan-player-select-button {
         height: 26px;
-        overflow: hidden;
+        min-width: 0;
+        padding: 1px 7px;
         color: #eaf1f4;
         background: rgba(255, 255, 255, 0.07);
         border: 1px solid rgba(178, 199, 209, 0.22);
         border-radius: 7px;
-      }
-      #${PLAYER_ID} .cyan-player-stepper:hover,
-      #${PLAYER_ID} .cyan-player-stepper:focus-within {
-        background: rgba(255, 255, 255, 0.12);
-        border-color: rgba(178, 199, 209, 0.34);
-      }
-      #${PLAYER_ID} .cyan-player-stepper[data-disabled="true"] { opacity: 0.48; }
-      #${PLAYER_ID} .cyan-player-stepper--seek { width: 66px; }
-      #${PLAYER_ID} .cyan-player-stepper--speed { width: 64px; }
-      #${PLAYER_ID} .cyan-player-stepper-value {
-        width: 100%;
-        min-width: 0;
-        padding: 1px 5px 1px 7px;
-        color: inherit;
-        background: transparent;
-        border: 0;
         outline: none;
         font: inherit;
         text-align: left;
-        cursor: default;
-      }
-      #${PLAYER_ID} .cyan-player-stepper-buttons {
-        display: grid;
-        grid-template-rows: 1fr 1fr;
-        border-left: 1px solid rgba(178, 199, 209, 0.18);
-      }
-      #${PLAYER_ID} .cyan-player-stepper-button {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 0;
-        min-height: 0;
-        padding: 0;
-        color: rgba(231, 238, 242, 0.82);
-        background: transparent;
-        border: 0;
-        border-radius: 0;
         cursor: pointer;
       }
-      #${PLAYER_ID} .cyan-player-stepper-button:first-child {
-        border-bottom: 1px solid rgba(178, 199, 209, 0.15);
+      #${PLAYER_ID} .cyan-player-select-button:hover,
+      #${PLAYER_ID} .cyan-player-select-button[aria-expanded="true"] {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(178, 199, 209, 0.34);
       }
-      #${PLAYER_ID} .cyan-player-stepper-button:hover:not(:disabled) {
-        color: #fff;
-        background: rgba(188, 211, 221, 0.13);
-      }
-      #${PLAYER_ID} .cyan-player-stepper-button:disabled {
-        opacity: 0.28;
+      #${PLAYER_ID} .cyan-player-select-button:disabled {
+        opacity: 0.48;
         cursor: default;
       }
-      #${PLAYER_ID} .cyan-player-stepper-button svg {
-        width: 10px;
-        height: 10px;
-        stroke-width: 2.4;
+      #${PLAYER_ID} .cyan-player-select--seek .cyan-player-select-button { width: 58px; }
+      #${PLAYER_ID} .cyan-player-select--speed .cyan-player-select-button { width: 56px; }
+
+      .cyan-player-floating-menu {
+        position: fixed;
+        z-index: 2147483001;
+        min-width: 56px;
+        max-height: min(240px, calc(100vh - 16px));
+        overflow-y: auto;
+        padding: 4px;
+        color: #eaf1f4;
+        background: rgb(42, 57, 67);
+        border: 1px solid rgba(178, 199, 209, 0.24);
+        border-radius: 8px;
+        box-shadow: 0 8px 22px rgba(8, 15, 20, 0.34);
+        font: 12px/1.3 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .cyan-player-floating-menu[hidden] { display: none !important; }
+      .cyan-player-floating-option {
+        display: block;
+        width: 100%;
+        padding: 5px 7px;
+        color: inherit;
+        background: transparent;
+        border: 0;
+        border-radius: 5px;
+        font: inherit;
+        text-align: left;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .cyan-player-floating-option:hover,
+      .cyan-player-floating-option:focus-visible {
+        background: rgba(188, 211, 221, 0.13);
+        outline: none;
+      }
+      .cyan-player-floating-option[aria-selected="true"] {
+        background: rgba(119, 157, 176, 0.24);
       }
 
       #${PLAYER_ID} .cyan-player-icon-button {
@@ -828,109 +828,127 @@
     button.replaceChildren(createSvgIcon(pathData));
   }
 
-  function createStepControl(options, initialValue, ariaLabel, className, onChange) {
+  let openFloatingSelect = null;
+  let floatingSelectId = 0;
+
+  function closeFloatingSelect(control = openFloatingSelect) {
+    if (!control) return;
+    control.menu.hidden = true;
+    control.button.setAttribute('aria-expanded', 'false');
+    if (openFloatingSelect === control) openFloatingSelect = null;
+  }
+
+  function positionFloatingSelect(control) {
+    if (!control || control.menu.hidden || !control.button.isConnected) return;
+    const rect = control.button.getBoundingClientRect();
+    const menu = control.menu;
+    const gap = 5;
+    menu.style.minWidth = `${Math.max(56, Math.ceil(rect.width))}px`;
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+
+    const menuRect = menu.getBoundingClientRect();
+    const viewportPadding = 8;
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openAbove = menuRect.height > spaceBelow && spaceAbove > spaceBelow;
+    const top = openAbove
+      ? Math.max(viewportPadding, rect.top - menuRect.height - gap)
+      : Math.min(window.innerHeight - menuRect.height - viewportPadding, rect.bottom + gap);
+    const left = Math.min(
+      window.innerWidth - menuRect.width - viewportPadding,
+      Math.max(viewportPadding, rect.left)
+    );
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  }
+
+  function createFloatingSelect(options, initialValue, ariaLabel, className, onChange) {
     const root = document.createElement('div');
-    root.className = `cyan-player-stepper ${className}`;
+    root.className = `cyan-player-select ${className}`;
 
-    const valueField = document.createElement('button');
-    valueField.type = 'button';
-    valueField.className = 'cyan-player-stepper-value';
-    valueField.setAttribute('aria-label', ariaLabel);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'cyan-player-select-button';
+    button.setAttribute('aria-label', ariaLabel);
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.setAttribute('aria-expanded', 'false');
 
-    const buttons = document.createElement('div');
-    buttons.className = 'cyan-player-stepper-buttons';
+    const menu = document.createElement('div');
+    menu.id = `cyan-player-floating-menu-${++floatingSelectId}`;
+    menu.className = 'cyan-player-floating-menu';
+    menu.setAttribute('role', 'listbox');
+    menu.hidden = true;
+    button.setAttribute('aria-controls', menu.id);
 
-    const increaseButton = createPlayerIconButton(
-      `${ariaLabel}：提高一档`,
-      'M7 14l5-5 5 5',
-      'cyan-player-stepper-button'
-    );
-    const decreaseButton = createPlayerIconButton(
-      `${ariaLabel}：降低一档`,
-      'M7 10l5 5 5-5',
-      'cyan-player-stepper-button'
-    );
-    buttons.append(increaseButton, decreaseButton);
-
-    let selectedIndex = Math.max(
-      0,
-      options.findIndex((item) => String(item.value) === String(initialValue))
-    );
-    let wheelLockedUntil = 0;
-    let controlDisabled = false;
+    let selectedValue = String(initialValue);
+    const optionButtons = new Map();
+    const control = { root, button, menu };
 
     function renderValue() {
-      const selected = options[selectedIndex];
-      valueField.textContent = selected.label;
-      valueField.title = `${ariaLabel}：${selected.label}`;
-      valueField.setAttribute('aria-valuetext', selected.label);
-      valueField.setAttribute('aria-valuenow', String(selected.value));
-      increaseButton.disabled = controlDisabled || selectedIndex >= options.length - 1;
-      decreaseButton.disabled = controlDisabled || selectedIndex <= 0;
-      root.dataset.disabled = String(controlDisabled);
-      valueField.disabled = controlDisabled;
+      const selected = options.find((item) => String(item.value) === selectedValue) || options[0];
+      button.textContent = selected.label;
+      button.title = `${ariaLabel}：${selected.label}`;
+      for (const [value, optionButton] of optionButtons) {
+        optionButton.setAttribute('aria-selected', String(value === selectedValue));
+      }
     }
 
-    function changeBy(direction) {
-      if (controlDisabled) return;
-      const nextIndex = Math.max(0, Math.min(options.length - 1, selectedIndex + direction));
-      if (nextIndex === selectedIndex) return;
-      selectedIndex = nextIndex;
-      renderValue();
-      onChange?.();
+    for (const option of options) {
+      const optionButton = document.createElement('button');
+      optionButton.type = 'button';
+      optionButton.className = 'cyan-player-floating-option';
+      optionButton.setAttribute('role', 'option');
+      optionButton.textContent = option.label;
+      const value = String(option.value);
+      optionButtons.set(value, optionButton);
+      optionButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        selectedValue = value;
+        renderValue();
+        closeFloatingSelect(control);
+        onChange?.();
+        button.focus({ preventScroll: true });
+      });
+      menu.appendChild(optionButton);
     }
 
-    Object.defineProperty(valueField, 'value', {
-      get: () => String(options[selectedIndex].value),
+    Object.defineProperty(button, 'value', {
+      get: () => selectedValue,
       set: (value) => {
-        const nextIndex = options.findIndex((item) => String(item.value) === String(value));
-        if (nextIndex >= 0) {
-          selectedIndex = nextIndex;
+        const normalized = String(value);
+        if (optionButtons.has(normalized)) {
+          selectedValue = normalized;
           renderValue();
         }
       },
       configurable: true,
     });
 
-    Object.defineProperty(valueField, 'disabled', {
-      get: () => controlDisabled,
-      set: (disabled) => {
-        controlDisabled = Boolean(disabled);
-        valueField.toggleAttribute('aria-disabled', controlDisabled);
-        increaseButton.disabled = controlDisabled || selectedIndex >= options.length - 1;
-        decreaseButton.disabled = controlDisabled || selectedIndex <= 0;
-        root.dataset.disabled = String(controlDisabled);
-      },
-      configurable: true,
-    });
-
-    increaseButton.addEventListener('click', () => changeBy(1));
-    decreaseButton.addEventListener('click', () => changeBy(-1));
-
-    valueField.addEventListener('keydown', (event) => {
-      if (event.key === 'ArrowUp') {
-        changeBy(1);
-      } else if (event.key === 'ArrowDown') {
-        changeBy(-1);
-      } else {
-        return;
-      }
+    button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (button.disabled) return;
+      const shouldOpen = menu.hidden;
+      if (openFloatingSelect && openFloatingSelect !== control) {
+        closeFloatingSelect(openFloatingSelect);
+      }
+      if (!shouldOpen) {
+        closeFloatingSelect(control);
+        return;
+      }
+      menu.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      openFloatingSelect = control;
+      positionFloatingSelect(control);
+      optionButtons.get(selectedValue)?.focus({ preventScroll: true });
     });
 
-    root.addEventListener('wheel', (event) => {
-      if (controlDisabled || event.deltaY === 0) return;
-      event.preventDefault();
-      const now = performance.now();
-      if (now < wheelLockedUntil) return;
-      wheelLockedUntil = now + 150;
-      changeBy(event.deltaY < 0 ? 1 : -1);
-    }, { passive: false });
-
-    root.append(valueField, buttons);
+    root.appendChild(button);
+    document.body.appendChild(menu);
     renderValue();
-    return valueField;
+    return button;
   }
 
   function createSeekControl(direction) {
@@ -1431,11 +1449,11 @@
     const seekSetting = document.createElement('label');
     seekSetting.className = 'cyan-player-setting';
     seekSetting.append(document.createTextNode('跳转'));
-    seekStepSelect = createStepControl(
+    seekStepSelect = createFloatingSelect(
       SEEK_STEP_OPTIONS.map((seconds) => ({ value: seconds, label: `${seconds} 秒` })),
       seekStep,
       '快进后退秒数',
-      'cyan-player-stepper--seek',
+      'cyan-player-select--seek',
       handleSeekStepChange
     );
     seekSetting.appendChild(seekStepSelect.parentElement);
@@ -1443,11 +1461,11 @@
     const speedSetting = document.createElement('label');
     speedSetting.className = 'cyan-player-setting';
     speedSetting.append(document.createTextNode('速度'));
-    speedSelect = createStepControl(
+    speedSelect = createFloatingSelect(
       PLAYBACK_RATE_OPTIONS.map((rate) => ({ value: rate, label: `${rate}×` })),
       playbackRate,
       '播放速度',
-      'cyan-player-stepper--speed',
+      'cyan-player-select--speed',
       handlePlaybackRateChange
     );
     speedSetting.appendChild(speedSelect.parentElement);
@@ -1709,6 +1727,7 @@
       if (!currentAudio.paused) currentAudio.pause();
     }
 
+    closeFloatingSelect();
     if (player) player.hidden = true;
   }
 
@@ -1804,6 +1823,7 @@
     if (activeOperation) finishOperation(activeOperation);
     if (currentAudio && !currentAudio.paused) currentAudio.pause();
     unbindCurrentAudio();
+    closeFloatingSelect();
     if (player) player.hidden = true;
     setPlayerStatus('');
   }
@@ -1813,6 +1833,7 @@
   }
 
   function togglePlayerCollapsed() {
+    closeFloatingSelect();
     playerCollapsed = !playerCollapsed;
     localStorage.setItem(STORAGE_PLAYER_COLLAPSED, String(playerCollapsed));
     player?.setAttribute(PLAYER_COLLAPSED_ATTRIBUTE, String(playerCollapsed));
@@ -1917,6 +1938,12 @@
 
   function handleGlobalKeydown(event) {
     if (!event.isTrusted) return;
+    if (openFloatingSelect && event.key === 'Escape') {
+      closeFloatingSelect();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (!player || player.hidden || !currentAudio) return;
     if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
     if (isEditableTarget(event.target)) return;
@@ -1977,6 +2004,14 @@
   function startAudioTracking() {
     document.addEventListener('play', handleDocumentPlay, true);
     document.addEventListener('keydown', handleGlobalKeydown, true);
+    document.addEventListener('pointerdown', (event) => {
+      if (!openFloatingSelect) return;
+      if (openFloatingSelect.button.contains(event.target) ||
+          openFloatingSelect.menu.contains(event.target)) return;
+      closeFloatingSelect();
+    }, true);
+    window.addEventListener('resize', () => closeFloatingSelect(), { passive: true });
+    window.addEventListener('scroll', () => closeFloatingSelect(), { passive: true, capture: true });
     audioScanTimer = window.setInterval(scanForAudio, AUDIO_SCAN_INTERVAL_MS);
     scanForAudio();
   }
