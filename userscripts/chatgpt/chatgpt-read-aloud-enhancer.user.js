@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.5.0
+// @version      3.5.1
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -355,6 +355,7 @@
       }
 
       #${PLAYER_ID} .cyan-player-icon-button {
+        position: relative;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -371,9 +372,22 @@
       #${PLAYER_ID} .cyan-player-icon-button:disabled { opacity: 0.4; cursor: default; }
       #${PLAYER_ID} .cyan-player-icon-button svg { width: 23px; height: 23px; }
       #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"] svg {
-        animation: cyan-player-download-spin 0.75s linear infinite;
-        transform-box: fill-box;
+        visibility: hidden;
+      }
+      #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="working"]::before {
+        content: '';
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        box-sizing: border-box;
+        border: 2px solid rgba(220, 232, 237, 0.28);
+        border-top-color: currentColor;
+        border-radius: 50%;
+        animation: cyan-player-download-spin 0.72s linear infinite;
+        transform: translateZ(0);
         transform-origin: center;
+        will-change: transform;
+        pointer-events: none;
       }
       #${PLAYER_ID} .cyan-player-download-button[data-cyan-download-state="success"] {
         color: #9fc6ad;
@@ -1156,13 +1170,9 @@
 
           const encoder = new library.Mp3Encoder(1, sampleRate, bitrate);
           const chunks = [];
-          const totalBlocks = Math.max(1, Math.ceil(mono.length / blockSize));
           for (let offset = 0, index = 0; offset < mono.length; offset += blockSize, index += 1) {
             const encoded = encoder.encodeBuffer(mono.subarray(offset, offset + blockSize));
             if (encoded?.length) chunks.push(new Uint8Array(encoded));
-            if (index % 32 === 0) {
-              self.postMessage({ type: 'progress', value: Math.min(99, Math.round(((index + 1) / totalBlocks) * 100)) });
-            }
           }
           const finalChunk = encoder.flush();
           if (finalChunk?.length) chunks.push(new Uint8Array(finalChunk));
@@ -1186,7 +1196,7 @@
     return worker;
   }
 
-  function encodeAudioBufferToMp3InWorker(audioBuffer, onProgress, log) {
+  function encodeAudioBufferToMp3InWorker(audioBuffer, log) {
     return new Promise((resolve, reject) => {
       let worker;
       try {
@@ -1204,10 +1214,6 @@
 
       worker.onmessage = (event) => {
         const data = event.data || {};
-        if (data.type === 'progress') {
-          onProgress?.(data.value);
-          return;
-        }
         cleanup();
         if (data.type === 'done') {
           const blob = new Blob([data.buffer], { type: 'audio/mpeg' });
@@ -1235,12 +1241,11 @@
     });
   }
 
-  async function encodeAudioBufferToMp3OnMainThread(audioBuffer, onProgress, log) {
+  async function encodeAudioBufferToMp3OnMainThread(audioBuffer, log) {
     const { Mp3Encoder } = getLameJs();
     const monoSamples = downmixAudioBufferToMono(audioBuffer);
     const encoder = new Mp3Encoder(1, audioBuffer.sampleRate, MP3_BITRATE_KBPS);
     const chunks = [];
-    const totalBlocks = Math.max(1, Math.ceil(monoSamples.length / MP3_SAMPLE_BLOCK_SIZE));
     for (let offset = 0, blockIndex = 0;
       offset < monoSamples.length;
       offset += MP3_SAMPLE_BLOCK_SIZE, blockIndex += 1) {
@@ -1249,7 +1254,6 @@
       );
       if (encoded?.length) chunks.push(new Uint8Array(encoded));
       if (blockIndex % 512 === 0) {
-        onProgress?.(Math.min(99, Math.round(((blockIndex + 1) / totalBlocks) * 100)));
         await yieldToBrowser();
       }
     }
@@ -1261,7 +1265,7 @@
     return blob;
   }
 
-  async function encodeAudioBufferToMp3(audioBuffer, onProgress, log) {
+  async function encodeAudioBufferToMp3(audioBuffer, log) {
     runMp3EncoderSelfTest();
     addDiagnosticStage(log, 'encoder-self-test-ok');
     addDiagnosticStage(log, 'pcm-ready', {
@@ -1271,12 +1275,12 @@
       duration: audioBuffer.duration,
     });
     try {
-      return await encodeAudioBufferToMp3InWorker(audioBuffer, onProgress, log);
+      return await encodeAudioBufferToMp3InWorker(audioBuffer, log);
     } catch (workerError) {
       addDiagnosticStage(log, 'worker-fallback', {
         message: String(workerError?.message || workerError),
       });
-      return encodeAudioBufferToMp3OnMainThread(audioBuffer, onProgress, log);
+      return encodeAudioBufferToMp3OnMainThread(audioBuffer, log);
     }
   }
 
@@ -1311,6 +1315,7 @@
     setDownloadButtonState('working', '正在读取音频');
     setPlayerStatus('');
     updatePlayerState();
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
     try {
       addDiagnosticStage(log, 'start');
@@ -1321,11 +1326,8 @@
       addDiagnosticStage(log, 'source-blob', { bytes: sourceBlob.size, type: sourceBlob.type });
       if (!sourceBlob.size) throw new Error('empty audio blob');
 
-      setDownloadButtonState('working', '正在解码音频');
       const audioBuffer = await decodeAudioBlob(sourceBlob, log);
-      const mp3Blob = await encodeAudioBufferToMp3(audioBuffer, (progress) => {
-        setDownloadButtonState('working', `正在生成 MP3：${progress}%`);
-      }, log);
+      const mp3Blob = await encodeAudioBufferToMp3(audioBuffer, log);
 
       const filename = buildDownloadFilename('mp3');
       addDiagnosticStage(log, 'download-requested', { filename, bytes: mp3Blob.size });
