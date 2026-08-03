@@ -5,14 +5,13 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.3.0
+// @version      3.3.1
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
 // @require      https://cdn.jsdelivr.net/npm/lamejs-fixed@1.2.2/lame.min.js
-// @grant        GM_download
 // @grant        GM_registerMenuCommand
 // ==/UserScript==
 
@@ -51,6 +50,23 @@
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
+  const SCRIPT_VERSION = '3.3.1';
+
+  function isElementNode(value) {
+    return !!value && value.nodeType === 1;
+  }
+
+  function isButtonElement(value) {
+    return isElementNode(value) && value.tagName === 'BUTTON';
+  }
+
+  function isAudioElement(value) {
+    return isElementNode(value) && value.tagName === 'AUDIO';
+  }
+
+  function isNodeValue(value) {
+    return !!value && typeof value.nodeType === 'number';
+  }
 
   const ACTION_GROUP_SELECTOR = '[role="group"][aria-label="回复操作"]';
   const FALLBACK_ACTION_GROUP_SELECTOR = '[role="group"]';
@@ -132,7 +148,7 @@
   }
 
   function isElementVisible(element) {
-    if (!(element instanceof Element) || !element.isConnected) return false;
+    if (!(isElementNode(element)) || !element.isConnected) return false;
     if (element.getClientRects().length === 0) return false;
     if (element.closest('[hidden], [aria-hidden="true"]')) return false;
     const style = window.getComputedStyle(element);
@@ -140,10 +156,10 @@
   }
 
   function getMessageContextFromGroup(group) {
-    if (!(group instanceof Element)) return null;
+    if (!(isElementNode(group))) return null;
     const turn = group.closest('article, [data-testid^="conversation-turn-"]') ||
       group.closest('[data-message-author-role="assistant"]') || group.parentElement;
-    if (!(turn instanceof Element)) return null;
+    if (!(isElementNode(turn))) return null;
 
     const key =
       turn.getAttribute('data-testid') ||
@@ -161,7 +177,7 @@
     for (const group of collectActionGroups(document)) {
       if (!isAssistantActionGroup(group) || !isElementVisible(group)) continue;
       const moreButton = findMoreButton(group);
-      if (!(moreButton instanceof HTMLButtonElement) || !moreButton.isConnected) continue;
+      if (!(isButtonElement(moreButton)) || !moreButton.isConnected) continue;
 
       const context = getMessageContextFromGroup(group);
       if (!context || seenTurns.has(context.turn)) continue;
@@ -392,7 +408,7 @@
   }
 
   function isAssistantActionGroup(group) {
-    if (!(group instanceof Element) || !group.isConnected) return false;
+    if (!(isElementNode(group)) || !group.isConnected) return false;
 
     const turn = group.closest('article, [data-testid^="conversation-turn-"]');
     if (turn?.querySelector('[data-message-author-role="assistant"]')) return true;
@@ -477,7 +493,7 @@
   function collectActionGroups(root) {
     const groups = [];
 
-    if (root instanceof Element) {
+    if (isElementNode(root)) {
       if (root.matches(ACTION_GROUP_SELECTOR)) groups.push(root);
       groups.push(...root.querySelectorAll(ACTION_GROUP_SELECTOR));
     } else if (root === document) {
@@ -487,7 +503,7 @@
     if (groups.length > 0) return groups;
 
     const fallbackGroups = [];
-    if (root instanceof Element) {
+    if (isElementNode(root)) {
       if (
         root.matches(FALLBACK_ACTION_GROUP_SELECTOR) &&
         root.querySelector(MORE_BUTTON_SELECTOR)
@@ -511,7 +527,7 @@
   }
 
   function scheduleScan(root) {
-    pendingScanRoots.add(root instanceof Node ? root : document);
+    pendingScanRoots.add(isNodeValue(root) ? root : document);
     if (scanFrame !== null) return;
 
     scanFrame = window.requestAnimationFrame(() => {
@@ -525,7 +541,7 @@
   }
 
   function isVisibleVoiceItem(item) {
-    if (!(item instanceof HTMLElement) || !item.isConnected) return false;
+    if (!(isElementNode(item)) || !item.isConnected) return false;
     if (item.getClientRects().length === 0) return false;
     if (item.closest('[aria-hidden="true"]')) return false;
     const style = window.getComputedStyle(item);
@@ -552,7 +568,7 @@
 
   function closeOperationMenu(operation) {
     const moreButton = operation?.moreButton;
-    if (!(moreButton instanceof HTMLButtonElement) || !moreButton.isConnected) return;
+    if (!(isButtonElement(moreButton)) || !moreButton.isConnected) return;
 
     const isOpen =
       moreButton.getAttribute('aria-expanded') === 'true' ||
@@ -686,12 +702,12 @@
     event.stopPropagation();
 
     const button = event.currentTarget;
-    if (!(button instanceof HTMLButtonElement)) return;
+    if (!(isButtonElement(button))) return;
 
     const group = button.closest('[role="group"]');
     const moreButton = group ? findMoreButton(group) : null;
 
-    if (!(moreButton instanceof HTMLButtonElement) || !moreButton.isConnected) {
+    if (!(isButtonElement(moreButton)) || !moreButton.isConnected) {
       console.warn(`${SCRIPT_PREFIX} 未找到当前回答对应的“更多操作”按钮。`);
       return;
     }
@@ -796,9 +812,29 @@
   const DOWNLOAD_ERROR_ICON_PATH = 'M12 7v6M12 17h.01';
 
   function getLameJs() {
-    const library = globalThis.lamejs || window.lamejs;
+    let library = null;
+
+    // Tampermonkey 的 @require 与主脚本共享词法作用域，但其顶层变量
+    // 不一定会成为 globalThis/window 的属性，因此必须优先直接读取 lamejs。
+    try {
+      if (typeof lamejs !== 'undefined') library = lamejs;
+    } catch (_) {
+      library = null;
+    }
+
+    library ||= globalThis.lamejs || window.lamejs || null;
+    if (!library?.Mp3Encoder && typeof library === 'function') {
+      try {
+        const exports = {};
+        library.call(exports);
+        if (exports.Mp3Encoder) library = exports;
+      } catch (_) {
+        // 保留原对象，交由下面的统一错误处理。
+      }
+    }
+
     if (!library?.Mp3Encoder) {
-      throw new Error('MP3 encoder is unavailable');
+      throw new Error('MP3 encoder is unavailable: @require did not expose Mp3Encoder');
     }
     return library;
   }
@@ -839,7 +875,7 @@
   function createDiagnosticLog(source) {
     return {
       timestamp: new Date().toISOString(),
-      scriptVersion: '3.3.0',
+      scriptVersion: SCRIPT_VERSION,
       encoderBuild: MP3_ENCODER_BUILD,
       browser: navigator.userAgent,
       source: sanitizeAudioSource(source),
@@ -872,42 +908,27 @@
   }
 
   function triggerBrowserDownload(blob, filename) {
-    if (!(blob instanceof Blob) || blob.size <= 0) {
-      throw new Error('empty MP3 blob');
+    if (!blob || typeof blob.size !== 'number' || blob.size <= 0) {
+      throw new Error('empty download blob');
     }
+
     const objectUrl = URL.createObjectURL(blob);
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const cleanup = () => window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
-      try {
-        GM_download({
-          url: objectUrl,
-          name: filename,
-          saveAs: false,
-          onload: () => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            resolve();
-          },
-          onerror: (details) => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            reject(new Error(`GM_download failed: ${details?.error || details?.details || 'unknown'}`));
-          },
-          ontimeout: () => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            reject(new Error('GM_download timed out'));
-          },
-        });
-      } catch (error) {
-        cleanup();
-        reject(error);
-      }
-    });
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+
+    try {
+      link.click();
+    } finally {
+      window.setTimeout(() => {
+        link.remove();
+        URL.revokeObjectURL(objectUrl);
+      }, 60000);
+    }
+
+    return Promise.resolve();
   }
 
   function floatToInt16(sample) {
@@ -1203,11 +1224,11 @@
   }
 
   function isUsableAudio(audio) {
-    return audio instanceof HTMLAudioElement && audio.isConnected !== false;
+    return isAudioElement(audio) && audio.isConnected !== false;
   }
 
   function scoreAudio(audio, index) {
-    if (!(audio instanceof HTMLAudioElement)) return -Infinity;
+    if (!(isAudioElement(audio))) return -Infinity;
     let score = index;
     const source = `${audio.currentSrc || audio.src || ''}`;
     if (source) score += 100;
@@ -1231,7 +1252,7 @@
   }
 
   function bindAudio(audio, shouldShow = false) {
-    if (!(audio instanceof HTMLAudioElement)) return;
+    if (!(isAudioElement(audio))) return;
 
     if (currentAudio === audio) {
       if (shouldShow && dismissedAudio !== audio) showPlayer();
@@ -1278,7 +1299,7 @@
   }
 
   function canShowAudio(audio) {
-    if (!(audio instanceof HTMLAudioElement)) return false;
+    if (!(isAudioElement(audio))) return false;
 
     if (playbackSessionState === 'dismissed') {
       return audio !== dismissedAudio;
@@ -1288,7 +1309,7 @@
   }
 
   function activatePlaybackSession(audio) {
-    if (!(audio instanceof HTMLAudioElement)) return false;
+    if (!(isAudioElement(audio))) return false;
 
     if (playbackSessionState === 'opening') {
       if (Date.now() > openingRequestUntil) {
@@ -1401,8 +1422,8 @@
       `button[${CUSTOM_BUTTON_ATTRIBUTE}="true"]`
     );
     const moreButton = findMoreButton(target.group);
-    if (!(customButton instanceof HTMLButtonElement) ||
-        !(moreButton instanceof HTMLButtonElement)) {
+    if (!(isButtonElement(customButton)) ||
+        !(isButtonElement(moreButton))) {
       setPlayerStatus('目标消息尚未就绪');
       scheduleScan(target.group);
       return;
@@ -1522,7 +1543,7 @@
   function updatePlayerState() {
     if (!player) return;
 
-    const hasAudio = currentAudio instanceof HTMLAudioElement;
+    const hasAudio = isAudioElement(currentAudio);
     const isPlaying = hasAudio && !currentAudio.paused && !currentAudio.ended;
     const canSeek = hasAudio && hasUsableDuration();
 
@@ -1562,7 +1583,7 @@
   }
 
   function isEditableTarget(target) {
-    if (!(target instanceof Element)) return false;
+    if (!(isElementNode(target))) return false;
     return !!target.closest(
       'input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]'
     );
@@ -1607,7 +1628,7 @@
 
   function handleDocumentPlay(event) {
     const audio = event.target;
-    if (!(audio instanceof HTMLAudioElement)) return;
+    if (!(isAudioElement(audio))) return;
 
     const shouldShow = activatePlaybackSession(audio);
     bindAudio(audio, shouldShow);
@@ -1639,7 +1660,7 @@
       checkRouteChange();
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-          if (node instanceof Element) {
+          if (isElementNode(node)) {
             scheduleScan(node);
           }
         }
@@ -1652,10 +1673,15 @@
     });
   }
 
-  if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('导出最近一次 MP3 诊断日志', exportLatestMp3DiagnosticLog);
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('导出最近一次 MP3 诊断日志', exportLatestMp3DiagnosticLog);
+    }
+  } catch (error) {
+    console.warn(`${SCRIPT_PREFIX} 注册诊断日志菜单失败。`, error);
   }
 
+  // 播放器核心初始化与 MP3/菜单模块隔离，下载模块异常不会阻止朗读按钮和播放器启动。
   installStyle();
   scanRoot(document);
   observePage();
