@@ -112,7 +112,6 @@
   let durationLabel = null;
   let seekStepSelect = null;
   let speedSelect = null;
-  let openCustomSelect = null;
   let minimizeButton = null;
   let downloadButton = null;
   let diagnosticLogButton = null;
@@ -293,65 +292,69 @@
         align-items: center;
         gap: 1px;
       }
-      #${PLAYER_ID} .cyan-player-select {
-        position: relative;
-        display: inline-flex;
-      }
-      #${PLAYER_ID} .cyan-player-select-button {
+      #${PLAYER_ID} .cyan-player-stepper {
+        display: inline-grid;
+        grid-template-columns: minmax(0, 1fr) 18px;
         height: 26px;
-        min-width: 0;
-        padding: 1px 7px;
+        overflow: hidden;
         color: #eaf1f4;
         background: rgba(255, 255, 255, 0.07);
         border: 1px solid rgba(178, 199, 209, 0.22);
         border-radius: 7px;
-        outline: none;
-        font: inherit;
-        text-align: left;
-        cursor: pointer;
       }
-      #${PLAYER_ID} .cyan-player-select-button:hover,
-      #${PLAYER_ID} .cyan-player-select-button[aria-expanded="true"] {
+      #${PLAYER_ID} .cyan-player-stepper:hover,
+      #${PLAYER_ID} .cyan-player-stepper:focus-within {
         background: rgba(255, 255, 255, 0.12);
         border-color: rgba(178, 199, 209, 0.34);
       }
-      #${PLAYER_ID} .cyan-player-select-button:disabled { opacity: 0.48; cursor: default; }
-      #${PLAYER_ID} .cyan-player-select--seek .cyan-player-select-button { width: 58px; }
-      #${PLAYER_ID} .cyan-player-select--speed .cyan-player-select-button { width: 56px; }
-      #${PLAYER_ID} .cyan-player-select-menu {
-        position: absolute;
-        top: calc(100% + 5px);
-        left: 0;
-        z-index: 4;
-        min-width: 100%;
-        padding: 4px;
-        color: #eaf1f4;
-        background: rgb(42, 57, 67);
-        border: 1px solid rgba(178, 199, 209, 0.24);
-        border-radius: 8px;
-        box-shadow: 0 8px 22px rgba(8, 15, 20, 0.34);
-      }
-      #${PLAYER_ID} .cyan-player-select-menu[hidden] { display: none !important; }
-      #${PLAYER_ID} .cyan-player-select-option {
-        display: block;
+      #${PLAYER_ID} .cyan-player-stepper[data-disabled="true"] { opacity: 0.48; }
+      #${PLAYER_ID} .cyan-player-stepper--seek { width: 66px; }
+      #${PLAYER_ID} .cyan-player-stepper--speed { width: 64px; }
+      #${PLAYER_ID} .cyan-player-stepper-value {
         width: 100%;
-        padding: 5px 7px;
+        min-width: 0;
+        padding: 1px 5px 1px 7px;
         color: inherit;
         background: transparent;
         border: 0;
-        border-radius: 5px;
+        outline: none;
         font: inherit;
         text-align: left;
-        white-space: nowrap;
+        cursor: default;
+      }
+      #${PLAYER_ID} .cyan-player-stepper-buttons {
+        display: grid;
+        grid-template-rows: 1fr 1fr;
+        border-left: 1px solid rgba(178, 199, 209, 0.18);
+      }
+      #${PLAYER_ID} .cyan-player-stepper-button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        min-height: 0;
+        padding: 0;
+        color: rgba(231, 238, 242, 0.82);
+        background: transparent;
+        border: 0;
+        border-radius: 0;
         cursor: pointer;
       }
-      #${PLAYER_ID} .cyan-player-select-option:hover,
-      #${PLAYER_ID} .cyan-player-select-option:focus-visible {
-        background: rgba(188, 211, 221, 0.13);
-        outline: none;
+      #${PLAYER_ID} .cyan-player-stepper-button:first-child {
+        border-bottom: 1px solid rgba(178, 199, 209, 0.15);
       }
-      #${PLAYER_ID} .cyan-player-select-option[aria-selected="true"] {
-        background: rgba(119, 157, 176, 0.24);
+      #${PLAYER_ID} .cyan-player-stepper-button:hover:not(:disabled) {
+        color: #fff;
+        background: rgba(188, 211, 221, 0.13);
+      }
+      #${PLAYER_ID} .cyan-player-stepper-button:disabled {
+        opacity: 0.28;
+        cursor: default;
+      }
+      #${PLAYER_ID} .cyan-player-stepper-button svg {
+        width: 10px;
+        height: 10px;
+        stroke-width: 2.4;
       }
 
       #${PLAYER_ID} .cyan-player-icon-button {
@@ -825,94 +828,109 @@
     button.replaceChildren(createSvgIcon(pathData));
   }
 
-  function closeCustomSelect(control = openCustomSelect) {
-    if (!control) return;
-    control.menu.hidden = true;
-    control.button.setAttribute('aria-expanded', 'false');
-    if (openCustomSelect === control) openCustomSelect = null;
-  }
-
-  function createCustomSelect(options, initialValue, ariaLabel, className, onChange) {
+  function createStepControl(options, initialValue, ariaLabel, className, onChange) {
     const root = document.createElement('div');
-    root.className = `cyan-player-select ${className}`;
+    root.className = `cyan-player-stepper ${className}`;
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'cyan-player-select-button';
-    button.setAttribute('aria-label', ariaLabel);
-    button.setAttribute('aria-haspopup', 'listbox');
-    button.setAttribute('aria-expanded', 'false');
+    const valueField = document.createElement('button');
+    valueField.type = 'button';
+    valueField.className = 'cyan-player-stepper-value';
+    valueField.setAttribute('aria-label', ariaLabel);
 
-    const menu = document.createElement('div');
-    menu.className = 'cyan-player-select-menu';
-    menu.setAttribute('role', 'listbox');
-    menu.hidden = true;
+    const buttons = document.createElement('div');
+    buttons.className = 'cyan-player-stepper-buttons';
 
-    let selectedValue = String(initialValue);
-    const optionButtons = new Map();
+    const increaseButton = createPlayerIconButton(
+      `${ariaLabel}：提高一档`,
+      'M7 14l5-5 5 5',
+      'cyan-player-stepper-button'
+    );
+    const decreaseButton = createPlayerIconButton(
+      `${ariaLabel}：降低一档`,
+      'M7 10l5 5 5-5',
+      'cyan-player-stepper-button'
+    );
+    buttons.append(increaseButton, decreaseButton);
+
+    let selectedIndex = Math.max(
+      0,
+      options.findIndex((item) => String(item.value) === String(initialValue))
+    );
+    let wheelLockedUntil = 0;
+    let controlDisabled = false;
 
     function renderValue() {
-      const selected = options.find((item) => String(item.value) === selectedValue) || options[0];
-      button.textContent = selected.label;
-      button.title = `${ariaLabel}：${selected.label}`;
-      for (const [value, optionButton] of optionButtons) {
-        optionButton.setAttribute('aria-selected', String(value === selectedValue));
-      }
+      const selected = options[selectedIndex];
+      valueField.textContent = selected.label;
+      valueField.title = `${ariaLabel}：${selected.label}`;
+      valueField.setAttribute('aria-valuetext', selected.label);
+      valueField.setAttribute('aria-valuenow', String(selected.value));
+      increaseButton.disabled = controlDisabled || selectedIndex >= options.length - 1;
+      decreaseButton.disabled = controlDisabled || selectedIndex <= 0;
+      root.dataset.disabled = String(controlDisabled);
+      valueField.disabled = controlDisabled;
     }
 
-    for (const option of options) {
-      const optionButton = document.createElement('button');
-      optionButton.type = 'button';
-      optionButton.className = 'cyan-player-select-option';
-      optionButton.setAttribute('role', 'option');
-      optionButton.textContent = option.label;
-      const value = String(option.value);
-      optionButtons.set(value, optionButton);
-      optionButton.addEventListener('click', (event) => {
-        event.stopPropagation();
-        selectedValue = value;
-        renderValue();
-        closeCustomSelect(control);
-        onChange?.();
-        button.focus({ preventScroll: true });
-      });
-      menu.appendChild(optionButton);
+    function changeBy(direction) {
+      if (controlDisabled) return;
+      const nextIndex = Math.max(0, Math.min(options.length - 1, selectedIndex + direction));
+      if (nextIndex === selectedIndex) return;
+      selectedIndex = nextIndex;
+      renderValue();
+      onChange?.();
     }
 
-    const control = { root, button, menu };
-    Object.defineProperty(button, 'value', {
-      get: () => selectedValue,
+    Object.defineProperty(valueField, 'value', {
+      get: () => String(options[selectedIndex].value),
       set: (value) => {
-        const normalized = String(value);
-        if (optionButtons.has(normalized)) {
-          selectedValue = normalized;
+        const nextIndex = options.findIndex((item) => String(item.value) === String(value));
+        if (nextIndex >= 0) {
+          selectedIndex = nextIndex;
           renderValue();
         }
       },
+      configurable: true,
     });
 
-    button.addEventListener('click', (event) => {
-      event.stopPropagation();
-      if (button.disabled) return;
-      const shouldOpen = menu.hidden;
-      if (openCustomSelect && openCustomSelect !== control) closeCustomSelect(openCustomSelect);
-      menu.hidden = !shouldOpen;
-      button.setAttribute('aria-expanded', String(shouldOpen));
-      openCustomSelect = shouldOpen ? control : null;
-      if (shouldOpen) optionButtons.get(selectedValue)?.focus({ preventScroll: true });
+    Object.defineProperty(valueField, 'disabled', {
+      get: () => controlDisabled,
+      set: (disabled) => {
+        controlDisabled = Boolean(disabled);
+        valueField.toggleAttribute('aria-disabled', controlDisabled);
+        increaseButton.disabled = controlDisabled || selectedIndex >= options.length - 1;
+        decreaseButton.disabled = controlDisabled || selectedIndex <= 0;
+        root.dataset.disabled = String(controlDisabled);
+      },
+      configurable: true,
     });
 
-    button.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        closeCustomSelect(control);
-        button.focus({ preventScroll: true });
-        event.stopPropagation();
+    increaseButton.addEventListener('click', () => changeBy(1));
+    decreaseButton.addEventListener('click', () => changeBy(-1));
+
+    valueField.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowUp') {
+        changeBy(1);
+      } else if (event.key === 'ArrowDown') {
+        changeBy(-1);
+      } else {
+        return;
       }
+      event.preventDefault();
+      event.stopPropagation();
     });
 
-    root.append(button, menu);
+    root.addEventListener('wheel', (event) => {
+      if (controlDisabled || event.deltaY === 0) return;
+      event.preventDefault();
+      const now = performance.now();
+      if (now < wheelLockedUntil) return;
+      wheelLockedUntil = now + 150;
+      changeBy(event.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+
+    root.append(valueField, buttons);
     renderValue();
-    return button;
+    return valueField;
   }
 
   function createSeekControl(direction) {
@@ -1413,11 +1431,11 @@
     const seekSetting = document.createElement('label');
     seekSetting.className = 'cyan-player-setting';
     seekSetting.append(document.createTextNode('跳转'));
-    seekStepSelect = createCustomSelect(
+    seekStepSelect = createStepControl(
       SEEK_STEP_OPTIONS.map((seconds) => ({ value: seconds, label: `${seconds} 秒` })),
       seekStep,
       '快进后退秒数',
-      'cyan-player-select--seek',
+      'cyan-player-stepper--seek',
       handleSeekStepChange
     );
     seekSetting.appendChild(seekStepSelect.parentElement);
@@ -1425,11 +1443,11 @@
     const speedSetting = document.createElement('label');
     speedSetting.className = 'cyan-player-setting';
     speedSetting.append(document.createTextNode('速度'));
-    speedSelect = createCustomSelect(
+    speedSelect = createStepControl(
       PLAYBACK_RATE_OPTIONS.map((rate) => ({ value: rate, label: `${rate}×` })),
       playbackRate,
       '播放速度',
-      'cyan-player-select--speed',
+      'cyan-player-stepper--speed',
       handlePlaybackRateChange
     );
     speedSetting.appendChild(speedSelect.parentElement);
@@ -1959,7 +1977,6 @@
   function startAudioTracking() {
     document.addEventListener('play', handleDocumentPlay, true);
     document.addEventListener('keydown', handleGlobalKeydown, true);
-    document.addEventListener('click', () => closeCustomSelect());
     audioScanTimer = window.setInterval(scanForAudio, AUDIO_SCAN_INTERVAL_MS);
     scanForAudio();
   }
