@@ -50,10 +50,10 @@
 
 音频不会上传到第三方服务器。较长音频的转换会占用一定 CPU 和内存，编码循环会定期让出主线程以减少页面卡顿。
 
-MP3 编码通过 userscript 头部的 `@require` 单独加载 `lamejs 1.2.1`。该依赖采用 LGPL-3.0 许可，脚本不修改或内嵌其源码：
+MP3 编码通过 userscript 头部的 `@require` 单独加载 `lamejs-fixed 1.2.2`。该依赖采用 LGPL-3.0 许可，脚本不修改或内嵌其源码：
 
 - 项目：`https://github.com/zhuker/lamejs`
-- 加载地址：`https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js`
+- 加载地址：`https://cdn.jsdelivr.net/npm/lamejs-fixed@1.2.2/lame.min.js`
 
 ## 数据与隐私
 

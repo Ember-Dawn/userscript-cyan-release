@@ -5,14 +5,15 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      3.2.0
+// @version      3.3.0
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
-// @require      https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js
-// @grant        none
+// @require      https://cdn.jsdelivr.net/npm/lamejs-fixed@1.2.2/lame.min.js
+// @grant        GM_download
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 /*
@@ -42,7 +43,8 @@
 
 5. MP3 下载
  - 下载时在浏览器本地将当前官方朗读音频转换为单声道 96 kbps MP3。
- - 使用通过 @require 单独加载的 lamejs 1.2.1，不上传音频到第三方服务器。
+ - 使用修正版纯 JavaScript LAME 编码器，不上传音频到第三方服务器。
+ - MP3 失败诊断仅保存在本地，可通过 Tampermonkey 菜单导出。
 */
 
 (() => {
@@ -785,6 +787,9 @@
   const MP3_BITRATE_KBPS = 96;
   const MP3_SAMPLE_BLOCK_SIZE = 1152;
   const MP3_YIELD_EVERY_BLOCKS = 32;
+  const MP3_LOG_STORAGE_KEY = 'cyanChatgptMp3LastErrorLog';
+  const MP3_ENCODER_BUILD = 'lamejs-fixed@1.2.2';
+  let mp3EncoderSelfTestPassed = false;
   const DOWNLOAD_ICON_PATH = 'M12 3v12M8 11l4 4 4-4M5 20h14';
   const DOWNLOAD_WORKING_ICON_PATH = 'M12 3a9 9 0 1 0 9 9';
   const DOWNLOAD_SUCCESS_ICON_PATH = 'M5 12l4 4L19 6';
@@ -793,7 +798,7 @@
   function getLameJs() {
     const library = globalThis.lamejs || window.lamejs;
     if (!library?.Mp3Encoder) {
-      throw new Error('lamejs is unavailable');
+      throw new Error('MP3 encoder is unavailable');
     }
     return library;
   }
@@ -814,7 +819,7 @@
     const config = {
       idle: ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH],
       working: [detail || '正在生成 MP3', DOWNLOAD_WORKING_ICON_PATH],
-      success: ['MP3 已保存', DOWNLOAD_SUCCESS_ICON_PATH],
+      success: ['MP3 已加入下载列表', DOWNLOAD_SUCCESS_ICON_PATH],
       error: [detail || 'MP3 下载失败', DOWNLOAD_ERROR_ICON_PATH],
     }[state] || ['下载当前音频为 MP3', DOWNLOAD_ICON_PATH];
 
@@ -822,49 +827,87 @@
     replaceButtonIcon(downloadButton, config[0], config[1]);
   }
 
-  async function requestMp3SaveHandle(filename) {
-    if (typeof window.showSaveFilePicker !== 'function' || !window.isSecureContext) {
-      return null;
+  function sanitizeAudioSource(source) {
+    try {
+      const url = new URL(source, location.href);
+      return { protocol: url.protocol, host: url.host || '', pathname: url.pathname.slice(-120) };
+    } catch {
+      return { protocol: String(source || '').split(':')[0] || 'unknown' };
     }
-
-    return window.showSaveFilePicker({
-      suggestedName: filename,
-      types: [{
-        description: 'MP3 音频',
-        accept: { 'audio/mpeg': ['.mp3'] },
-      }],
-      excludeAcceptAllOption: false,
-    });
   }
 
-  async function saveMp3Blob(blob, filename, saveHandle) {
+  function createDiagnosticLog(source) {
+    return {
+      timestamp: new Date().toISOString(),
+      scriptVersion: '3.3.0',
+      encoderBuild: MP3_ENCODER_BUILD,
+      browser: navigator.userAgent,
+      source: sanitizeAudioSource(source),
+      stages: [],
+    };
+  }
+
+  function addDiagnosticStage(log, stage, detail = {}) {
+    log.stages.push({ at: new Date().toISOString(), stage, ...detail });
+  }
+
+  function serializeError(error) {
+    return {
+      name: error?.name || 'Error',
+      message: String(error?.message || error || 'Unknown error'),
+      stack: String(error?.stack || '').slice(0, 6000),
+    };
+  }
+
+  function saveDiagnosticLog(log, error) {
+    const payload = { ...log, error: serializeError(error) };
+    try {
+      localStorage.setItem(MP3_LOG_STORAGE_KEY, JSON.stringify(payload));
+    } catch (storageError) {
+      console.warn(`${SCRIPT_PREFIX} 无法保存 MP3 诊断日志。`, storageError);
+    }
+    console.groupCollapsed(`${SCRIPT_PREFIX} MP3 下载失败诊断`);
+    console.error(payload);
+    console.groupEnd();
+  }
+
+  function triggerBrowserDownload(blob, filename) {
     if (!(blob instanceof Blob) || blob.size <= 0) {
       throw new Error('empty MP3 blob');
     }
-
-    if (saveHandle) {
-      const writable = await saveHandle.createWritable();
-      try {
-        await writable.write(blob);
-      } finally {
-        await writable.close();
-      }
-      return;
-    }
-
     const objectUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = objectUrl;
-    link.download = filename;
-    link.rel = 'noopener';
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-
-    window.setTimeout(() => {
-      link.remove();
-      URL.revokeObjectURL(objectUrl);
-    }, 60000);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      try {
+        GM_download({
+          url: objectUrl,
+          name: filename,
+          saveAs: false,
+          onload: () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve();
+          },
+          onerror: (details) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error(`GM_download failed: ${details?.error || details?.details || 'unknown'}`));
+          },
+          ontimeout: () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error('GM_download timed out'));
+          },
+        });
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    });
   }
 
   function floatToInt16(sample) {
@@ -885,28 +928,46 @@
 
     for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
       let mixedSample = 0;
-      for (const channel of channels) {
-        mixedSample += channel[sampleIndex] || 0;
-      }
+      for (const channel of channels) mixedSample += channel[sampleIndex] || 0;
       mono[sampleIndex] = floatToInt16(mixedSample / channelCount);
     }
-
     return mono;
   }
 
   function yieldToBrowser() {
     return new Promise((resolve) => {
-      if (document.hidden) {
-        window.setTimeout(resolve, 0);
-      } else {
-        window.requestAnimationFrame(() => resolve());
-      }
+      if (document.hidden) window.setTimeout(resolve, 0);
+      else window.requestAnimationFrame(() => resolve());
     });
   }
 
-  async function encodeAudioBufferToMp3(audioBuffer, onProgress) {
+  function runMp3EncoderSelfTest() {
+    if (mp3EncoderSelfTestPassed) return;
+    const { Mp3Encoder } = getLameJs();
+    const encoder = new Mp3Encoder(1, 44100, MP3_BITRATE_KBPS);
+    const testPcm = new Int16Array(MP3_SAMPLE_BLOCK_SIZE);
+    for (let i = 0; i < testPcm.length; i += 1) {
+      testPcm[i] = Math.round(Math.sin((i / 44100) * Math.PI * 2 * 440) * 4000);
+    }
+    const first = encoder.encodeBuffer(testPcm);
+    const last = encoder.flush();
+    if ((first?.length || 0) + (last?.length || 0) <= 0) {
+      throw new Error('MP3 encoder self-test produced no output');
+    }
+    mp3EncoderSelfTestPassed = true;
+  }
+
+  async function encodeAudioBufferToMp3(audioBuffer, onProgress, log) {
+    runMp3EncoderSelfTest();
+    addDiagnosticStage(log, 'encoder-self-test-ok');
     const { Mp3Encoder } = getLameJs();
     const monoSamples = downmixAudioBufferToMono(audioBuffer);
+    addDiagnosticStage(log, 'pcm-ready', {
+      samples: monoSamples.length,
+      sampleRate: audioBuffer.sampleRate,
+      channels: audioBuffer.numberOfChannels,
+      duration: audioBuffer.duration,
+    });
     const encoder = new Mp3Encoder(1, audioBuffer.sampleRate, MP3_BITRATE_KBPS);
     const chunks = [];
     const totalBlocks = Math.max(1, Math.ceil(monoSamples.length / MP3_SAMPLE_BLOCK_SIZE));
@@ -916,28 +977,35 @@
       offset += MP3_SAMPLE_BLOCK_SIZE, blockIndex += 1) {
       const block = monoSamples.subarray(offset, offset + MP3_SAMPLE_BLOCK_SIZE);
       const encoded = encoder.encodeBuffer(block);
-      if (encoded.length > 0) chunks.push(new Uint8Array(encoded));
-
+      if (encoded?.length > 0) chunks.push(new Uint8Array(encoded));
       if (blockIndex % MP3_YIELD_EVERY_BLOCKS === 0) {
-        const progress = Math.min(99, Math.round(((blockIndex + 1) / totalBlocks) * 100));
-        onProgress?.(progress);
+        onProgress?.(Math.min(99, Math.round(((blockIndex + 1) / totalBlocks) * 100)));
         await yieldToBrowser();
       }
     }
 
     const finalChunk = encoder.flush();
-    if (finalChunk.length > 0) chunks.push(new Uint8Array(finalChunk));
+    if (finalChunk?.length > 0) chunks.push(new Uint8Array(finalChunk));
     if (!chunks.length) throw new Error('empty MP3 output');
-    return new Blob(chunks, { type: 'audio/mpeg' });
+    const blob = new Blob(chunks, { type: 'audio/mpeg' });
+    if (blob.size < 128) throw new Error(`invalid MP3 output size: ${blob.size}`);
+    addDiagnosticStage(log, 'mp3-ready', { bytes: blob.size, chunks: chunks.length });
+    return blob;
   }
 
-  async function decodeAudioBlob(blob) {
+  async function decodeAudioBlob(blob, log) {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error('Web Audio API is unavailable');
-
     const context = new AudioContextClass();
     try {
-      return await context.decodeAudioData(await blob.arrayBuffer());
+      const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+      addDiagnosticStage(log, 'decoded', {
+        duration: buffer.duration,
+        sampleRate: buffer.sampleRate,
+        channels: buffer.numberOfChannels,
+        frames: buffer.length,
+      });
+      return buffer;
     } finally {
       await context.close().catch(() => {});
     }
@@ -951,44 +1019,37 @@
       return;
     }
 
-    const filename = buildDownloadFilename('mp3');
-    let saveHandle = null;
-
-    try {
-      // 必须在用户点击事件仍处于激活状态时立即请求保存位置。
-      saveHandle = await requestMp3SaveHandle(filename);
-    } catch (error) {
-      if (error?.name === 'AbortError') return;
-      console.warn(`${SCRIPT_PREFIX} 无法打开保存对话框，将回退到浏览器下载。`, error);
-    }
-
+    const log = createDiagnosticLog(source);
     downloadInProgress = true;
     setDownloadButtonState('working', '正在读取音频');
     setPlayerStatus('');
     updatePlayerState();
 
     try {
+      addDiagnosticStage(log, 'start');
       const response = await fetch(source, { credentials: 'include' });
+      addDiagnosticStage(log, 'fetched', { status: response.status, ok: response.ok });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const sourceBlob = await response.blob();
+      addDiagnosticStage(log, 'source-blob', { bytes: sourceBlob.size, type: sourceBlob.type });
       if (!sourceBlob.size) throw new Error('empty audio blob');
 
       setDownloadButtonState('working', '正在解码音频');
-      const audioBuffer = await decodeAudioBlob(sourceBlob);
+      const audioBuffer = await decodeAudioBlob(sourceBlob, log);
       const mp3Blob = await encodeAudioBufferToMp3(audioBuffer, (progress) => {
         setDownloadButtonState('working', `正在生成 MP3：${progress}%`);
-      });
+      }, log);
 
-      await saveMp3Blob(mp3Blob, filename, saveHandle);
+      const filename = buildDownloadFilename('mp3');
+      addDiagnosticStage(log, 'download-requested', { filename, bytes: mp3Blob.size });
+      await triggerBrowserDownload(mp3Blob, filename);
+      addDiagnosticStage(log, 'download-complete');
       setDownloadButtonState('success');
-      setPlayerStatus('MP3 已保存');
+      setPlayerStatus('MP3 已加入下载列表');
     } catch (error) {
-      console.warn(`${SCRIPT_PREFIX} MP3 下载失败。`, error);
-      const message = /lamejs/i.test(String(error?.message || error))
-        ? 'MP3 编码器加载失败'
-        : 'MP3 下载失败';
-      setDownloadButtonState('error', message);
-      setPlayerStatus(message);
+      saveDiagnosticLog(log, error);
+      setDownloadButtonState('error', 'MP3 下载失败');
+      setPlayerStatus('MP3 下载失败，日志已保存');
     } finally {
       downloadInProgress = false;
       updatePlayerState();
@@ -996,6 +1057,20 @@
         if (!downloadInProgress) setDownloadButtonState('idle');
       }, 1800);
     }
+  }
+
+  function exportLatestMp3DiagnosticLog() {
+    const raw = localStorage.getItem(MP3_LOG_STORAGE_KEY);
+    if (!raw) {
+      window.alert('当前没有可导出的 MP3 诊断日志。');
+      return;
+    }
+    const blob = new Blob([raw], { type: 'application/json;charset=utf-8' });
+    const filename = `chatgpt-mp3-diagnostic-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    triggerBrowserDownload(blob, filename).catch((error) => {
+      console.error(`${SCRIPT_PREFIX} 导出诊断日志失败。`, error);
+      window.alert('诊断日志导出失败，请查看浏览器控制台。');
+    });
   }
 
   function createPlayer() {
@@ -1575,6 +1650,10 @@
       childList: true,
       subtree: true,
     });
+  }
+
+  if (typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('导出最近一次 MP3 诊断日志', exportLatestMp3DiagnosticLog);
   }
 
   installStyle();

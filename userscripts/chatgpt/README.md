@@ -21,3 +21,8 @@
 - 不调用未公开接口时，优先复用页面已有的官方操作和媒体元素。
 - 修改用户可见行为后提升脚本版本号，并检查 `@updateURL` 与 `@downloadURL`。
 - 不提交 Cookie、Token、Authorization Header、完整会话响应或其他凭据。
+
+
+## MP3 下载排错
+
+朗读增强助手的 MP3 下载失败时，会在浏览器本地保存最近一次脱敏诊断日志。通过 Tampermonkey 菜单中的“导出最近一次 MP3 诊断日志”可导出 JSON 文件。
