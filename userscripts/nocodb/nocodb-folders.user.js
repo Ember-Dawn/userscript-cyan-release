@@ -5,13 +5,14 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.2.0
-// @description  NocoDB folder tree with draft-safe editing, verified WebDAV conflict detection, live feedback, and daily snapshots
+// @version      11.3.0
+// @description  NocoDB folder tree with draft-safe editing, single-leader multi-tab WebDAV sync, verified conflicts, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
 // @match        *://*/dashboard/*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // ==/UserScript==
@@ -25,10 +26,11 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.2.0';
+    const SCRIPT_VERSION = '11.3.0';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
+    const LEADER_KEY = 'nc_folder_sync_leader_v11';
     const MAX_FOLDER_NAME_LENGTH = 120;
     const PUSH_DEBOUNCE_MS = 2000;
     const POLL_INTERVAL_MS = 30000;
@@ -36,6 +38,11 @@
     const REQUEST_TIMEOUT_MS = 20000;
     const DAILY_BACKUP_RETENTION_DAYS = 14;
     const VALIDATORLESS_GET_INTERVAL_MS = 5 * 60 * 1000;
+    const LEADER_HEARTBEAT_MS = 8000;
+    const LEADER_LEASE_MS = 25000;
+    const LEADER_WATCH_MS = 5000;
+    const LEADER_SETTLE_MIN_MS = 120;
+    const LEADER_SETTLE_JITTER_MS = 180;
 
     console.log(`--- [NocoDB Folder] V${SCRIPT_VERSION} started ---`);
 
@@ -83,6 +90,10 @@
         : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`}`;
 
     const generateDeviceId = () => `device_${window.crypto?.randomUUID
+        ? window.crypto.randomUUID()
+        : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`}`;
+
+    const generateTabId = () => `tab_${window.crypto?.randomUUID
         ? window.crypto.randomUUID()
         : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`}`;
 
@@ -291,6 +302,12 @@
     let syncConflict = loadStoredJson(CONFLICT_KEY, null);
 
     const persistSyncState = () => GM_setValue(SYNC_STATE_KEY, JSON.stringify(syncState));
+    const patchSharedSyncState = patch => {
+        const latest = normalizeSyncState(loadStoredJson(SYNC_STATE_KEY, syncState));
+        syncState = normalizeSyncState({ ...latest, ...patch });
+        persistSyncState();
+        return syncState;
+    };
     const persistConflict = () => {
         if (syncConflict) GM_setValue(CONFLICT_KEY, JSON.stringify(syncConflict));
         else GM_setValue(CONFLICT_KEY, '');
@@ -406,6 +423,13 @@
     let searchQuery = '';
     let syncQueue = Promise.resolve();
     let pollTimer = null;
+    let leaderHeartbeatTimer = null;
+    let leaderWatchTimer = null;
+    let leaderSyncTimer = null;
+    let isSyncLeader = false;
+    let coordinationStarted = false;
+    let deferredExternalConfig = null;
+    const TAB_ID = generateTabId();
 
     const isFolderEditing = () => Boolean(editingFolderId);
 
@@ -438,7 +462,7 @@
 
     const resumeSyncAfterFolderEdit = () => {
         if (!isAutoSyncReady() || syncConflict) return;
-        enqueueSync(() => checkRemoteUpdate({ reason: 'edit-finished', force: true }));
+        requestCoordinatedSync('edit-finished', { force: true });
     };
 
     const finishFolderEditSession = ({ resumeSync = true } = {}) => {
@@ -449,14 +473,18 @@
 
     function saveLocalConfig({ structural = true, schedulePush = true } = {}) {
         config = normalizeConfig(config);
-        GM_setValue(STORAGE_KEY, JSON.stringify(getPersistableConfig()));
+        const persistableConfig = getPersistableConfig();
+        GM_setValue(STORAGE_KEY, JSON.stringify(persistableConfig));
         updateGlobalCSSVars();
 
         if (structural) {
-            syncState.pendingHash = cloudContentHash(buildCloudData(config));
-            persistSyncState();
+            const pendingHash = cloudContentHash(buildCloudData(persistableConfig));
+            patchSharedSyncState({ pendingHash });
         }
-        if (structural && schedulePush && isAutoSyncReady() && !isFolderEditing()) scheduleWebDAVPush();
+        if (structural && schedulePush && isAutoSyncReady() && !isFolderEditing()) {
+            if (isSyncLeader) scheduleWebDAVPush();
+            else requestCoordinatedSync('local-structural-change');
+        }
         updateSyncIndicator();
         updateSettingsSyncFeedback();
     }
@@ -465,7 +493,7 @@
         clearTimeout(pushTimer);
         pushTimer = setTimeout(() => {
             pushTimer = null;
-            if (isFolderEditing()) return;
+            if (isFolderEditing() || !isSyncLeader) return;
             enqueueSync(() => performPush({ reason: 'debounced-change' }));
         }, PUSH_DEBOUNCE_MS);
     };
@@ -484,7 +512,7 @@
         syncState.status = status;
         syncState.message = message;
         if (status === 'ok') syncState.lastSuccessAt = Date.now();
-        persistSyncState();
+        if (!coordinationStarted || isSyncLeader) persistSyncState();
         updateSyncIndicator();
         updateSettingsSyncFeedback();
     };
@@ -835,7 +863,7 @@
     };
 
     const performPull = async ({ reason = 'pull', force = false } = {}) => {
-        if (!hasWebDAVEndpoint()) return false;
+        if (!hasWebDAVEndpoint() || !isSyncLeader) return false;
         if (syncConflict && !force) return false;
         if (!force && isFolderEditing()) return false;
         setSyncStatus('syncing', `正在拉取：${reason}`);
@@ -921,7 +949,7 @@
     };
 
     const performPush = async ({ reason = 'push', force = false } = {}) => {
-        if (!hasWebDAVEndpoint()) return false;
+        if (!hasWebDAVEndpoint() || !isSyncLeader) return false;
         if (syncConflict && !force) return false;
         if (!force && isFolderEditing()) return false;
 
@@ -1047,7 +1075,7 @@
     };
 
     const checkRemoteUpdate = async ({ reason = 'poll', force = false } = {}) => {
-        if (!hasWebDAVEndpoint() || syncConflict) return false;
+        if (!hasWebDAVEndpoint() || !isSyncLeader || syncConflict) return false;
         if (!force && !syncState.autoSyncArmed) return false;
         if (!force && isFolderEditing()) return false;
         if (!force && document.visibilityState !== 'visible') return false;
@@ -1124,6 +1152,225 @@
         }
     };
 
+    const parseLeaderLease = raw => {
+        try {
+            const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (!value || typeof value !== 'object') return null;
+            return {
+                tabId: normalizeString(value.tabId),
+                deviceId: normalizeString(value.deviceId),
+                heartbeatAt: Number(value.heartbeatAt) || 0,
+                expiresAt: Number(value.expiresAt) || 0
+            };
+        } catch (error) {
+            return null;
+        }
+    };
+
+    const readLeaderLease = () => parseLeaderLease(GM_getValue(LEADER_KEY));
+    const isLeaderLeaseAlive = lease => Boolean(lease?.tabId && lease.expiresAt > Date.now());
+
+    const stopLeaderRuntime = () => {
+        clearInterval(leaderHeartbeatTimer);
+        clearInterval(pollTimer);
+        clearTimeout(leaderSyncTimer);
+        leaderHeartbeatTimer = null;
+        pollTimer = null;
+        leaderSyncTimer = null;
+        isSyncLeader = false;
+    };
+
+    const renewLeaderLease = () => {
+        if (!isSyncLeader) return false;
+        const current = readLeaderLease();
+        if (current?.tabId && current.tabId !== TAB_ID && isLeaderLeaseAlive(current)) {
+            stopLeaderRuntime();
+            return false;
+        }
+        const now = Date.now();
+        GM_setValue(LEADER_KEY, JSON.stringify({
+            tabId: TAB_ID,
+            deviceId: syncState.deviceId,
+            heartbeatAt: now,
+            expiresAt: now + LEADER_LEASE_MS
+        }));
+        return true;
+    };
+
+    const startLeaderRuntime = () => {
+        if (isSyncLeader) return;
+        isSyncLeader = true;
+        clearInterval(leaderHeartbeatTimer);
+        leaderHeartbeatTimer = setInterval(renewLeaderLease, LEADER_HEARTBEAT_MS);
+        clearInterval(pollTimer);
+        pollTimer = setInterval(() => {
+            if (!isSyncLeader || isFolderEditing() || document.visibilityState !== 'visible') return;
+            enqueueSync(() => checkRemoteUpdate({ reason: 'poll' }));
+        }, POLL_INTERVAL_MS);
+        updateSyncIndicator();
+        updateSettingsSyncFeedback();
+    };
+
+    const releaseLeadership = () => {
+        const current = readLeaderLease();
+        if (current?.tabId === TAB_ID) {
+            GM_setValue(LEADER_KEY, JSON.stringify({
+                tabId: '',
+                deviceId: syncState.deviceId,
+                heartbeatAt: Date.now(),
+                expiresAt: 0
+            }));
+        }
+        stopLeaderRuntime();
+    };
+
+    const tryAcquireLeadership = async reason => {
+        if (!isAutoSyncReady() || document.visibilityState !== 'visible') return false;
+        if (isSyncLeader) {
+            renewLeaderLease();
+            return true;
+        }
+        const existing = readLeaderLease();
+        if (isLeaderLeaseAlive(existing) && existing.tabId !== TAB_ID) return false;
+
+        const now = Date.now();
+        GM_setValue(LEADER_KEY, JSON.stringify({
+            tabId: TAB_ID,
+            deviceId: syncState.deviceId,
+            heartbeatAt: now,
+            expiresAt: now + LEADER_LEASE_MS,
+            reason
+        }));
+        const settleMs = LEADER_SETTLE_MIN_MS + Math.floor(Math.random() * LEADER_SETTLE_JITTER_MS);
+        await new Promise(resolve => setTimeout(resolve, settleMs));
+        const confirmed = readLeaderLease();
+        if (confirmed?.tabId !== TAB_ID || !isLeaderLeaseAlive(confirmed)) return false;
+        startLeaderRuntime();
+        renewLeaderLease();
+        return true;
+    };
+
+    const requestCoordinatedSync = (reason, { force = false } = {}) => {
+        clearTimeout(leaderSyncTimer);
+        leaderSyncTimer = setTimeout(async () => {
+            leaderSyncTimer = null;
+            if (isFolderEditing() || syncConflict || !isAutoSyncReady()) return;
+            const leader = isSyncLeader || await tryAcquireLeadership(reason);
+            if (!leader) return;
+            const latestConfig = loadStoredJson(STORAGE_KEY, null);
+            if (latestConfig) config = normalizeConfig(latestConfig);
+            syncState = normalizeSyncState(loadStoredJson(SYNC_STATE_KEY, syncState));
+            updateGlobalCSSVars();
+            triggerRebuild();
+            await enqueueSync(() => checkRemoteUpdate({ reason, force }));
+        }, 120);
+    };
+
+    const runCoordinatedManualTask = async (reason, task) => {
+        const leader = isSyncLeader || await tryAcquireLeadership(reason);
+        if (!leader) {
+            setSyncStatus('idle', '当前由另一个 NocoDB 标签页负责 WebDAV 同步，请稍候或切换到该标签页。');
+            return false;
+        }
+        syncState = normalizeSyncState(loadStoredJson(SYNC_STATE_KEY, syncState));
+        return enqueueSync(task);
+    };
+
+    const applyExternalConfig = incoming => {
+        if (!incoming) return;
+        config = normalizeConfig(incoming);
+        updateGlobalCSSVars();
+        triggerRebuild();
+    };
+
+    const rebaseFolderEditOntoLatestConfig = (folder, name, session) => {
+        const latestStored = deferredExternalConfig || loadStoredJson(STORAGE_KEY, null);
+        deferredExternalConfig = null;
+        if (!latestStored || !session) return { active: getActive(), folder };
+        config = normalizeConfig(latestStored);
+        const base = config.bases[session.baseId] || (config.bases[session.baseId] = normalizeBaseState({}));
+        let target = base.folders.find(item => item.id === session.folderId);
+        if (session.isNew) {
+            if (!target) {
+                target = {
+                    id: session.folderId,
+                    name: name || session.originalName,
+                    parentId: folder.parentId && base.folders.some(item => item.id === folder.parentId) ? folder.parentId : null,
+                    color: folder.color || ''
+                };
+                base.folders.push(target);
+            }
+        }
+        if (target && name) target.name = name;
+        return { active: base, folder: target || folder };
+    };
+
+    const setupCrossTabCoordination = () => {
+        if (coordinationStarted) return;
+        coordinationStarted = true;
+
+        GM_addValueChangeListener(STORAGE_KEY, (key, oldValue, newValue, remote) => {
+            if (!remote || !newValue) return;
+            try {
+                const incoming = normalizeConfig(typeof newValue === 'string' ? JSON.parse(newValue) : newValue);
+                if (isFolderEditing()) deferredExternalConfig = incoming;
+                else applyExternalConfig(incoming);
+                if (isSyncLeader && isAutoSyncReady() && !isFolderEditing()) requestCoordinatedSync('cross-tab-config-change');
+            } catch (error) {
+                console.warn('[NocoDB Folder] Ignored invalid cross-tab config update:', error);
+            }
+        });
+
+        GM_addValueChangeListener(SYNC_STATE_KEY, (key, oldValue, newValue, remote) => {
+            if (!remote || !newValue) return;
+            try {
+                syncState = normalizeSyncState(typeof newValue === 'string' ? JSON.parse(newValue) : newValue);
+                updateSyncIndicator();
+                updateSettingsSyncFeedback();
+                if (isSyncLeader && syncState.pendingHash && !isFolderEditing()) requestCoordinatedSync('cross-tab-pending-change');
+            } catch (error) {
+                console.warn('[NocoDB Folder] Ignored invalid cross-tab sync-state update:', error);
+            }
+        });
+
+        GM_addValueChangeListener(CONFLICT_KEY, (key, oldValue, newValue, remote) => {
+            if (!remote) return;
+            try {
+                syncConflict = newValue ? (typeof newValue === 'string' ? JSON.parse(newValue) : newValue) : null;
+            } catch (error) {
+                syncConflict = null;
+            }
+            updateSyncIndicator();
+            updateSettingsSyncFeedback();
+        });
+
+        GM_addValueChangeListener(LEADER_KEY, (key, oldValue, newValue, remote) => {
+            if (!remote) return;
+            const lease = parseLeaderLease(newValue);
+            if (isSyncLeader && lease?.tabId && lease.tabId !== TAB_ID && isLeaderLeaseAlive(lease)) {
+                stopLeaderRuntime();
+            }
+            if (!isSyncLeader && document.visibilityState === 'visible' && !isLeaderLeaseAlive(lease)) {
+                void tryAcquireLeadership('leader-released');
+            }
+        });
+
+        clearInterval(leaderWatchTimer);
+        leaderWatchTimer = setInterval(() => {
+            if (!isAutoSyncReady()) return;
+            if (document.visibilityState !== 'visible') {
+                if (isSyncLeader) releaseLeadership();
+                return;
+            }
+            if (isSyncLeader) {
+                renewLeaderLease();
+                return;
+            }
+            const lease = readLeaderLease();
+            if (!isLeaderLeaseAlive(lease)) void tryAcquireLeadership('lease-expired');
+        }, LEADER_WATCH_MS);
+    };
+
     const resolveConflictUseCloud = async () => {
         syncState.pendingHash = '';
         syncState.autoSyncArmed = true;
@@ -1186,7 +1433,18 @@
         syncState.lastContentCheckAt = 0;
         syncState.lastSuccessAt = 0;
         clearConflict();
-        persistSyncState();
+        patchSharedSyncState({
+            remoteEtag: '',
+            remoteLastModified: '',
+            remoteSize: '',
+            remoteExists: null,
+            remoteContentHash: '',
+            pendingHash: syncState.pendingHash,
+            autoSyncArmed: false,
+            lastCheckAt: 0,
+            lastContentCheckAt: 0,
+            lastSuccessAt: 0
+        });
     };
 
     const getSyncStatusText = () => {
@@ -1338,29 +1596,26 @@
         });
 
         if (!syncConflict) {
-            const armManualSync = () => {
-                syncState.autoSyncArmed = true;
-                persistSyncState();
-            };
+            const armManualSync = () => patchSharedSyncState({ autoSyncArmed: true });
             modal.querySelector('#ndf-sync-check').onclick = async () => {
                 armManualSync();
-                await enqueueSync(() => checkRemoteUpdate({ reason: 'manual-check', force: true }));
+                await runCoordinatedManualTask('manual-check', () => checkRemoteUpdate({ reason: 'manual-check', force: true }));
                 close();
             };
             modal.querySelector('#ndf-sync-pull').onclick = async () => {
                 armManualSync();
-                await enqueueSync(() => performPull({ reason: 'manual-pull' }));
+                await runCoordinatedManualTask('manual-pull', () => performPull({ reason: 'manual-pull' }));
                 close();
             };
             modal.querySelector('#ndf-sync-push').onclick = async () => {
                 armManualSync();
-                await enqueueSync(() => performPush({ reason: 'manual-push' }));
+                await runCoordinatedManualTask('manual-push', () => performPush({ reason: 'manual-push' }));
                 close();
             };
         }
         if (syncConflict) {
-            modal.querySelector('#ndf-conflict-cloud').onclick = async () => { await enqueueSync(resolveConflictUseCloud); close(); };
-            modal.querySelector('#ndf-conflict-local').onclick = async () => { await enqueueSync(resolveConflictOverwriteCloud); close(); };
+            modal.querySelector('#ndf-conflict-cloud').onclick = async () => { await runCoordinatedManualTask('conflict-use-cloud', resolveConflictUseCloud); close(); };
+            modal.querySelector('#ndf-conflict-local').onclick = async () => { await runCoordinatedManualTask('conflict-use-local', resolveConflictOverwriteCloud); close(); };
             modal.querySelector('#ndf-conflict-export').onclick = exportConflictLocal;
         }
     }
@@ -1683,8 +1938,8 @@
         const davToggle = panel.querySelector('#inp-dav-enable');
         davToggle.onchange = e => {
             config.webdav.enabled = e.target.checked;
-            syncState.autoSyncArmed = false;
-            persistSyncState();
+            patchSharedSyncState({ autoSyncArmed: false });
+            if (!config.webdav.enabled && isSyncLeader) releaseLeadership();
             panel.querySelector('#dav-fields').style.display = config.webdav.enabled ? 'block' : 'none';
             saveLocalConfig({ structural: false, schedulePush: false });
             setSyncStatus(
@@ -1719,10 +1974,9 @@
                 setSyncStatus('error', '请填写完整的 WebDAV JSON 文件 URL。');
                 return;
             }
-            syncState.autoSyncArmed = true;
-            persistSyncState();
+            patchSharedSyncState({ autoSyncArmed: true });
             setSettingsSavingState(false);
-            await enqueueSync(() => checkRemoteUpdate({ reason: 'settings-save', force: true }));
+            await runCoordinatedManualTask('settings-save', () => checkRemoteUpdate({ reason: 'settings-save', force: true }));
             updateSyncIndicator();
             updateSettingsSyncFeedback();
         };
@@ -1976,6 +2230,10 @@
                         if (e.key === 'Escape') {
                             const session = folderEditSession?.folderId === folder.id ? folderEditSession : null;
                             if (session?.isNew) active.folders = active.folders.filter(item => item.id !== folder.id);
+                            if (deferredExternalConfig) {
+                                applyExternalConfig(deferredExternalConfig);
+                                deferredExternalConfig = null;
+                            }
                             finishFolderEditSession({ resumeSync: false });
                             saveLocalConfig({ structural: false, schedulePush: false });
                             triggerRebuild();
@@ -1987,11 +2245,18 @@
                         const session = folderEditSession?.folderId === folder.id ? folderEditSession : null;
                         const name = sanitizeFolderName(input.value, '');
                         let structuralChanged = false;
+                        let targetActive = active;
+                        let targetFolder = folder;
+                        if (session && (deferredExternalConfig || GM_getValue(STORAGE_KEY))) {
+                            const rebased = rebaseFolderEditOntoLatestConfig(folder, name, session);
+                            targetActive = rebased.active;
+                            targetFolder = rebased.folder;
+                        }
                         if (name) {
-                            structuralChanged = Boolean(session?.isNew || folder.name !== name);
-                            folder.name = name;
+                            structuralChanged = Boolean(session?.isNew || targetFolder.name !== name);
+                            targetFolder.name = name;
                         } else if (session?.isNew) {
-                            active.folders = active.folders.filter(item => item.id !== folder.id);
+                            targetActive.folders = targetActive.folders.filter(item => item.id !== folder.id);
                         }
                         finishFolderEditSession({ resumeSync: false });
                         saveLocalConfig({ structural: structuralChanged, schedulePush: false });
@@ -2153,17 +2418,21 @@
 
     const runFocusCheck = reason => {
         if (!isAutoSyncReady() || isFolderEditing() || document.visibilityState !== 'visible') return;
-        enqueueSync(() => checkRemoteUpdate({ reason }));
+        requestCoordinatedSync(reason);
     };
 
     const startAutoSync = () => {
-        clearInterval(pollTimer);
-        pollTimer = setInterval(() => runFocusCheck('poll'), POLL_INTERVAL_MS);
+        setupCrossTabCoordination();
         window.addEventListener('focus', () => runFocusCheck('focus'));
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') runFocusCheck('visible');
+            if (document.visibilityState === 'hidden') {
+                if (isSyncLeader) releaseLeadership();
+                return;
+            }
+            runFocusCheck('visible');
         });
-        if (isAutoSyncReady()) enqueueSync(() => checkRemoteUpdate({ reason: 'startup', force: true }));
+        window.addEventListener('pagehide', releaseLeadership);
+        if (isAutoSyncReady() && document.visibilityState === 'visible') requestCoordinatedSync('startup', { force: true });
     };
 
     let currentActiveBaseId = getBaseId();
