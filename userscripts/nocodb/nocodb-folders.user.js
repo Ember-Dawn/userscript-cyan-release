@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.4.0
+// @version      11.4.1
 // @description  NocoDB folder tree with per-tab collapse state, single-leader WebDAV sync, resilient validators, verified conflicts, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
@@ -26,7 +26,7 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.4.0';
+    const SCRIPT_VERSION = '11.4.1';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
@@ -1622,11 +1622,12 @@
     const getSyncIcon = () => {
         const spinning = syncState.status === 'syncing';
         const className = spinning ? 'ndf-spin' : '';
-        const badgeClass = syncConflict ? 'ndf-sync-conflict' :
+        const stateClass = syncConflict ? 'ndf-sync-conflict' :
             syncState.status === 'error' ? 'ndf-sync-error' :
-                !syncState.autoSyncArmed ? 'ndf-sync-pending' :
-                    syncState.pendingHash ? 'ndf-sync-pending' : 'ndf-sync-ok';
-        return `<span class="ndf-sync-icon-wrap ${badgeClass}"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" class="${className}"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></span>`;
+                spinning ? 'ndf-sync-syncing' :
+                    !syncState.autoSyncArmed || syncState.pendingHash ? 'ndf-sync-pending' :
+                        syncState.status === 'ok' ? 'ndf-sync-ok' : 'ndf-sync-idle';
+        return `<span class="ndf-sync-icon-wrap ${stateClass}"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" class="${className}"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></span>`;
     };
 
     function updateSyncIndicator() {
@@ -1801,10 +1802,12 @@
         .ndf-action-btn:hover { opacity:1; color:#1677ff; transform:scale(1.08); }
         .ndf-spin { animation:ndf-spin 1s linear infinite; }
         @keyframes ndf-spin { to { transform:rotate(360deg); } }
-        .ndf-sync-icon-wrap { display:inline-flex; position:relative; }
-        .ndf-sync-icon-wrap::after { content:''; position:absolute; width:6px; height:6px; border-radius:50%; right:-2px; bottom:-2px; border:1px solid #fff; background:#52c41a; }
-        .ndf-sync-pending::after { background:#faad14; }
-        .ndf-sync-error::after, .ndf-sync-conflict::after { background:#ff4d4f; }
+        .ndf-sync-icon-wrap { display:inline-flex; position:relative; transition:color .2s; }
+        .ndf-sync-idle { color:#8c8c8c; }
+        .ndf-sync-ok { color:#52c41a; }
+        .ndf-sync-pending { color:#fa8c16; }
+        .ndf-sync-syncing { color:#1677ff; }
+        .ndf-sync-error, .ndf-sync-conflict { color:#ff4d4f; }
         .ndf-search-box { padding:4px 12px 10px; display:flex; align-items:center; position:relative; }
         .ndf-search-input { width:100%; padding:6px 28px 6px 32px; border:1px solid #d9d9d9; border-radius:6px; font-size:13px; outline:none; background:#fafafa; color:#333; }
         .ndf-search-input:focus { border-color:#3366ff; background:#fff; box-shadow:0 0 0 2px rgba(51,102,255,.1); }
@@ -1826,7 +1829,7 @@
         #ndf-root-dropzone { display:none; order:999999; margin:16px 12px; padding:16px; text-align:center; border:2px dashed #ccc; border-radius:6px; color:#888; font-size:13px; font-weight:700; }
         body.ndf-is-dragging-table #ndf-root-dropzone, body.ndf-is-dragging-folder #ndf-root-dropzone { display:block; }
         #ndf-root-dropzone.drag-over { background:#f0f7ff; border-color:#1677ff; color:#1677ff; }
-        .ndf-settings-panel, .ndf-popover-menu { position:fixed; background:#fff; border:1px solid #e0e0e0; box-shadow:0 12px 32px rgba(0,0,0,.15); border-radius:8px; z-index:999999; font-family:inherit; color:#333; }
+        .ndf-settings-panel, .ndf-popover-menu, .ndf-delete-confirm { position:fixed; background:#fff; border:1px solid #e0e0e0; box-shadow:0 12px 32px rgba(0,0,0,.15); border-radius:8px; z-index:999999; font-family:inherit; color:#333; }
         .ndf-settings-panel { padding:16px; width:290px; max-height:calc(100vh - 32px); overflow:auto; }
         .ndf-settings-panel h3 { margin:0 0 12px; font-size:14px; color:#111; border-bottom:1px solid #eee; padding-bottom:6px; }
         .ndf-setting-row { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; font-size:13px; gap:12px; }
@@ -1838,6 +1841,11 @@
         input:checked + .ndf-slider { background:#1677ff; }
         input:checked + .ndf-slider::before { transform:translateX(16px); }
         .ndf-popover-menu { padding:6px 0; min-width:180px; }
+        .ndf-delete-confirm { width:260px; padding:12px; box-sizing:border-box; }
+        .ndf-delete-confirm-title { font-size:13px; font-weight:700; color:#222; margin-bottom:6px; }
+        .ndf-delete-confirm-text { font-size:12px; line-height:1.5; color:#666; overflow-wrap:anywhere; }
+        .ndf-delete-confirm-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+        .ndf-delete-confirm-actions .ndf-btn { width:auto; min-width:72px; margin-top:0; }
         .ndf-menu-item { padding:8px 16px; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:8px; }
         .ndf-menu-item:hover { background:#f4f4f4; }
         .ndf-menu-divider { border-top:1px solid #eee; margin:4px 0; }
@@ -2038,7 +2046,7 @@
         input.click();
     };
 
-    const closeFloatingPanels = () => document.querySelectorAll('.ndf-settings-panel, .ndf-popover-menu').forEach(node => node.remove());
+    const closeFloatingPanels = () => document.querySelectorAll('.ndf-settings-panel, .ndf-popover-menu, .ndf-delete-confirm').forEach(node => node.remove());
 
     const showSettingsPanel = event => {
         event.stopPropagation();
@@ -2156,6 +2164,65 @@
         }, 0);
     };
 
+    const showDeleteFolderConfirm = ({ folder, active, left, top }) => {
+        closeFloatingPanels();
+        const confirmPanel = document.createElement('div');
+        confirmPanel.className = 'ndf-delete-confirm';
+        confirmPanel.style.left = `${left}px`;
+        confirmPanel.style.top = `${top}px`;
+        confirmPanel.innerHTML = `
+            <div class="ndf-delete-confirm-title">Delete folder?</div>
+            <div class="ndf-delete-confirm-text">Delete “${escapeHtml(folder.name)}”? Its direct children and tables will move to the parent level.</div>
+            <div class="ndf-delete-confirm-actions">
+                <button type="button" class="ndf-btn" data-action="cancel">Cancel</button>
+                <button type="button" class="ndf-btn ndf-btn-red" data-action="confirm">Delete</button>
+            </div>
+        `;
+        document.body.appendChild(confirmPanel);
+
+        const close = () => {
+            confirmPanel.remove();
+            document.removeEventListener('click', outsideClick, true);
+            document.removeEventListener('keydown', onKeyDown, true);
+        };
+        const outsideClick = event => {
+            if (!confirmPanel.contains(event.target)) close();
+        };
+        const onKeyDown = event => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+        };
+
+        confirmPanel.querySelector('[data-action="cancel"]').onclick = close;
+        confirmPanel.querySelector('[data-action="confirm"]').onclick = () => {
+            active.folders = active.folders.filter(item => item.id !== folder.id);
+            delete active.collapsed[folder.id];
+            active.folders.forEach(item => { if (item.parentId === folder.id) item.parentId = folder.parentId || null; });
+            Object.keys(active.map).forEach(tableId => {
+                if (active.map[tableId] === folder.id) {
+                    if (folder.parentId) active.map[tableId] = folder.parentId;
+                    else delete active.map[tableId];
+                }
+            });
+            saveTabCollapsedState();
+            saveLocalConfig({ structural: true });
+            triggerRebuild();
+            close();
+        };
+
+        requestAnimationFrame(() => {
+            const rect = confirmPanel.getBoundingClientRect();
+            if (rect.right > window.innerWidth - 8) confirmPanel.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
+            if (rect.bottom > window.innerHeight - 8) confirmPanel.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
+        });
+        setTimeout(() => {
+            document.addEventListener('click', outsideClick, true);
+            document.addEventListener('keydown', onKeyDown, true);
+        }, 0);
+    };
+
     const showFolderMenu = (event, folder, header, active, indexes) => {
         event.preventDefault();
         closeFloatingPanels();
@@ -2206,19 +2273,8 @@
             menu.remove();
         };
         menu.querySelector('[data-action="delete"]').onclick = () => {
-            if (!confirm(`Delete folder “${folder.name}”? Its direct children and tables will move to the parent level.`)) return;
-            active.folders = active.folders.filter(item => item.id !== folder.id);
-            delete active.collapsed[folder.id];
-            active.folders.forEach(item => { if (item.parentId === folder.id) item.parentId = folder.parentId || null; });
-            Object.keys(active.map).forEach(tableId => {
-                if (active.map[tableId] === folder.id) {
-                    if (folder.parentId) active.map[tableId] = folder.parentId;
-                    else delete active.map[tableId];
-                }
-            });
-            saveLocalConfig({ structural: true });
-            triggerRebuild();
-            menu.remove();
+            const rect = menu.getBoundingClientRect();
+            showDeleteFolderConfirm({ folder, active, left: rect.left, top: rect.top });
         };
         setTimeout(() => {
             const close = e => {
