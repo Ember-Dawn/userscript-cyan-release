@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.3.0
-// @description  NocoDB folder tree with draft-safe editing, single-leader multi-tab WebDAV sync, verified conflicts, and daily snapshots
+// @version      11.4.0
+// @description  NocoDB folder tree with per-tab collapse state, single-leader WebDAV sync, resilient validators, verified conflicts, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
 // @match        *://*/dashboard/*
@@ -26,11 +26,12 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.3.0';
+    const SCRIPT_VERSION = '11.4.0';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
     const LEADER_KEY = 'nc_folder_sync_leader_v11';
+    const COLLAPSED_SESSION_PREFIX = 'nc_folder_collapsed_v11:';
     const MAX_FOLDER_NAME_LENGTH = 120;
     const PUSH_DEBOUNCE_MS = 2000;
     const POLL_INTERVAL_MS = 30000;
@@ -113,7 +114,7 @@
         return JSON.stringify(sortValue(value));
     };
 
-    // Fast non-cryptographic content fingerprint. ETag/If-Match remains the real concurrency guard.
+    // Fast non-cryptographic content fingerprint. Reliable DAV ETags are preferred; body hashes verify ambiguous validators.
     const hashString = text => {
         let h1 = 0x811c9dc5;
         let h2 = 0x9e3779b9;
@@ -233,6 +234,57 @@
         }
     };
 
+    const sanitizeCollapsedState = (collapsed, validFolderIds = null) => {
+        const safe = {};
+        if (!collapsed || typeof collapsed !== 'object') return safe;
+        Object.entries(collapsed).forEach(([folderId, value]) => {
+            if (!value) return;
+            if (validFolderIds && !validFolderIds.has(folderId)) return;
+            safe[folderId] = true;
+        });
+        return safe;
+    };
+
+    const getCollapsedSessionKey = baseId => `${COLLAPSED_SESSION_PREFIX}${baseId}`;
+
+    const readTabCollapsed = (baseId, fallback = {}) => {
+        try {
+            const raw = window.sessionStorage?.getItem(getCollapsedSessionKey(baseId));
+            if (raw !== null && raw !== undefined) return sanitizeCollapsedState(JSON.parse(raw));
+        } catch (error) {
+            console.debug('[NocoDB Folder] Could not read per-tab collapse state:', error);
+        }
+        return sanitizeCollapsedState(fallback);
+    };
+
+    const writeTabCollapsed = (baseId, collapsed, validFolderIds = null) => {
+        const safe = sanitizeCollapsedState(collapsed, validFolderIds);
+        try {
+            window.sessionStorage?.setItem(getCollapsedSessionKey(baseId), JSON.stringify(safe));
+        } catch (error) {
+            console.debug('[NocoDB Folder] Could not persist per-tab collapse state:', error);
+        }
+        return safe;
+    };
+
+    const hydrateTabCollapsed = (rawConfig, legacyFallback = rawConfig) => {
+        const hydrated = normalizeConfig(rawConfig);
+        const legacy = normalizeConfig(legacyFallback);
+        Object.entries(hydrated.bases).forEach(([baseId, base]) => {
+            const validIds = new Set(base.folders.map(folder => folder.id));
+            const fallback = legacy.bases[baseId]?.collapsed || base.collapsed || {};
+            base.collapsed = sanitizeCollapsedState(readTabCollapsed(baseId, fallback), validIds);
+        });
+        return hydrated;
+    };
+
+    const persistTabCollapsed = targetConfig => {
+        Object.entries(targetConfig?.bases || {}).forEach(([baseId, base]) => {
+            const validIds = new Set((base.folders || []).map(folder => folder.id));
+            base.collapsed = writeTabCollapsed(baseId, base.collapsed || {}, validIds);
+        });
+    };
+
     let config = normalizeConfig(defaultSettings);
     const storedConfig = loadStoredJson(STORAGE_KEY, null);
     if (storedConfig) {
@@ -244,6 +296,7 @@
         }
         config = normalizeConfig(migrated);
     }
+    config = hydrateTabCollapsed(config, config);
 
     const defaultSyncState = {
         deviceId: '',
@@ -253,6 +306,7 @@
         remoteExists: null,
         remoteContentHash: '',
         pendingHash: '',
+        etagPreconditionReliable: null,
         autoSyncArmed: false,
         lastCheckAt: 0,
         lastPushAt: 0,
@@ -276,6 +330,9 @@
             remoteSize: normalizeString(source.remoteSize),
             remoteContentHash: normalizeString(source.remoteContentHash),
             pendingHash: normalizeString(source.pendingHash),
+            etagPreconditionReliable: source.etagPreconditionReliable === true
+                ? true
+                : source.etagPreconditionReliable === false ? false : null,
             autoSyncArmed: Boolean(source.autoSyncArmed),
             lastCheckAt: Number(source.lastCheckAt) || 0,
             lastPushAt: Number(source.lastPushAt) || 0,
@@ -393,15 +450,13 @@
         const nextBases = {};
         Object.entries(cloudData.bases || {}).forEach(([baseId, remoteBase]) => {
             const normalizedRemote = normalizeBaseState(remoteBase);
-            const previousCollapsed = previousBases[baseId]?.collapsed || {};
+            const previousCollapsed = previousBases[baseId]?.collapsed || readTabCollapsed(baseId);
             const validIds = new Set(normalizedRemote.folders.map(folder => folder.id));
-            normalizedRemote.collapsed = {};
-            Object.entries(previousCollapsed).forEach(([folderId, collapsed]) => {
-                if (collapsed && validIds.has(folderId)) normalizedRemote.collapsed[folderId] = true;
-            });
+            normalizedRemote.collapsed = sanitizeCollapsedState(previousCollapsed, validIds);
             nextBases[baseId] = normalizedRemote;
         });
         config = normalizeConfig({ ...config, bases: nextBases });
+        persistTabCollapsed(config);
         saveLocalConfig({ structural: false });
         triggerRebuild();
     };
@@ -435,16 +490,23 @@
 
     const getPersistableConfig = () => {
         const persistable = normalizeConfig(config);
+        persistTabCollapsed(persistable);
         const draftFolderId = folderEditSession?.isNew ? folderEditSession.folderId : '';
-        if (!draftFolderId) return persistable;
         Object.values(persistable.bases).forEach(base => {
+            base.collapsed = {};
+            if (!draftFolderId) return;
             base.folders = base.folders.filter(folder => folder.id !== draftFolderId);
-            delete base.collapsed[draftFolderId];
             Object.keys(base.map).forEach(tableId => {
                 if (base.map[tableId] === draftFolderId) delete base.map[tableId];
             });
         });
         return persistable;
+    };
+
+    const saveTabCollapsedState = () => {
+        persistTabCollapsed(config);
+        updateSyncIndicator();
+        updateSettingsSyncFeedback();
     };
 
     const beginFolderEdit = (folder, { isNew = false } = {}) => {
@@ -586,6 +648,20 @@
         }
     };
 
+    const isSuspiciousEtag = etag => {
+        const value = normalizeString(etag);
+        if (!value) return true;
+        if (/^W\//i.test(value)) return true;
+        return /-gzip(?:"|')?$/i.test(value) || /--gzip/i.test(value);
+    };
+
+    const canUseEtagPrecondition = metadata => Boolean(
+        metadata?.exists &&
+        metadata.etagSource === 'propfind' &&
+        !isSuspiciousEtag(metadata.etag) &&
+        syncState.etagPreconditionReliable !== false
+    );
+
     const metadataToken = metadata => {
         if (!metadata?.exists) return 'missing';
         if (metadata.etag) return `etag:${metadata.etag}`;
@@ -615,55 +691,66 @@
     const probeRemote = async () => {
         const url = config.webdav.url;
         const headers = getAuthHeaders(false);
-        let headResponse;
-        try {
-            headResponse = await gmFetch(url, { method: 'HEAD', headers });
-            if (headResponse.status === 404) return { exists: false, status: 404, etag: '', lastModified: '', size: '' };
-            if (headResponse.ok) {
-                const metadata = {
-                    exists: true,
-                    status: headResponse.status,
-                    etag: normalizeString(headResponse.headers.etag),
-                    lastModified: normalizeString(headResponse.headers['last-modified']),
-                    size: normalizeString(headResponse.headers['content-length'])
-                };
-                if (metadata.etag || metadata.lastModified || metadata.size) return metadata;
-            }
-        } catch (error) {
-            console.debug('[NocoDB Folder] HEAD probe failed; falling back to PROPFIND.', error);
-        }
-
         const body = '<?xml version="1.0" encoding="utf-8"?>' +
             '<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/><d:getlastmodified/><d:getcontentlength/></d:prop></d:propfind>';
-        const response = await gmFetch(url, {
-            method: 'PROPFIND',
-            headers: { ...headers, Depth: '0', 'Content-Type': 'application/xml; charset=utf-8' },
-            body
-        });
-        if (response.status === 404) return { exists: false, status: 404, etag: '', lastModified: '', size: '' };
-        if (response.ok || response.status === 207) {
-            return { exists: true, status: response.status, ...parsePropfindMetadata(response.text) };
+
+        try {
+            const response = await gmFetch(url, {
+                method: 'PROPFIND',
+                headers: { ...headers, Depth: '0', 'Content-Type': 'application/xml; charset=utf-8' },
+                body
+            });
+            if (response.status === 404) {
+                return { exists: false, status: 404, etag: '', lastModified: '', size: '', etagSource: 'propfind' };
+            }
+            if (response.ok || response.status === 207) {
+                const parsed = parsePropfindMetadata(response.text);
+                return { exists: true, status: response.status, ...parsed, etagSource: 'propfind' };
+            }
+            console.debug(`[NocoDB Folder] PROPFIND probe returned HTTP ${response.status}; falling back to HEAD.`);
+        } catch (error) {
+            console.debug('[NocoDB Folder] PROPFIND probe failed; falling back to HEAD.', error);
         }
-        return { exists: null, status: response.status, etag: '', lastModified: '', size: '' };
+
+        try {
+            const response = await gmFetch(url, { method: 'HEAD', headers });
+            if (response.status === 404) {
+                return { exists: false, status: 404, etag: '', lastModified: '', size: '', etagSource: 'head' };
+            }
+            if (response.ok) {
+                return {
+                    exists: true,
+                    status: response.status,
+                    etag: normalizeString(response.headers.etag),
+                    lastModified: normalizeString(response.headers['last-modified']),
+                    size: normalizeString(response.headers['content-length']),
+                    etagSource: 'head'
+                };
+            }
+            return { exists: null, status: response.status, etag: '', lastModified: '', size: '', etagSource: 'head' };
+        } catch (error) {
+            console.debug('[NocoDB Folder] HEAD probe failed.', error);
+            return { exists: null, status: 0, etag: '', lastModified: '', size: '', etagSource: 'head' };
+        }
     };
 
     const refreshMetadataAfterWrite = async fallbackResponse => {
-        const responseMetadata = {
+        try {
+            const probed = await probeRemote();
+            if (probed.exists !== null) {
+                updateStoredMetadata(probed);
+                return;
+            }
+        } catch (error) {
+            console.debug('[NocoDB Folder] Post-write DAV metadata refresh failed:', error);
+        }
+        const fallbackMetadata = {
             exists: true,
             etag: normalizeString(fallbackResponse?.headers?.etag),
             lastModified: normalizeString(fallbackResponse?.headers?.['last-modified']),
             size: normalizeString(fallbackResponse?.headers?.['content-length'])
         };
-        if (responseMetadata.etag || responseMetadata.lastModified) {
-            updateStoredMetadata(responseMetadata);
-            return;
-        }
-        try {
-            updateStoredMetadata(await probeRemote());
-        } catch (error) {
-            syncState.remoteExists = true;
-            persistSyncState();
-        }
+        updateStoredMetadata(fallbackMetadata);
     };
 
     const getParentUrl = urlString => {
@@ -837,9 +924,10 @@
         const freshMetadata = {
             exists: true,
             status: response.status,
-            etag: response.headers.etag || metadata.etag || '',
-            lastModified: response.headers['last-modified'] || metadata.lastModified || '',
-            size: response.headers['content-length'] || metadata.size || ''
+            etag: metadata.etag || response.headers.etag || '',
+            lastModified: metadata.lastModified || response.headers['last-modified'] || '',
+            size: metadata.size || response.headers['content-length'] || '',
+            etagSource: metadata.etagSource || 'get'
         };
         syncState.lastContentCheckAt = Date.now();
 
@@ -860,6 +948,42 @@
         updateStoredMetadata(freshMetadata);
         await setConflict({ reason, remoteMetadata: freshMetadata, localPayload });
         return { action: 'conflict', metadata: freshMetadata };
+    };
+
+    const canRevalidateStoredConflict = conflict => {
+        const reason = normalizeString(conflict?.reason);
+        return Boolean(reason && (
+            reason === 'remote-changed-before-push' ||
+            reason === 'remote-changed-during-local-pending' ||
+            reason === 'unreliable-validator-before-push' ||
+            reason.startsWith('precondition-failed-')
+        ));
+    };
+
+    const revalidateStoredConflict = async () => {
+        if (!syncConflict || !canRevalidateStoredConflict(syncConflict) || !isSyncLeader || isFolderEditing()) return false;
+        const conflict = syncConflict;
+        const localPayload = conflict.localPayload || buildCloudPayload();
+        const localHash = localPayload.__meta?.contentHash || cloudContentHash(extractCloudData(localPayload));
+        const metadata = await probeRemote();
+        if (metadata.exists !== true) return false;
+
+        const verification = await verifyRemoteContentBeforeConflict({
+            metadata,
+            localPayload,
+            reason: conflict.reason
+        });
+        if (verification.action === 'already-synced') {
+            clearConflict();
+            return true;
+        }
+        if (verification.action === 'metadata-only-change') {
+            clearConflict();
+            syncState.pendingHash = localHash;
+            persistSyncState();
+            return performPush({ reason: 'revalidated-existing-conflict' });
+        }
+        return false;
     };
 
     const performPull = async ({ reason = 'pull', force = false } = {}) => {
@@ -887,12 +1011,20 @@
             const localCloudData = buildCloudData(config);
             const localHash = cloudContentHash(localCloudData);
             const hadBaseline = Boolean(syncState.remoteContentHash || storedMetadataToken());
-            const metadata = {
+            let metadata = {
                 exists: true,
+                status: response.status,
                 etag: response.headers.etag || '',
                 lastModified: response.headers['last-modified'] || '',
-                size: response.headers['content-length'] || ''
+                size: response.headers['content-length'] || '',
+                etagSource: 'get'
             };
+            try {
+                const davMetadata = await probeRemote();
+                if (davMetadata.exists === true) metadata = davMetadata;
+            } catch (error) {
+                console.debug('[NocoDB Folder] Pull completed but DAV metadata refresh was unavailable:', error);
+            }
 
             if (!hadBaseline && !force) {
                 const decision = getInitialSyncDecision(localCloudData, cloudData);
@@ -991,9 +1123,9 @@
                     syncState.lastContentCheckAt = Date.now();
                     updateStoredMetadata({
                         exists: true,
-                        etag: response.headers.etag || metadata.etag,
-                        lastModified: response.headers['last-modified'] || metadata.lastModified,
-                        size: response.headers['content-length'] || metadata.size
+                        etag: metadata.etag || response.headers.etag || '',
+                        lastModified: metadata.lastModified || response.headers['last-modified'] || '',
+                        size: metadata.size || response.headers['content-length'] || ''
                     });
                     setSyncStatus('ok', '本地与远端内容一致。');
                     return true;
@@ -1019,6 +1151,17 @@
                 metadata = verification.metadata;
             }
 
+            if (!force && metadata.exists && !canUseEtagPrecondition(metadata)) {
+                const verification = await verifyRemoteContentBeforeConflict({
+                    metadata,
+                    localPayload: payload,
+                    reason: 'unreliable-validator-before-push'
+                });
+                if (verification.action === 'already-synced') return true;
+                if (verification.action === 'conflict' || verification.action === 'deferred') return false;
+                metadata = verification.metadata;
+            }
+
             if (!force && isFolderEditing()) {
                 setSyncStatus('idle', '文件夹名称编辑中，自动上传已延后。');
                 return false;
@@ -1028,7 +1171,7 @@
             const headers = getAuthHeaders(true);
             if (!force) {
                 if (!metadata.exists) headers['If-None-Match'] = '*';
-                else if (metadata.etag) headers['If-Match'] = metadata.etag;
+                else if (canUseEtagPrecondition(metadata)) headers['If-Match'] = metadata.etag;
                 else if (metadata.lastModified) headers['If-Unmodified-Since'] = metadata.lastModified;
             }
 
@@ -1052,11 +1195,28 @@
                     setSyncStatus('idle', '文件夹名称编辑中，冲突处理已延后。');
                     return false;
                 }
-                await setConflict({ reason: `precondition-failed-${response.status}`, remoteMetadata: metadata, localPayload: payload });
-                return false;
+                const verification = await verifyRemoteContentBeforeConflict({
+                    metadata,
+                    localPayload: payload,
+                    reason: `precondition-failed-${response.status}`
+                });
+                if (verification.action === 'already-synced') return true;
+                if (verification.action === 'conflict' || verification.action === 'deferred') return false;
+
+                // The remote body still equals our last confirmed baseline, so this was a validator false positive.
+                // Disable ETag preconditions for this endpoint and retry once after the fresh content verification.
+                syncState.etagPreconditionReliable = false;
+                persistSyncState();
+                const retryHeaders = getAuthHeaders(true);
+                response = await gmFetch(config.webdav.url, {
+                    method: 'PUT',
+                    headers: retryHeaders,
+                    body: JSON.stringify(payload)
+                });
             }
             if (!response.ok) throw new Error(`WebDAV PUT failed: HTTP ${response.status}`);
 
+            if (!force && canUseEtagPrecondition(metadata)) syncState.etagPreconditionReliable = true;
             syncState.remoteContentHash = localHash;
             syncState.pendingHash = '';
             syncState.lastPushAt = Date.now();
@@ -1258,7 +1418,7 @@
             const leader = isSyncLeader || await tryAcquireLeadership(reason);
             if (!leader) return;
             const latestConfig = loadStoredJson(STORAGE_KEY, null);
-            if (latestConfig) config = normalizeConfig(latestConfig);
+            if (latestConfig) config = hydrateTabCollapsed(latestConfig, config);
             syncState = normalizeSyncState(loadStoredJson(SYNC_STATE_KEY, syncState));
             updateGlobalCSSVars();
             triggerRebuild();
@@ -1278,7 +1438,7 @@
 
     const applyExternalConfig = incoming => {
         if (!incoming) return;
-        config = normalizeConfig(incoming);
+        config = hydrateTabCollapsed(incoming, config);
         updateGlobalCSSVars();
         triggerRebuild();
     };
@@ -1287,7 +1447,7 @@
         const latestStored = deferredExternalConfig || loadStoredJson(STORAGE_KEY, null);
         deferredExternalConfig = null;
         if (!latestStored || !session) return { active: getActive(), folder };
-        config = normalizeConfig(latestStored);
+        config = hydrateTabCollapsed(latestStored, config);
         const base = config.bases[session.baseId] || (config.bases[session.baseId] = normalizeBaseState({}));
         let target = base.folders.find(item => item.id === session.folderId);
         if (session.isNew) {
@@ -1428,6 +1588,7 @@
         syncState.remoteExists = null;
         syncState.remoteContentHash = '';
         syncState.pendingHash = hasStructuralData(localCloudData) ? cloudContentHash(localCloudData) : '';
+        syncState.etagPreconditionReliable = null;
         syncState.autoSyncArmed = false;
         syncState.lastCheckAt = 0;
         syncState.lastContentCheckAt = 0;
@@ -2040,7 +2201,7 @@
             active.folders.push(draftFolder);
             active.collapsed[folder.id] = false;
             beginFolderEdit(draftFolder, { isNew: true });
-            saveLocalConfig({ structural: false, schedulePush: false });
+            saveTabCollapsedState();
             triggerRebuild();
             menu.remove();
         };
@@ -2157,7 +2318,7 @@
                     if (!ids.length) return;
                     const collapse = ids.filter(id => base.collapsed[id]).length < ids.length / 2;
                     ids.forEach(id => { base.collapsed[id] = collapse; });
-                    saveLocalConfig({ structural: false, schedulePush: false });
+                    saveTabCollapsedState();
                     triggerRebuild();
                 };
             }
@@ -2235,7 +2396,7 @@
                                 deferredExternalConfig = null;
                             }
                             finishFolderEditSession({ resumeSync: false });
-                            saveLocalConfig({ structural: false, schedulePush: false });
+                            saveTabCollapsedState();
                             triggerRebuild();
                             resumeSyncAfterFolderEdit();
                         }
@@ -2277,7 +2438,7 @@
                     clearTimeout(clickTimer);
                     const toggle = () => {
                         active.collapsed[folder.id] = !collapsed;
-                        saveLocalConfig({ structural: false, schedulePush: false });
+                        saveTabCollapsedState();
                         triggerRebuild();
                     };
                     if (config.clickDelay > 0) clickTimer = setTimeout(toggle, config.clickDelay);
@@ -2432,7 +2593,16 @@
             runFocusCheck('visible');
         });
         window.addEventListener('pagehide', releaseLeadership);
-        if (isAutoSyncReady() && document.visibilityState === 'visible') requestCoordinatedSync('startup', { force: true });
+        if (isAutoSyncReady() && document.visibilityState === 'visible') {
+            if (syncConflict && canRevalidateStoredConflict(syncConflict)) {
+                void (async () => {
+                    const leader = isSyncLeader || await tryAcquireLeadership('startup-conflict-revalidation');
+                    if (leader) await enqueueSync(revalidateStoredConflict);
+                })();
+            } else {
+                requestCoordinatedSync('startup', { force: true });
+            }
+        }
     };
 
     let currentActiveBaseId = getBaseId();
