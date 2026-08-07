@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.1.1
-// @description  Compact NocoDB folder toolbar with guided WebDAV first sync, live feedback, conflict protection, and daily snapshots
+// @version      11.2.0
+// @description  NocoDB folder tree with draft-safe editing, verified WebDAV conflict detection, live feedback, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
 // @match        *://*/dashboard/*
@@ -25,7 +25,7 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.1.1';
+    const SCRIPT_VERSION = '11.2.0';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
@@ -307,17 +307,24 @@
 
     const buildCloudData = sourceConfig => {
         const normalized = normalizeConfig(sourceConfig);
+        const draftFolderId = folderEditSession?.isNew ? folderEditSession.folderId : '';
         const bases = {};
         Object.entries(normalized.bases).sort(([a], [b]) => a.localeCompare(b)).forEach(([baseId, baseState]) => {
             const safeBase = normalizeBaseState(baseState);
+            const folders = safeBase.folders.filter(folder => folder.id !== draftFolderId);
+            const validFolderIds = new Set(folders.map(folder => folder.id));
+            const map = {};
+            Object.entries(safeBase.map).forEach(([tableId, folderId]) => {
+                if (validFolderIds.has(folderId)) map[tableId] = folderId;
+            });
             bases[baseId] = {
-                folders: safeBase.folders.map(folder => ({
+                folders: folders.map(folder => ({
                     id: folder.id,
                     name: folder.name,
                     parentId: folder.parentId,
                     color: folder.color
                 })),
-                map: { ...safeBase.map }
+                map
             };
         });
         return { schemaVersion: 2, bases };
@@ -395,27 +402,72 @@
     let isRebuilding = false;
     let clickTimer = null;
     let editingFolderId = null;
+    let folderEditSession = null;
     let searchQuery = '';
     let syncQueue = Promise.resolve();
     let pollTimer = null;
 
+    const isFolderEditing = () => Boolean(editingFolderId);
+
+    const getPersistableConfig = () => {
+        const persistable = normalizeConfig(config);
+        const draftFolderId = folderEditSession?.isNew ? folderEditSession.folderId : '';
+        if (!draftFolderId) return persistable;
+        Object.values(persistable.bases).forEach(base => {
+            base.folders = base.folders.filter(folder => folder.id !== draftFolderId);
+            delete base.collapsed[draftFolderId];
+            Object.keys(base.map).forEach(tableId => {
+                if (base.map[tableId] === draftFolderId) delete base.map[tableId];
+            });
+        });
+        return persistable;
+    };
+
+    const beginFolderEdit = (folder, { isNew = false } = {}) => {
+        clearTimeout(pushTimer);
+        pushTimer = null;
+        editingFolderId = folder.id;
+        folderEditSession = {
+            folderId: folder.id,
+            baseId: getBaseId(),
+            isNew,
+            originalName: folder.name
+        };
+        if (isAutoSyncReady()) setSyncStatus('idle', '文件夹名称编辑中，自动同步已暂缓。');
+    };
+
+    const resumeSyncAfterFolderEdit = () => {
+        if (!isAutoSyncReady() || syncConflict) return;
+        enqueueSync(() => checkRemoteUpdate({ reason: 'edit-finished', force: true }));
+    };
+
+    const finishFolderEditSession = ({ resumeSync = true } = {}) => {
+        editingFolderId = null;
+        folderEditSession = null;
+        if (resumeSync) resumeSyncAfterFolderEdit();
+    };
+
     function saveLocalConfig({ structural = true, schedulePush = true } = {}) {
         config = normalizeConfig(config);
-        GM_setValue(STORAGE_KEY, JSON.stringify(config));
+        GM_setValue(STORAGE_KEY, JSON.stringify(getPersistableConfig()));
         updateGlobalCSSVars();
 
         if (structural) {
             syncState.pendingHash = cloudContentHash(buildCloudData(config));
             persistSyncState();
         }
-        if (structural && schedulePush && isAutoSyncReady()) scheduleWebDAVPush();
+        if (structural && schedulePush && isAutoSyncReady() && !isFolderEditing()) scheduleWebDAVPush();
         updateSyncIndicator();
         updateSettingsSyncFeedback();
     }
 
     const scheduleWebDAVPush = () => {
         clearTimeout(pushTimer);
-        pushTimer = setTimeout(() => enqueueSync(() => performPush({ reason: 'debounced-change' })), PUSH_DEBOUNCE_MS);
+        pushTimer = setTimeout(() => {
+            pushTimer = null;
+            if (isFolderEditing()) return;
+            enqueueSync(() => performPush({ reason: 'debounced-change' }));
+        }, PUSH_DEBOUNCE_MS);
     };
 
     const triggerRebuild = () => {
@@ -739,9 +791,53 @@
         if (syncState.status === 'conflict') setSyncStatus('idle', '');
     };
 
+    const verifyRemoteContentBeforeConflict = async ({ metadata, localPayload, reason }) => {
+        const localHash = localPayload.__meta?.contentHash || cloudContentHash(extractCloudData(localPayload));
+        const response = await gmFetch(config.webdav.url, { method: 'GET', headers: getAuthHeaders(false) });
+        if (isFolderEditing()) {
+            setSyncStatus('idle', '文件夹名称编辑中，冲突检查已延后。');
+            return { action: 'deferred', metadata };
+        }
+        if (response.status === 404) {
+            await setConflict({ reason: `${reason}-remote-missing`, remoteMetadata: { ...metadata, exists: false }, localPayload });
+            return { action: 'conflict', metadata: { ...metadata, exists: false } };
+        }
+        if (!response.ok) throw new Error(`WebDAV conflict verification failed: HTTP ${response.status}`);
+
+        const remoteData = extractCloudData(response.json());
+        const remoteHash = cloudContentHash(remoteData);
+        const freshMetadata = {
+            exists: true,
+            status: response.status,
+            etag: response.headers.etag || metadata.etag || '',
+            lastModified: response.headers['last-modified'] || metadata.lastModified || '',
+            size: response.headers['content-length'] || metadata.size || ''
+        };
+        syncState.lastContentCheckAt = Date.now();
+
+        if (remoteHash === localHash) {
+            syncState.remoteContentHash = remoteHash;
+            syncState.pendingHash = '';
+            updateStoredMetadata(freshMetadata);
+            setSyncStatus('ok', '远端已包含本地最新文件夹数据，无需重复上传。');
+            return { action: 'already-synced', metadata: freshMetadata };
+        }
+
+        if (syncState.remoteContentHash && remoteHash === syncState.remoteContentHash) {
+            updateStoredMetadata(freshMetadata);
+            persistSyncState();
+            return { action: 'metadata-only-change', metadata: freshMetadata };
+        }
+
+        updateStoredMetadata(freshMetadata);
+        await setConflict({ reason, remoteMetadata: freshMetadata, localPayload });
+        return { action: 'conflict', metadata: freshMetadata };
+    };
+
     const performPull = async ({ reason = 'pull', force = false } = {}) => {
         if (!hasWebDAVEndpoint()) return false;
         if (syncConflict && !force) return false;
+        if (!force && isFolderEditing()) return false;
         setSyncStatus('syncing', `正在拉取：${reason}`);
 
         try {
@@ -752,6 +848,10 @@
                 return false;
             }
             if (!response.ok) throw new Error(`WebDAV GET failed: HTTP ${response.status}`);
+            if (!force && isFolderEditing()) {
+                setSyncStatus('idle', '文件夹名称编辑中，云端拉取已延后。');
+                return false;
+            }
 
             const rawPayload = response.json();
             const cloudData = extractCloudData(rawPayload);
@@ -823,6 +923,7 @@
     const performPush = async ({ reason = 'push', force = false } = {}) => {
         if (!hasWebDAVEndpoint()) return false;
         if (syncConflict && !force) return false;
+        if (!force && isFolderEditing()) return false;
 
         const payload = buildCloudPayload();
         const localHash = payload.__meta.contentHash;
@@ -840,6 +941,10 @@
             syncState.lastCheckAt = Date.now();
             persistSyncState();
 
+            if (!force && isFolderEditing()) {
+                setSyncStatus('idle', '文件夹名称编辑中，自动上传已延后。');
+                return false;
+            }
             if (metadata.exists === null) throw new Error(`无法确认远端状态：HTTP ${metadata.status}`);
 
             const previousToken = storedMetadataToken();
@@ -876,10 +981,20 @@
             }
 
             if (!force && previousToken && previousToken !== currentToken) {
-                await setConflict({ reason: 'remote-changed-before-push', remoteMetadata: metadata, localPayload: payload });
-                return false;
+                const verification = await verifyRemoteContentBeforeConflict({
+                    metadata,
+                    localPayload: payload,
+                    reason: 'remote-changed-before-push'
+                });
+                if (verification.action === 'already-synced') return true;
+                if (verification.action === 'conflict' || verification.action === 'deferred') return false;
+                metadata = verification.metadata;
             }
 
+            if (!force && isFolderEditing()) {
+                setSyncStatus('idle', '文件夹名称编辑中，自动上传已延后。');
+                return false;
+            }
             if (!metadata.exists) await ensureMainParentDirectory();
 
             const headers = getAuthHeaders(true);
@@ -905,6 +1020,10 @@
             }
 
             if (response.status === 412 || (response.status === 409 && metadata.exists)) {
+                if (!force && isFolderEditing()) {
+                    setSyncStatus('idle', '文件夹名称编辑中，冲突处理已延后。');
+                    return false;
+                }
                 await setConflict({ reason: `precondition-failed-${response.status}`, remoteMetadata: metadata, localPayload: payload });
                 return false;
             }
@@ -930,6 +1049,7 @@
     const checkRemoteUpdate = async ({ reason = 'poll', force = false } = {}) => {
         if (!hasWebDAVEndpoint() || syncConflict) return false;
         if (!force && !syncState.autoSyncArmed) return false;
+        if (!force && isFolderEditing()) return false;
         if (!force && document.visibilityState !== 'visible') return false;
         if (!force && Date.now() - syncState.lastCheckAt < MIN_REMOTE_CHECK_INTERVAL_MS) return false;
 
@@ -939,6 +1059,10 @@
             syncState.lastCheckAt = Date.now();
             persistSyncState();
 
+            if (!force && isFolderEditing()) {
+                setSyncStatus('idle', '文件夹名称编辑中，远端检查已延后。');
+                return false;
+            }
             if (metadata.exists === null) throw new Error(`WebDAV 检查失败：HTTP ${metadata.status}`);
             const oldToken = storedMetadataToken();
             const newToken = metadataToken(metadata);
@@ -974,7 +1098,16 @@
 
             if (!oldToken || oldToken !== newToken) {
                 if (syncState.pendingHash && oldToken) {
-                    await setConflict({ reason: 'remote-changed-during-local-pending', remoteMetadata: metadata });
+                    const localPayload = buildCloudPayload();
+                    const verification = await verifyRemoteContentBeforeConflict({
+                        metadata,
+                        localPayload,
+                        reason: 'remote-changed-during-local-pending'
+                    });
+                    if (verification.action === 'already-synced') return true;
+                    if (verification.action === 'metadata-only-change') {
+                        return performPush({ reason: `verified-pending-after-${reason}` });
+                    }
                     return false;
                 }
                 return performPull({ reason: `remote-update-${reason}` });
@@ -1643,16 +1776,17 @@
             menu.remove();
         };
         menu.querySelector('[data-action="rename"]').onclick = () => {
-            editingFolderId = folder.id;
+            beginFolderEdit(folder, { isNew: false });
             triggerRebuild();
             menu.remove();
         };
         menu.querySelector('[data-action="new-sub"]').onclick = () => {
             const id = generateId();
-            active.folders.push({ id, name: 'New Subfolder', parentId: folder.id, color: '' });
+            const draftFolder = { id, name: 'New Subfolder', parentId: folder.id, color: '' };
+            active.folders.push(draftFolder);
             active.collapsed[folder.id] = false;
-            editingFolderId = id;
-            saveLocalConfig({ structural: true });
+            beginFolderEdit(draftFolder, { isNew: true });
+            saveLocalConfig({ structural: false, schedulePush: false });
             triggerRebuild();
             menu.remove();
         };
@@ -1753,9 +1887,10 @@
                 ['keydown', 'keyup', 'keypress'].forEach(type => searchInput.addEventListener(type, e => e.stopPropagation()));
                 toolbar.querySelector('.ndf-add-folder-btn').onclick = () => {
                     const id = generateId();
-                    getActive().folders.push({ id, name: 'New Folder', parentId: null, color: '' });
-                    editingFolderId = id;
-                    saveLocalConfig({ structural: true });
+                    const draftFolder = { id, name: 'New Folder', parentId: null, color: '' };
+                    getActive().folders.push(draftFolder);
+                    beginFolderEdit(draftFolder, { isNew: true });
+                    saveLocalConfig({ structural: false, schedulePush: false });
                     triggerRebuild();
                 };
                 toolbar.querySelector('#ndf-btn-import').onclick = handleImport;
@@ -1839,19 +1974,29 @@
                         e.stopPropagation();
                         if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
                         if (e.key === 'Escape') {
-                            editingFolderId = null;
-                            if (!folder.name || folder.name.startsWith('New ')) active.folders = active.folders.filter(item => item.id !== folder.id);
+                            const session = folderEditSession?.folderId === folder.id ? folderEditSession : null;
+                            if (session?.isNew) active.folders = active.folders.filter(item => item.id !== folder.id);
+                            finishFolderEditSession({ resumeSync: false });
+                            saveLocalConfig({ structural: false, schedulePush: false });
                             triggerRebuild();
+                            resumeSyncAfterFolderEdit();
                         }
                     };
                     input.onblur = () => {
                         if (editingFolderId !== folder.id) return;
+                        const session = folderEditSession?.folderId === folder.id ? folderEditSession : null;
                         const name = sanitizeFolderName(input.value, '');
-                        if (name) folder.name = name;
-                        else if (!folder.name || folder.name.startsWith('New ')) active.folders = active.folders.filter(item => item.id !== folder.id);
-                        editingFolderId = null;
-                        saveLocalConfig({ structural: true });
+                        let structuralChanged = false;
+                        if (name) {
+                            structuralChanged = Boolean(session?.isNew || folder.name !== name);
+                            folder.name = name;
+                        } else if (session?.isNew) {
+                            active.folders = active.folders.filter(item => item.id !== folder.id);
+                        }
+                        finishFolderEditSession({ resumeSync: false });
+                        saveLocalConfig({ structural: structuralChanged, schedulePush: false });
                         triggerRebuild();
+                        resumeSyncAfterFolderEdit();
                     };
                     setTimeout(() => { input.focus(); input.select(); }, 0);
                     header.onclick = null;
@@ -1877,7 +2022,7 @@
                     e.preventDefault();
                     if (searchQuery) return;
                     clearTimeout(clickTimer);
-                    editingFolderId = folder.id;
+                    beginFolderEdit(folder, { isNew: false });
                     triggerRebuild();
                 };
                 header.oncontextmenu = e => { if (!searchQuery) showFolderMenu(e, folder, header, active, indexes); };
@@ -2007,7 +2152,7 @@
     };
 
     const runFocusCheck = reason => {
-        if (!isAutoSyncReady() || document.visibilityState !== 'visible') return;
+        if (!isAutoSyncReady() || isFolderEditing() || document.visibilityState !== 'visible') return;
         enqueueSync(() => checkRemoteUpdate({ reason }));
     };
 
@@ -2029,7 +2174,14 @@
             return;
         }
         currentActiveBaseId = nextBaseId;
-        editingFolderId = null;
+        if (folderEditSession?.isNew) {
+            const draftId = folderEditSession.folderId;
+            Object.values(config.bases).forEach(base => {
+                base.folders = base.folders.filter(folder => folder.id !== draftId);
+            });
+        }
+        finishFolderEditSession({ resumeSync: false });
+        saveLocalConfig({ structural: false, schedulePush: false });
         closeFloatingPanels();
         observer?.disconnect();
         document.getElementById('ndf-folder-toolbar-container')?.remove();
