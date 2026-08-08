@@ -53,13 +53,15 @@ userscript-cyan-release/
 
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
-| NocoDB 代码块复制 | [`nocodb-code-copy.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-copy.user.js) | 为代码块增加悬浮复制按钮。 |
+| NocoDB 代码块工具 | [`nocodb-code-tools.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-tools.user.js) | 为 Rich Text 代码块提供悬浮复制和带确认的安全清空功能。 |
 | NocoDB 彩虹标题 | [`nocodb-rainbow-headings.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-rainbow-headings.user.js) | 为 Rich Text 标题应用不同颜色。 |
 | NocoDB 文件夹 | [`nocodb-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js) | 为 NocoDB 表格提供文件夹式组织和 WebDAV 同步。 |
 | NocoDB LongText 字体改色 | [`nocodb-longtext-color.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-longtext-color.user.js) | 为特定富文本内容应用颜色。 |
 | NocoDB Markdown 表格 | [`nocodb-markdown-table.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js) | 自动识别 Markdown 表格，并提供表格渲染、单元格编辑及行列增删。 |
 | NocoDB Rich Text Markdown 导出 | [`nocodb-richtext-markdown-export.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js) | 在 TOC 按钮右侧增加复制和下载按钮，将当前 Rich Text 编辑器导出为普通 Markdown。 |
 | NocoDB Rich Text 大纲 | [`nocodb-richtext-outline.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js) | 在 Rich Text 弹窗旁显示标题大纲。 |
+
+NocoDB 代码块工具的功能、确认交互和 ProseMirror 维护约定见 [`userscripts/nocodb/nocodb-code-tools.md`](./userscripts/nocodb/nocodb-code-tools.md)。
 
 NocoDB Markdown 表格的实际保存、NodeView 渲染和导出规则见 [`userscripts/nocodb/README.md`](./userscripts/nocodb/README.md)。
 

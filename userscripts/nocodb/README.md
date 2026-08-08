@@ -6,7 +6,7 @@
 
 | 中文名称 | 文件 | 用途 |
 |---|---|---|
-| NocoDB 代码块复制 | `nocodb-code-copy.user.js` | 为 Rich Text 代码块增加悬浮复制按钮。 |
+| NocoDB 代码块工具 | `nocodb-code-tools.user.js` | 为 Rich Text 代码块提供悬浮复制和带确认的安全清空功能。参见[详细说明](./nocodb-code-tools.md)。 |
 | NocoDB 彩虹标题 | `nocodb-rainbow-headings.user.js` | 为 H1-H6 标题应用不同颜色。 |
 | NocoDB 文件夹 | `nocodb-folders.user.js` | 为 NocoDB 表格提供文件夹式组织、排序和低开销 WebDAV 自动同步。参见[详细说明](./nocodb-folders.md)。 |
 | NocoDB LongText 字体改色 | `nocodb-longtext-color.user.js` | 为特定富文本内容应用颜色。 |
@@ -115,6 +115,7 @@ NocoDB LongText Rich Text 弹窗的右下角带有原生尺寸调整手柄，可
 ## 维护原则
 
 - 不要直接向 ProseMirror 管理的普通正文节点中插入无关 DOM。
+- `nocodb-code-tools.user.js` 的悬浮工具栏和确认弹窗必须继续放在 `.nc-rich-text-content` 外部 overlay 中；普通代码清空不得直接改写 `pre/code` 的 `textContent` 或 `innerHTML`。详细规则见 [`nocodb-code-tools.md`](./nocodb-code-tools.md)。
 - 表格显示应继续通过 NodeView 完成，持久化仍由专用代码块承载。
 - 导出只在用户点击按钮时遍历正文，不要在 `input`、`scroll` 或 MutationObserver 热路径中持续转换 Markdown。
 - 修改跨脚本接口时，应同时检查表格脚本、导出脚本和本说明。
