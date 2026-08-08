@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-tools.user.js
-// @version      5.0.0
+// @version      5.0.1
 // @description  为 NocoDB longtext rich-text 中的代码块提供悬浮复制与带确认的安全清空工具
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -102,6 +102,12 @@
 
       .${CLEAR_BUTTON_CLASS} {
         color: #b91c1c;
+      }
+
+      .${CLEAR_BUTTON_CLASS} svg {
+        width: 18px;
+        height: 18px;
+        overflow: visible;
       }
 
       .${COPY_BUTTON_CLASS}.tm-copy-success {
@@ -264,6 +270,44 @@
     }
   }
 
+  function placeCaretInCodeBlock(pre) {
+    if (!pre || !document.contains(pre) || !isEditorCodeBlock(pre)) return false;
+
+    const code = pre.querySelector(':scope > code');
+    const editor = pre.closest('.tiptap.ProseMirror');
+    if (!code || !editor) return false;
+
+    try {
+      editor.focus({ preventScroll: true });
+
+      const selection = window.getSelection();
+      if (!selection) return false;
+
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    } catch (error) {
+      console.error('[NocoDB 代码块工具] restore caret failed:', error);
+      return false;
+    }
+  }
+
+  function scheduleCaretRestore(pre) {
+    const restore = () => placeCaretInCodeBlock(pre);
+
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(restore);
+      });
+      return;
+    }
+
+    window.setTimeout(restore, 0);
+  }
+
   function clearCodeBlock(pre) {
     if (!pre || !isEditorCodeBlock(pre)) return false;
 
@@ -272,7 +316,10 @@
     if (!code || !editor) return false;
 
     const text = getCodeText(pre);
-    if (!text) return true;
+    if (!text) {
+      scheduleCaretRestore(pre);
+      return true;
+    }
 
     try {
       editor.focus({ preventScroll: true });
@@ -286,13 +333,12 @@
       selection.addRange(range);
 
       const deleted = document.execCommand('delete');
-      selection.removeAllRanges();
-
       if (!deleted) return false;
 
-      return window.requestAnimationFrame
-        ? true
-        : getCodeText(pre) === '';
+      // 删除完成后不要主动清掉 Selection；等待 ProseMirror 完成 DOM 同步后，
+      // 再把折叠光标明确放回当前空 codeBlock 的第一行。
+      scheduleCaretRestore(pre);
+      return true;
     } catch (error) {
       console.error('[NocoDB 代码块工具] clear failed:', error);
       return false;
@@ -325,8 +371,8 @@
     clearButton.setAttribute('aria-label', '清空代码');
     clearButton.setAttribute('title', '清空代码');
     clearButton.innerHTML = `
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4zm-2 6h10l-1 12H8zm3 2v8h2v-8zm4 0v8h2v-8z"></path>
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path fill="currentColor" d="M11 1.5v1h3.5a.5.5 0 0 1 0 1h-.538l-.853 10.66A2 2 0 0 1 11.115 16h-6.23a2 2 0 0 1-1.994-1.84L2.038 3.5H1.5a.5.5 0 0 1 0-1H5v-1A1.5 1.5 0 0 1 6.5 0h3A1.5 1.5 0 0 1 11 1.5m-5 0v1h4v-1a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5M4.5 5.029l.5 8.5a.5.5 0 1 0 .998-.058l-.5-8.5a.5.5 0 1 0-.998.058m6.53-.528a.5.5 0 0 0-.528.47l-.5 8.5a.5.5 0 0 0 .998.058l.5-8.5a.5.5 0 0 0-.47-.528M8 4.5a.5.5 0 0 0-.5.5v8.5a.5.5 0 0 0 1 0V5a.5.5 0 0 0-.5-.5"></path>
       </svg>
     `;
 
