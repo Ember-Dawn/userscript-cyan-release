@@ -4,13 +4,13 @@
 
 `chatgpt-composer-enhancer.user.js` 是 ChatGPT 网页版输入框的增强脚本。脚本名称刻意保持宽泛，以便后续继续加入与 composer 直接相关的功能。
 
-当前版本：`1.0.1`
+当前版本：`1.0.2`
 
 当前只提供一个功能：**Raw Text Mode**。
 
 ## Raw Text Mode
 
-Raw Text Mode 的目标是让 ChatGPT 输入框中的 Markdown 保持原始文本，不在输入或粘贴时被自动转换为标题、列表、粗体、斜体、行内代码等富文本结构。
+Raw Text Mode 的目标是让 ChatGPT 输入框中的 Markdown 保持原始文本，不在输入或短文本粘贴时被自动转换为标题、列表、粗体、斜体、行内代码等富文本结构。
 
 例如输入或粘贴：
 
@@ -26,6 +26,8 @@ Raw Text Mode 的目标是让 ChatGPT 输入框中的 Markdown 保持原始文�
 ```
 
 输入框中应继续看到上述原始字符，而不是对应的富文本效果。
+
+对于超过 ChatGPT 原生长粘贴阈值的文本，本脚本不再强制插入输入框，而是放行 ChatGPT 原生 paste 行为，使其按产品逻辑自动转换为附件。
 
 ## 开发背景
 
@@ -66,42 +68,65 @@ Raw Text Mode 的目标是让 ChatGPT 输入框中的 Markdown 保持原始文�
 
 ## 实现原则
 
-v1.0.1 延续最小侵入策略：
+v1.0.2 延续最小侵入策略：
 
 - 保留 ChatGPT 原生 ProseMirror composer；
 - 不替换成自定义 textarea；
-- 只干预文本输入和纯文本粘贴中可能触发 Markdown 富文本转换的路径；
+- 只干预可能触发 Markdown 富文本转换的短文本输入和短文本粘贴路径；
 - 图片或文件粘贴直接交给 ChatGPT 原生逻辑；
+- 超过 10,000 字符的纯文本粘贴直接交给 ChatGPT 原生逻辑，以保留自动附件转换；
 - 不调用 ChatGPT 未公开 API；
 - 不使用持续扫描完整页面的 MutationObserver；
 - 中文输入法组合输入时不执行 Raw Text Mode 的字符级拦截。
 
-ProseMirror 官方文档中的 input rules 机制本身就是“文本输入匹配规则后触发转换”的设计，因此该层是本脚本的主要关注点。
+ProseMirror 提供 `handleKeyDown`、`handleKeyPress` 和 `handleTextInput` 等输入处理钩子，因此实际宿主可以在普通浏览器输入事件完成前执行编辑器级转换。
 
-### v1.0.1 键盘输入修复
+### v1.0.1 键盘输入修复尝试
 
-v1.0.0 已能让纯文本粘贴保持 raw text，但实测发现逐字键盘输入仍可能触发 Markdown 转换。原因是 v1.0.0 在 `beforeinput` 中取消原始输入后，再调用 `document.execCommand('insertText')` 重新插入字符；重新插入仍可能进入 ProseMirror 的文本输入处理链，因此 input rules 仍有机会运行。
+v1.0.0 已能让纯文本粘贴保持 raw text，但实测发现逐字键盘输入仍可能触发 Markdown 转换。v1.0.1 因而在捕获阶段隔离 `keypress` 与 `beforeinput`，但真实 ChatGPT composer 测试表明仍不足以阻止转换。
 
-v1.0.1 改为：
+### v1.0.2 键盘输入修复
 
-- 对可能触发 Markdown input rules 的键盘字符，在捕获阶段同时隔离 `keypress` 与 `beforeinput`；
+2026-08-09 的实际事件日志进一步确认：
+
+- 输入 `-` 后，DOM 先保持 `<p>-</p>`；按下空格时，在 `input` 事件出现之前已经转换成 `<ul>`；
+- 输入 `#` 后同样在空格 `keydown` 阶段转换成 `<h1>`；
+- 输入 `**abc**` 时原始字符可以暂时保留，但下一次按空格时，在 `input` 事件之前已经转换成 `<strong>`。
+
+因此 v1.0.2 将 `keydown` 纳入 Raw Text Mode 的第一道隔离：
+
+- 对 Markdown 常用触发字符及空格，在 document 捕获阶段拦截其继续传播到 composer 的编辑器级 `keydown` handler；
 - 只调用 `stopImmediatePropagation()`，不调用 `preventDefault()`；
-- 不再为键盘字符主动调用 `execCommand('insertText')`；
-- 让浏览器执行原生字符插入，再由 ProseMirror 的 DOM 观察机制同步普通文本变化；
-- 纯文本粘贴继续沿用 v1.0.0 已验证有效的 raw-text 插入路径；
-- 图片和文件粘贴仍完全放行给 ChatGPT 原生逻辑。
+- 让浏览器默认行为继续插入字面字符；
+- 保留 `keypress` 与 `beforeinput` 的隔离作为兼容层；
+- Ctrl / Meta / Alt 组合快捷键不进入该字符级拦截；
+- IME composition 期间不做该字符级拦截。
 
-这样做的目的，是避开 ProseMirror 的 `handleTextInput` / input-rules 转换入口，同时尽量保留浏览器原生光标、选择和输入行为。
+该设计针对实测确认的“转换先发生于 keydown，随后才出现 input”事件顺序，而不是继续假定所有 Markdown 转换都会经过 `beforeinput`。
+
+### v1.0.2 长文本粘贴修复
+
+v1.0.0 / v1.0.1 对所有纯文本 paste 都执行 `preventDefault()`，再通过 `document.execCommand('insertText')` 将完整文本强制插入 ProseMirror。这个策略对短文本可以保持 raw，但会绕过 ChatGPT 原生的大粘贴附件逻辑；当剪贴板包含很长的文本时，整段内容会被强制塞进 contenteditable，可能导致明显卡顿甚至页面假死。
+
+OpenAI ChatGPT Release Notes 在 2026-06-22 说明：超过 **10,000 个字符**的长粘贴会自动转换为附件；Plus、Pro、Business 此前曾使用 5,000 字符阈值，但随后也提高到了 10,000。
+
+因此 v1.0.2 的 paste 分流为：
+
+1. 剪贴板中存在任何 file item / file：完全放行 ChatGPT 原生 paste；
+2. 纯文本长度大于 10,000：完全放行 ChatGPT 原生 paste，使其自动转换为附件；
+3. 其余较短纯文本：Raw Text Mode 接管，阻止 Markdown 富文本解析并插入原始文本。
+
+脚本中的阈值使用 JavaScript 字符串 `length` 作为浏览器侧近似计数。OpenAI 后续如果再次调整产品阈值，应同步更新该常量和本文档。
 
 ## 非目标
 
-v1.0.1 不负责：
+v1.0.2 不负责：
 
-- 提升 ChatGPT composer 性能；
+- 提升 ChatGPT composer 本身的性能；
 - 将 ProseMirror 替换为 textarea；
 - 修改图片或文件粘贴行为；
 - 一次粘贴多个文件；
-- 修改附件上传流程；
+- 自己实现附件上传流程；
 - 修改消息发送 payload；
 - 调用 ChatGPT 未公开 API；
 - 改变助手回答区域的 Markdown 渲染。
@@ -114,12 +139,18 @@ ChatGPT 是单页应用，composer 可能在导航、切换会话或功能更新
 
 1. `form[data-type="unified-composer"]` 是否仍存在；
 2. `#prompt-textarea[contenteditable="true"][role="textbox"]` 是否仍对应实际输入区域；
-3. 文本输入和文本粘贴是否仍通过浏览器标准 `beforeinput` / `paste` 事件；
-4. 图片和文件粘贴是否仍能在 Raw Text Mode 启用时保持原生行为。
+3. Markdown 转换是否仍会在 `keydown` / `keypress` / `beforeinput` 路径发生；
+4. 图片和文件粘贴是否仍能在 Raw Text Mode 启用时保持原生行为；
+5. 长文本自动转换附件的字符阈值是否仍为 10,000。
 
 ## 调研与来源
 
 以下链接用于记录该脚本出现时的产品背景和技术依据。外部来源反映各自发布时间或抓取时的情况，不代表 OpenAI 的长期兼容承诺。
+
+### OpenAI 官方
+
+- ChatGPT Release Notes：2026-06-22 “Large pastes are now handled as attachments for more plans”  
+  https://help.openai.com/en/articles/6825453-chatgpt-release-notes
 
 ### 用户与社区讨论
 
@@ -134,7 +165,7 @@ ChatGPT 是单页应用，composer 可能在导航、切换会话或功能更新
 
 - ProseMirror Reference Manual：Input Rules  
   https://prosemirror.net/docs/ref/#inputrules
-- ProseMirror View：`handleTextInput` / input handling source  
+- ProseMirror View：`handleKeyDown` / `handleKeyPress` / `handleTextInput`  
   https://github.com/ProseMirror/prosemirror-view
 - 第三方 ChatGPT 前端技术分析  
   https://performance.dev/chatgpt
