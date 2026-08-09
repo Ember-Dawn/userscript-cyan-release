@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.0
+// @version      0.1.1
 // @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -16,6 +16,17 @@
 // @sandbox      raw
 // @grant        none
 // ==/UserScript==
+
+/*
+ * Upstream baseline:
+ * - Repository: https://github.com/11me/light-session
+ * - Version: 1.7.4
+ * - Commit: 300aade18bff188749d062ac2fad7216c7bc36ca
+ * - Checked: 2026-08-09
+ *
+ * This userscript is a Tampermonkey adaptation. Its round counting, local settings,
+ * floating UI, and DOM lifecycle handling intentionally differ from upstream.
+ */
 
 (function () {
     'use strict';
@@ -45,6 +56,7 @@
     let enabledSwitch = null;
     let draftLimit = null;
     let nativeFetchRef = null;
+    let documentClickInstalled = false;
 
     function clampRounds(value) {
         const parsed = Number.parseInt(String(value), 10);
@@ -446,9 +458,9 @@
 #cyan-ls-status {
     appearance: none;
     border: 0;
-    border-radius: 999px;
-    padding: 7px 11px;
-    min-width: 82px;
+    border-radius: 6px;
+    padding: 6px 8px;
+    white-space: nowrap;
     background: #10a37f;
     color: #fff;
     font-size: 12px;
@@ -699,11 +711,14 @@
         });
 
         panel.addEventListener('click', (event) => event.stopPropagation());
-        document.addEventListener('click', () => {
-            if (panel) {
-                panel.dataset.open = 'false';
-            }
-        });
+        if (!documentClickInstalled) {
+            document.addEventListener('click', () => {
+                if (panel) {
+                    panel.dataset.open = 'false';
+                }
+            });
+            documentClickInstalled = true;
+        }
 
         minus.addEventListener('click', () => setDraftLimit((draftLimit ?? config.keepRounds) - 1));
         plus.addEventListener('click', () => setDraftLimit((draftLimit ?? config.keepRounds) + 1));
@@ -729,6 +744,17 @@
         document.body.appendChild(root);
         state.uiReady = true;
         renderUiState();
+    }
+
+    function ensureUi() {
+        installStyles();
+        if (!document.body) {
+            return;
+        }
+        if (!document.getElementById('cyan-ls-root')) {
+            state.uiReady = false;
+            installUi();
+        }
     }
 
     function seedVisibleUserMessageIds() {
@@ -784,6 +810,7 @@
     function installLocalMessageObserver() {
         seedVisibleUserMessageIds();
         const observer = new MutationObserver((mutations) => {
+            ensureUi();
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
                     processAddedNodeForUserMessages(node);
@@ -871,7 +898,7 @@
     }
 
     function initializeDomFeatures() {
-        installUi();
+        ensureUi();
         installLocalMessageObserver();
         patchHistoryForSpaNavigation();
     }

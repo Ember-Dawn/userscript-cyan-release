@@ -65,7 +65,7 @@ LS Off / 86
 - `LS Off / 86`：脚本仍在运行并统计总轮数，但不会裁剪 conversation response。
 - 请求尚未取得总轮数时使用 `--` 作为总数占位。
 
-启用时按钮使用绿色强调色；关闭时使用灰色。
+启用时按钮使用绿色强调色；关闭时使用灰色。按钮采用紧凑的小圆角矩形，不使用大胶囊圆角和固定最小宽度，以减少文本两侧空白。
 
 点击按钮打开设置面板，面板包含：
 
@@ -108,6 +108,8 @@ conversation GET 是总轮数的权威来源。为避免用户在当前页面继
 
 这个 DOM 观察器只用于补充当前页面中新产生的轮数；真正的裁剪仍然发生在 conversation API response 层。
 
+同一个观察器还承担轻量 UI 自愈：每批 DOM 变化只检查一次 `#cyan-ls-root` 是否仍存在。如果 ChatGPT 在 hydration 或 SPA 页面重建时移除了悬浮按钮，脚本会重新创建 UI；样式节点也会按需补回。该检查不遍历完整对话正文。
+
 ## 已知限制
 
 - ChatGPT 的内部 API 路径、conversation mapping 结构和 DOM 属性都不是公开稳定接口；网站大改后可能需要维护。
@@ -123,15 +125,25 @@ conversation GET 是总轮数的权威来源。为避免用户在当前页面继
 - 只在 ChatGPT 页面本地保存：是否启用，以及保留轮数。
 - 日志默认不输出完整响应内容。
 
-## 来源说明
+## 上游同步基线
 
-核心架构思路参考：
+核心架构思路参考 LightSession：
 
 ```text
-https://github.com/11me/light-session
+Repository: https://github.com/11me/light-session
+Version:    1.7.4
+Commit:     300aade18bff188749d062ac2fad7216c7bc36ca
+Checked:    2026-08-09
 ```
 
-LightSession 使用 MIT License。当前 userscript 不是原扩展的官方 Tampermonkey 版本，而是针对本仓库单文件 userscript 结构、轮数计数和悬浮设置交互重新实现的版本。
+这里同时记录版本号和 commit SHA：版本号便于人工阅读，commit SHA 用作未来与上游精确 diff 的基线。检查上游更新时，优先比较该 commit 到上游最新 `master` 的变化，并重点关注：
+
+- `extension/src/page/page-script.ts`：Fetch Proxy、conversation 请求识别和响应改写。
+- `extension/src/shared/trimmer.ts`：conversation mapping 裁剪、隐藏节点保留和计数语义。
+- `extension/src/content/page-inject.ts`：document-start 与页面主上下文注入。
+- 与 bootstrap、状态同步相关的 content script 逻辑：用于判断 ChatGPT SPA 生命周期变化是否需要同步适配。
+
+LightSession 使用 MIT License。当前 userscript 不是原扩展的官方 Tampermonkey 版本，而是针对本仓库单文件 userscript 结构重新实现的版本；本脚本的“一问一答按轮计数”、localStorage 设置、悬浮 switch、UI 自愈和刷新交互均属于本地适配层。
 
 ## 维护检查
 
@@ -150,3 +162,5 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 5. 修改保留轮数时不会立即刷新，点击“应用并刷新”后才生效。
 6. 在当前会话新增用户消息时总轮数能够递增。
 7. ChatGPT SPA 切换不同会话后状态不会沿用上一条会话的总轮数。
+8. 刷新页面并等待 ChatGPT 完成 hydration 后，`#cyan-ls-root` 仍存在；若页面曾删除该节点，悬浮按钮会自动恢复且不会重复创建。
+9. 按钮保持紧凑小圆角布局，`LS 12 / 86` 和 `LS Off / 86` 不因固定最小宽度产生明显两端空白。
