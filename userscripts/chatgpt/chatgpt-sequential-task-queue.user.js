@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.0
+// @version      1.3.1
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -47,12 +47,17 @@
 
 6. 调试方法
  - 可在 Console 运行：window.__cgSequentialTaskQueue.getState()
+
+7. 兼容性参考
+ - Light Session 上游仓库：https://github.com/11me/light-session
+ - 当前兼容性参考基线：LightSession Pro 1.7.4，commit 300aade18bff188749d062ac2fad7216c7bc36ca。
+ - 仅用于跟踪 ChatGPT 页面结构及与 Light Session 共存时的兼容性变化；本脚本未复制其源码。未来重新适配时应先对比新的上游版本/commit。
 */
 
 (() => {
   'use strict';
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -1389,6 +1394,20 @@
     return clean.length > maxLength ? `${clean.slice(0, maxLength)}…` : clean;
   }
 
+  function getPanelMountRoot() {
+    return document.documentElement || document.body || null;
+  }
+
+  function ensurePanelMounted(panel) {
+    const root = getPanelMountRoot();
+    if (!root || !panel) return false;
+
+    // 挂到 <html> 而不是 <body>，避免 ChatGPT 或其他扩展给 body 创建
+    // transform/filter 等 containing block 后把 position: fixed 面板带出视口。
+    if (panel.parentNode !== root) root.appendChild(panel);
+    return true;
+  }
+
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
 
@@ -1853,8 +1872,13 @@
   }
 
   function createPanel() {
-    if (document.getElementById(PANEL_ID)) return;
     ensureStyle();
+
+    const existingPanel = document.getElementById(PANEL_ID);
+    if (existingPanel) {
+      ensurePanelMounted(existingPanel);
+      return;
+    }
 
     const panel = document.createElement('section');
     panel.id = PANEL_ID;
@@ -1960,7 +1984,7 @@
       saveState();
     });
 
-    document.body.appendChild(panel);
+    if (!ensurePanelMounted(panel)) return;
     renderPanel();
   }
 
@@ -2232,14 +2256,18 @@
     }
   }
 
-  const bodyObserver = new MutationObserver(() => {
-    if (!document.getElementById(PANEL_ID) && document.body) {
+  const rootObserver = new MutationObserver(() => {
+    const panel = document.getElementById(PANEL_ID);
+    if (!panel) {
       createPanel();
+      return;
     }
+
+    ensurePanelMounted(panel);
   });
 
-  if (document.body) {
-    bodyObserver.observe(document.body, {
+  if (document.documentElement) {
+    rootObserver.observe(document.documentElement, {
       childList: true,
     });
   }
