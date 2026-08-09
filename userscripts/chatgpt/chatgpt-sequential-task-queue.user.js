@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.2
+// @version      1.3.0
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -18,7 +18,7 @@
 脚本说明：
 
 1. 任务输入
- - 面板默认收起为右下角圆形进度环；圆环使用独立固定定位根容器，点击后在其上方展开面板。
+ - 面板默认收起为右下角圆形进度环；点击圆环展开。
  - 在面板中粘贴多行文本，每个非空行作为一轮独立命令；未载入时进度条会实时显示 0 / N。
  - 已有队列时若修改任务文本，进度条保留当前执行进度，并额外显示草稿任务数；确认替换后才重置正式队列。
  - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
@@ -47,17 +47,12 @@
 
 6. 调试方法
  - 可在 Console 运行：window.__cgSequentialTaskQueue.getState()
-
-7. 兼容性参考
- - Light Session 上游仓库：https://github.com/11me/light-session
- - 当前兼容性参考基线：LightSession Pro 1.7.4，commit 300aade18bff188749d062ac2fad7216c7bc36ca。
- - 仅用于跟踪 ChatGPT 页面结构及与 Light Session 共存时的兼容性变化；本脚本未复制其源码。未来重新适配时应先对比新的上游版本/commit。
 */
 
 (() => {
   'use strict';
 
-  const VERSION = '1.3.2';
+  const VERSION = '1.3.0';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -66,7 +61,6 @@
   const TEMP_LOCK_KEY = 'cyan.chatgptSequentialTaskQueue.temporaryLock.v2';
   const TAB_ID_KEY = 'cyan.chatgptSequentialTaskQueue.tabId.v1';
 
-  const ROOT_ID = `${PREFIX}-root`;
   const PANEL_ID = `${PREFIX}-panel`;
   const STYLE_ID = `${PREFIX}-style`;
   const COMPOSER_SELECTOR = '[data-composer-surface="true"]';
@@ -1395,19 +1389,13 @@
     return clean.length > maxLength ? `${clean.slice(0, maxLength)}…` : clean;
   }
 
-  function ensureUiMounted(root) {
-    if (!document.body || !root) return false;
-    if (root.parentNode !== document.body) document.body.appendChild(root);
-    return true;
-  }
-
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
 
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      #${ROOT_ID} {
+      #${PANEL_ID} {
         --${PREFIX}-accent: #10a37f;
         --${PREFIX}-progress-complete: #12b76a;
         --${PREFIX}-progress-active: #f5b700;
@@ -1417,21 +1405,39 @@
         right: max(16px, env(safe-area-inset-right));
         bottom: max(16px, env(safe-area-inset-bottom));
         z-index: 2147483000;
-        width: 48px;
-        height: 48px;
+        width: min(390px, calc(100vw - 32px));
+        max-height: min(720px, calc(100vh - 32px));
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+        border-radius: 14px;
+        background: var(--main-surface-primary, #ffffff);
         color: var(--text-primary, #111827);
+        box-shadow: 0 14px 42px rgba(0, 0, 0, 0.22);
         font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
-      #${ROOT_ID}[data-mode="error"] {
-        --${PREFIX}-accent: #d92d20;
+      #${PANEL_ID}[data-collapsed="true"] {
+        width: 48px;
+        height: 48px;
+        max-height: none;
+        overflow: visible;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        box-shadow: none;
       }
 
-      #${ROOT_ID} * {
+      #${PANEL_ID} * {
         box-sizing: border-box;
       }
 
-      #${ROOT_ID} .${PREFIX}-launcher {
+      #${PANEL_ID} .${PREFIX}-launcher {
+        display: none;
+      }
+
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher {
         position: relative;
         display: grid;
         width: 48px;
@@ -1447,19 +1453,12 @@
           var(--${PREFIX}-progress-active) var(--${PREFIX}-progress-complete-angle) var(--${PREFIX}-progress-active-angle),
           color-mix(in srgb, var(--main-surface-primary, #ffffff) 78%, currentColor 22%) var(--${PREFIX}-progress-active-angle) 360deg
         );
-        appearance: none;
-        -webkit-appearance: none;
         color: inherit;
-        font: inherit;
         box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
         cursor: pointer;
       }
 
-      #${ROOT_ID}[data-collapsed="false"] .${PREFIX}-launcher {
-        display: none;
-      }
-
-      #${ROOT_ID} .${PREFIX}-launcher::before {
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher::before {
         content: "";
         position: absolute;
         inset: 4px;
@@ -1467,12 +1466,16 @@
         background: var(--main-surface-primary, #ffffff);
       }
 
-      #${ROOT_ID}[data-mode="running"][data-collapsed="true"] .${PREFIX}-launcher,
-      #${ROOT_ID}[data-mode="pausing"][data-collapsed="true"] .${PREFIX}-launcher {
+      #${PANEL_ID}[data-mode="running"][data-collapsed="true"] .${PREFIX}-launcher,
+      #${PANEL_ID}[data-mode="pausing"][data-collapsed="true"] .${PREFIX}-launcher {
         animation: ${PREFIX}-pulse 1.8s ease-in-out infinite;
       }
 
-      #${ROOT_ID} .${PREFIX}-launcher-text {
+      #${PANEL_ID}[data-mode="error"] {
+        --${PREFIX}-accent: #d92d20;
+      }
+
+      #${PANEL_ID} .${PREFIX}-launcher-text {
         position: relative;
         z-index: 1;
         max-width: 38px;
@@ -1484,23 +1487,8 @@
         white-space: nowrap;
       }
 
-      #${PANEL_ID} {
-        position: absolute;
-        right: 0;
-        bottom: 56px;
-        width: min(390px, calc(100vw - 32px));
-        max-height: min(720px, calc(100vh - 88px));
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-        border-radius: 14px;
-        background: var(--main-surface-primary, #ffffff);
-        color: inherit;
-        box-shadow: 0 14px 42px rgba(0, 0, 0, 0.22);
-      }
-
-      #${ROOT_ID}[data-collapsed="true"] #${PANEL_ID} {
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-header,
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-body {
         display: none;
       }
 
@@ -1754,6 +1742,7 @@
         overflow-wrap: anywhere;
       }
 
+
       #${PANEL_ID} .${PREFIX}-modal-layer {
         position: absolute;
         inset: 0;
@@ -1834,22 +1823,22 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
-        #${ROOT_ID} * {
+        #${PANEL_ID} * {
           animation: none !important;
           transition: none !important;
         }
       }
 
       @media (prefers-color-scheme: dark) {
-        #${ROOT_ID} {
+        #${PANEL_ID} {
+          background: var(--main-surface-primary, #212121);
           color: var(--text-primary, #f3f4f6);
         }
 
-        #${ROOT_ID} .${PREFIX}-launcher::before {
+        #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher::before {
           background: var(--main-surface-primary, #212121);
         }
 
-        #${PANEL_ID},
         #${PANEL_ID} .${PREFIX}-modal-card {
           background: var(--main-surface-primary, #212121);
         }
@@ -1864,26 +1853,16 @@
   }
 
   function createPanel() {
+    if (document.getElementById(PANEL_ID)) return;
     ensureStyle();
-
-    const existingRoot = document.getElementById(ROOT_ID);
-    const existingPanel = document.getElementById(PANEL_ID);
-    const existingLauncher = existingRoot?.querySelector(`.${PREFIX}-launcher`);
-    if (existingRoot && existingPanel && existingLauncher && existingPanel.parentNode === existingRoot) {
-      ensureUiMounted(existingRoot);
-      return;
-    }
-
-    existingRoot?.remove();
-    if (existingPanel && existingPanel.parentNode !== existingRoot) existingPanel.remove();
-
-    const root = document.createElement('div');
-    root.id = ROOT_ID;
-    root.dataset.collapsed = 'true';
 
     const panel = document.createElement('section');
     panel.id = PANEL_ID;
+    panel.dataset.collapsed = 'true';
     panel.innerHTML = `
+      <button type="button" class="${PREFIX}-launcher" data-action="expand" aria-label="展开 ChatGPT 顺序任务助手" title="ChatGPT 顺序任务助手">
+        <span class="${PREFIX}-launcher-text" data-field="launcher-progress">+</span>
+      </button>
       <div class="${PREFIX}-header">
         <div class="${PREFIX}-title-group">
           <span class="${PREFIX}-title">ChatGPT 顺序任务助手</span>
@@ -1945,15 +1924,7 @@
       </div>
     `;
 
-    const launcher = document.createElement('button');
-    launcher.type = 'button';
-    launcher.className = `${PREFIX}-launcher`;
-    launcher.dataset.action = 'expand';
-    launcher.setAttribute('aria-label', '展开 ChatGPT 顺序任务助手');
-    launcher.title = 'ChatGPT 顺序任务助手';
-    launcher.innerHTML = `<span class="${PREFIX}-launcher-text" data-field="launcher-progress">+</span>`;
-
-    root.addEventListener('click', (event) => {
+    panel.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action]');
       if (!button) return;
 
@@ -1962,13 +1933,13 @@
       if (action === 'pause') pauseQueue();
       if (action === 'refresh') refreshRuntimeStatus();
       if (action === 'clear') void clearQueue();
-      if (action === 'expand') root.dataset.collapsed = 'false';
-      if (action === 'collapse') root.dataset.collapsed = 'true';
+      if (action === 'expand') panel.dataset.collapsed = 'false';
+      if (action === 'collapse') panel.dataset.collapsed = 'true';
       if (action === 'dialog-cancel') closePanelDialog(false);
       if (action === 'dialog-confirm') closePanelDialog(true);
     });
 
-    root.addEventListener('input', (event) => {
+    panel.addEventListener('input', (event) => {
       if (event.target.id === `${PREFIX}-input`) {
         event.target.dataset.dirty = 'true';
         state.draftText = event.target.value;
@@ -1977,7 +1948,7 @@
       }
     });
 
-    root.addEventListener('change', (event) => {
+    panel.addEventListener('change', (event) => {
       if (event.target.id !== `${PREFIX}-delay`) return;
       state.delayMs = clampInteger(
         Number(event.target.value) * 1000,
@@ -1989,8 +1960,7 @@
       saveState();
     });
 
-    root.append(panel, launcher);
-    if (!ensureUiMounted(root)) return;
+    document.body.appendChild(panel);
     renderPanel();
   }
 
@@ -2007,8 +1977,7 @@
     if (!panel) return Promise.resolve(false);
 
     if (dialogResolver) closePanelDialog(false);
-    const root = document.getElementById(ROOT_ID);
-    if (root) root.dataset.collapsed = 'false';
+    panel.dataset.collapsed = 'false';
 
     const layer = panel.querySelector(`[data-field="modal-layer"]`);
     const cancelButton = panel.querySelector(`[data-field="modal-cancel"]`);
@@ -2060,9 +2029,8 @@
   }
 
   function renderPanel() {
-    const root = document.getElementById(ROOT_ID);
     const panel = document.getElementById(PANEL_ID);
-    if (!root || !panel) return;
+    if (!panel) return;
 
     const textarea = panel.querySelector(`#${PREFIX}-input`);
     const delayInput = panel.querySelector(`#${PREFIX}-delay`);
@@ -2105,12 +2073,12 @@
         ? `${progress.activePosition}/${totalCount}`
         : (draftCount > 0 ? `0/${draftCount}` : '+'));
 
-    root.dataset.mode = state.mode;
-    root.style.setProperty(`--${PREFIX}-progress-complete-angle`, `${progress.completedAngle}deg`);
-    root.style.setProperty(`--${PREFIX}-progress-active-angle`, `${progress.activeAngle}deg`);
+    panel.dataset.mode = state.mode;
+    panel.style.setProperty(`--${PREFIX}-progress-complete-angle`, `${progress.completedAngle}deg`);
+    panel.style.setProperty(`--${PREFIX}-progress-active-angle`, `${progress.activeAngle}deg`);
 
     setPanelField(panel, 'mode', MODE_LABELS[state.mode] || state.mode);
-    setPanelField(root, 'launcher-progress', launcherText);
+    setPanelField(panel, 'launcher-progress', launcherText);
     setPanelField(panel, 'progress', progressText);
     setPanelField(
       panel,
@@ -2162,7 +2130,7 @@
       activeFill.style.width = `${progress.activeWidthPercent}%`;
     }
 
-    const launcher = root.querySelector(`.${PREFIX}-launcher`);
+    const launcher = panel.querySelector(`.${PREFIX}-launcher`);
     if (launcher) {
       launcher.setAttribute(
         'aria-label',
@@ -2264,22 +2232,15 @@
     }
   }
 
-  const rootObserver = new MutationObserver(() => {
-    const root = document.getElementById(ROOT_ID);
-    const panel = document.getElementById(PANEL_ID);
-    const launcher = root?.querySelector(`.${PREFIX}-launcher`);
-    if (!root || !panel || !launcher || panel.parentNode !== root) {
+  const bodyObserver = new MutationObserver(() => {
+    if (!document.getElementById(PANEL_ID) && document.body) {
       createPanel();
-      return;
     }
-
-    ensureUiMounted(root);
   });
 
-  if (document.documentElement) {
-    rootObserver.observe(document.documentElement, {
+  if (document.body) {
+    bodyObserver.observe(document.body, {
       childList: true,
-      subtree: true,
     });
   }
 

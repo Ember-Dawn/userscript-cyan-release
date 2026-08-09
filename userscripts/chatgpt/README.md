@@ -12,7 +12,6 @@
 | ChatGPT GitHub 自动允许助手 | `chatgpt-auto-allow-github.user.js` | 自动处理 ChatGPT 中明确指向 GitHub 的授权卡片。 |
 | ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度。 |
 | ChatGPT 输入框增强助手 | `chatgpt-composer-enhancer.user.js` | 增强 ChatGPT 输入框；当前 Raw Paste Mode 保持短文本粘贴的 Markdown 为原始文本，并保留长文本附件及图片/文件粘贴的原生行为。参见[详细说明](./chatgpt-composer-enhancer.md)。 |
-| ChatGPT 长对话优化助手 | `chatgpt-long-chat-optimizer.user.js` | 在渲染长对话前裁剪历史，仅保留最近 N 轮，并显示保留轮数与总轮数。参见[详细说明](./chatgpt-long-chat-optimizer.md)。 |
 | ChatGPT 朗读增强助手 | `chatgpt-read-aloud-enhancer.user.js` | 增加一级朗读入口、悬浮播放器、消息切换、快捷键和本地 MP3 下载。参见[详细说明](./chatgpt-read-aloud-enhancer.md)。 |
 
 ## 维护原则
