@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.0
+// @version      1.3.1
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -18,7 +18,7 @@
 脚本说明：
 
 1. 任务输入
- - 面板默认收起为右下角圆形进度环；点击圆环展开。
+ - 面板默认收起为右下角圆角矩形进度按钮；点击按钮展开。
  - 在面板中粘贴多行文本，每个非空行作为一轮独立命令；未载入时进度条会实时显示 0 / N。
  - 已有队列时若修改任务文本，进度条保留当前执行进度，并额外显示草稿任务数；确认替换后才重置正式队列。
  - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
@@ -42,7 +42,8 @@
 
 5. 界面
  - 所有确认和提示均显示在展开面板正中央，不使用浏览器原生弹窗。
- - 已完成进度为绿色，当前执行轮次为黄色，未执行部分为灰色；圆环和横向进度条使用相同语义。
+ - 已完成进度为绿色，当前执行轮次为黄色，未执行部分为灰色；收起后的圆角矩形按钮以整块背景显示相同进度语义，文字直接覆盖在进度背景上。
+ - 收起按钮与 ChatGPT 长对话优化助手右对齐并位于其上方，避免同时启用时重叠。
  - 展开后只保留“开始/恢复、暂停、刷新状态、清空”四个操作按钮。
 
 6. 调试方法
@@ -52,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -1373,10 +1374,6 @@
       completedPercent: Math.min(100, Math.max(0, completedPercent)),
       activeStartPercent: Math.min(100, Math.max(0, activeStartPercent)),
       activeWidthPercent: Math.min(100, Math.max(0, activeWidthPercent)),
-      completedAngle: totalCount > 0 ? (completedCount / totalCount) * 360 : 0,
-      activeAngle: totalCount > 0 && activeVisible
-        ? ((state.activeIndex + 1) / totalCount) * 360
-        : (totalCount > 0 ? (completedCount / totalCount) * 360 : 0),
     };
   }
 
@@ -1399,14 +1396,15 @@
         --${PREFIX}-accent: #10a37f;
         --${PREFIX}-progress-complete: #12b76a;
         --${PREFIX}-progress-active: #f5b700;
-        --${PREFIX}-progress-complete-angle: 0deg;
-        --${PREFIX}-progress-active-angle: 0deg;
+        --${PREFIX}-progress-pending: #6b7280;
+        --${PREFIX}-progress-complete-percent: 0%;
+        --${PREFIX}-progress-active-end-percent: 0%;
         position: fixed;
-        right: max(16px, env(safe-area-inset-right));
-        bottom: max(16px, env(safe-area-inset-bottom));
+        right: max(18px, env(safe-area-inset-right));
+        bottom: max(50px, calc(env(safe-area-inset-bottom) + 16px));
         z-index: 2147483000;
         width: min(390px, calc(100vw - 32px));
-        max-height: min(720px, calc(100vh - 32px));
+        max-height: min(720px, calc(100vh - 66px));
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -1419,12 +1417,12 @@
       }
 
       #${PANEL_ID}[data-collapsed="true"] {
-        width: 48px;
-        height: 48px;
+        width: 92px;
+        height: 24px;
         max-height: none;
         overflow: visible;
         border: 0;
-        border-radius: 50%;
+        border-radius: 6px;
         background: transparent;
         box-shadow: none;
       }
@@ -1440,30 +1438,28 @@
       #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher {
         position: relative;
         display: grid;
-        width: 48px;
-        height: 48px;
-        min-height: 48px;
+        width: 92px;
+        height: 24px;
+        min-height: 24px;
         place-items: center;
-        padding: 0;
+        padding: 0 8px;
         overflow: hidden;
-        border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
-        border-radius: 50%;
-        background: conic-gradient(
-          var(--${PREFIX}-progress-complete) 0 var(--${PREFIX}-progress-complete-angle),
-          var(--${PREFIX}-progress-active) var(--${PREFIX}-progress-complete-angle) var(--${PREFIX}-progress-active-angle),
-          color-mix(in srgb, var(--main-surface-primary, #ffffff) 78%, currentColor 22%) var(--${PREFIX}-progress-active-angle) 360deg
+        border: 0;
+        border-radius: 6px;
+        background: linear-gradient(
+          90deg,
+          var(--${PREFIX}-progress-complete) 0 var(--${PREFIX}-progress-complete-percent),
+          var(--${PREFIX}-progress-active) var(--${PREFIX}-progress-complete-percent) var(--${PREFIX}-progress-active-end-percent),
+          var(--${PREFIX}-progress-pending) var(--${PREFIX}-progress-active-end-percent) 100%
         );
-        color: inherit;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+        color: #ffffff;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
         cursor: pointer;
+        transition: opacity 150ms ease, box-shadow 150ms ease;
       }
 
-      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher::before {
-        content: "";
-        position: absolute;
-        inset: 4px;
-        border-radius: 50%;
-        background: var(--main-surface-primary, #ffffff);
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher:hover {
+        opacity: 0.92;
       }
 
       #${PANEL_ID}[data-mode="running"][data-collapsed="true"] .${PREFIX}-launcher,
@@ -1475,15 +1471,23 @@
         --${PREFIX}-accent: #d92d20;
       }
 
+      #${PANEL_ID}[data-mode="error"][data-collapsed="true"] .${PREFIX}-launcher {
+        outline: 2px solid #d92d20;
+        outline-offset: 2px;
+      }
+
       #${PANEL_ID} .${PREFIX}-launcher-text {
         position: relative;
         z-index: 1;
-        max-width: 38px;
+        max-width: 100%;
         overflow: hidden;
-        font-size: 11px;
-        font-weight: 750;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 650;
         line-height: 1;
+        text-align: center;
         text-overflow: clip;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
         white-space: nowrap;
       }
 
@@ -1603,6 +1607,15 @@
 
       #${PANEL_ID} button:hover:not(:disabled) {
         background: color-mix(in srgb, var(--main-surface-primary, #ffffff) 84%, currentColor 16%);
+      }
+
+      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher:hover:not(:disabled) {
+        background: linear-gradient(
+          90deg,
+          var(--${PREFIX}-progress-complete) 0 var(--${PREFIX}-progress-complete-percent),
+          var(--${PREFIX}-progress-active) var(--${PREFIX}-progress-complete-percent) var(--${PREFIX}-progress-active-end-percent),
+          var(--${PREFIX}-progress-pending) var(--${PREFIX}-progress-active-end-percent) 100%
+        );
       }
 
       #${PANEL_ID} button:disabled {
@@ -1818,8 +1831,8 @@
       }
 
       @keyframes ${PREFIX}-pulse {
-        0%, 100% { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); }
-        50% { box-shadow: 0 8px 28px color-mix(in srgb, var(--${PREFIX}-accent) 44%, transparent); }
+        0%, 100% { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18); }
+        50% { box-shadow: 0 4px 20px color-mix(in srgb, var(--${PREFIX}-accent) 48%, transparent); }
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -1833,10 +1846,6 @@
         #${PANEL_ID} {
           background: var(--main-surface-primary, #212121);
           color: var(--text-primary, #f3f4f6);
-        }
-
-        #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher::before {
-          background: var(--main-surface-primary, #212121);
         }
 
         #${PANEL_ID} .${PREFIX}-modal-card {
@@ -1861,7 +1870,7 @@
     panel.dataset.collapsed = 'true';
     panel.innerHTML = `
       <button type="button" class="${PREFIX}-launcher" data-action="expand" aria-label="展开 ChatGPT 顺序任务助手" title="ChatGPT 顺序任务助手">
-        <span class="${PREFIX}-launcher-text" data-field="launcher-progress">+</span>
+        <span class="${PREFIX}-launcher-text" data-field="launcher-progress">顺序任务 +</span>
       </button>
       <div class="${PREFIX}-header">
         <div class="${PREFIX}-title-group">
@@ -2068,14 +2077,19 @@
         : `${progress.activePosition} / ${totalCount}`)
       : (draftCount > 0 ? `0 / ${draftCount}` : '尚未载入');
     const launcherText = state.mode === 'error'
-      ? '!'
+      ? (totalCount > 0 ? `异常 ${progress.activePosition} / ${totalCount}` : '状态异常')
       : (totalCount > 0
-        ? `${progress.activePosition}/${totalCount}`
-        : (draftCount > 0 ? `0/${draftCount}` : '+'));
+        ? (state.mode === 'completed'
+          ? `完成 ${totalCount} / ${totalCount}`
+          : (state.mode === 'paused'
+            ? `暂停 ${progress.activePosition} / ${totalCount}`
+            : `任务 ${progress.activePosition} / ${totalCount}`))
+        : (draftCount > 0 ? `任务 0 / ${draftCount}` : '顺序任务 +'));
 
     panel.dataset.mode = state.mode;
-    panel.style.setProperty(`--${PREFIX}-progress-complete-angle`, `${progress.completedAngle}deg`);
-    panel.style.setProperty(`--${PREFIX}-progress-active-angle`, `${progress.activeAngle}deg`);
+    const activeEndPercent = Math.min(100, progress.activeStartPercent + progress.activeWidthPercent);
+    panel.style.setProperty(`--${PREFIX}-progress-complete-percent`, `${progress.completedPercent}%`);
+    panel.style.setProperty(`--${PREFIX}-progress-active-end-percent`, `${activeEndPercent}%`);
 
     setPanelField(panel, 'mode', MODE_LABELS[state.mode] || state.mode);
     setPanelField(panel, 'launcher-progress', launcherText);
