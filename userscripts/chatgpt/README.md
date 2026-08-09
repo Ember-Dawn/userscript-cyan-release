@@ -11,6 +11,7 @@
 | ChatGPT 文件链接高亮助手 | `chatgpt-file-link-highlighter.user.js` | 高亮助手回答中的文件链接和官方文件入口。 |
 | ChatGPT GitHub 自动允许助手 | `chatgpt-auto-allow-github.user.js` | 自动处理 ChatGPT 中明确指向 GitHub 的授权卡片。 |
 | ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度。 |
+| ChatGPT 输入框增强助手 | `chatgpt-composer-enhancer.user.js` | 增强 ChatGPT 输入框；当前 Raw Text Mode 保持输入和粘贴的 Markdown 为原始文本。参见[详细说明](./chatgpt-composer-enhancer.md)。 |
 | ChatGPT 朗读增强助手 | `chatgpt-read-aloud-enhancer.user.js` | 增加一级朗读入口、悬浮播放器、消息切换、快捷键和本地 MP3 下载。参见[详细说明](./chatgpt-read-aloud-enhancer.md)。 |
 
 ## 维护原则
