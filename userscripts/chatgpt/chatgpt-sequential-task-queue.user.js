@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.2.0
-// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持面板内确认弹窗、独立会话状态及绿黄分段进度。
+// @version      1.3.0
+// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -19,12 +19,14 @@
 
 1. 任务输入
  - 面板默认收起为右下角圆形进度环；点击圆环展开。
- - 在面板中粘贴多行文本，每个非空行作为一轮独立命令。
+ - 在面板中粘贴多行文本，每个非空行作为一轮独立命令；未载入时进度条会实时显示 0 / N。
+ - 已有队列时若修改任务文本，进度条保留当前执行进度，并额外显示草稿任务数；确认替换后才重置正式队列。
  - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
 
 2. 顺序执行
  - 脚本把命令写入 ChatGPT 的 ProseMirror 输入框并点击发送按钮。
- - 每轮必须先观察到 data-testid="stop-button"，再等待该按钮消失并保持空闲 3 秒，之后按设置的额外秒数等待，再发送下一轮。
+ - 每轮优先观察 data-testid="stop-button"；看到停止按钮后，等待其消失并保持空闲 3 秒，再按设置的额外秒数等待后发送下一轮。
+ - 若发送后输入框已确认清空，但前 8 秒始终未捕获停止按钮，则在输入框继续为空且停止按钮持续不存在 3 秒后，按超短任务已完成处理。
  - 脚本不读取、提取或判断回答正文，只观察输入框、停止按钮和当前会话地址。
 
 3. 暂停与恢复
@@ -50,7 +52,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -73,6 +75,7 @@
   const MONITOR_INTERVAL_MS = 400;
   const START_TIMEOUT_MS = 30000;
   const SEND_BUTTON_TIMEOUT_MS = 8000;
+  const START_GRACE_MS = 8000;
   const IDLE_STABLE_MS = 3000;
   const DEFAULT_BETWEEN_TASK_DELAY_MS = 3000;
   const LOCK_STALE_MS = 15000;
@@ -141,6 +144,7 @@
       text: typeof task?.text === 'string' ? task.text : '',
       status: validStatus === 'skipped' ? 'completed' : validStatus,
       hasSeenStop: Boolean(task?.hasSeenStop),
+      inputClearedAfterSubmit: Boolean(task?.inputClearedAfterSubmit),
       submittedAt: Number(task?.submittedAt) || 0,
       completedAt: Number(task?.completedAt) || 0,
     };
@@ -297,7 +301,6 @@
       return null;
     }
   }
-
   function isLockFresh(lock) {
     return Boolean(lock && Date.now() - Number(lock.updatedAt || 0) < LOCK_STALE_MS);
   }
@@ -744,6 +747,7 @@
     state.activeIndex = index;
     task.status = 'sending';
     task.hasSeenStop = false;
+    task.inputClearedAfterSubmit = false;
     task.submittedAt = 0;
     task.completedAt = 0;
     state.notice = `正在发送第 ${index + 1} / ${state.tasks.length} 轮。`;
@@ -813,6 +817,13 @@
     }
 
     const stopButton = findStopButton();
+    const editor = findEditor();
+    const editorEmpty = Boolean(editor && !normalizeText(editor.innerText));
+
+    if (!task.inputClearedAfterSubmit && task.submittedAt && editorEmpty) {
+      task.inputClearedAfterSubmit = true;
+      saveState({ render: false });
+    }
 
     if (stopButton) {
       idleSince = 0;
@@ -842,9 +853,29 @@
       return;
     }
 
-    if (task.submittedAt && Date.now() - task.submittedAt >= START_TIMEOUT_MS) {
+    const elapsedSinceSubmit = task.submittedAt ? Date.now() - task.submittedAt : 0;
+    const shortTaskFallbackReady = Boolean(
+      task.inputClearedAfterSubmit &&
+      elapsedSinceSubmit >= START_GRACE_MS
+    );
+
+    if (shortTaskFallbackReady) {
+      if (!editorEmpty) {
+        idleSince = 0;
+      } else if (!idleSince) {
+        idleSince = Date.now();
+        state.notice = `第 ${state.activeIndex + 1} 轮未捕获到停止按钮，输入框已清空；正在确认超短任务空闲状态。`;
+        saveState();
+        return;
+      } else if (Date.now() - idleSince >= IDLE_STABLE_MS) {
+        completeActiveTask();
+        return;
+      }
+    }
+
+    if (task.submittedAt && elapsedSinceSubmit >= START_TIMEOUT_MS) {
       markError(
-        `第 ${state.activeIndex + 1} 轮发送后 ${Math.round(START_TIMEOUT_MS / 1000)} 秒内未检测到停止按钮，无法确认任务已开始。`,
+        `第 ${state.activeIndex + 1} 轮发送后 ${Math.round(START_TIMEOUT_MS / 1000)} 秒内既未检测到停止按钮，也未满足超短任务完成条件，无法确认任务状态。`,
         { taskStatus: 'uncertain' }
       );
     }
@@ -926,6 +957,7 @@
         text,
         status: 'pending',
         hasSeenStop: false,
+        inputClearedAfterSubmit: false,
         submittedAt: 0,
         completedAt: 0,
       })),
@@ -1024,14 +1056,25 @@
     }
 
     if (activeTask && !stopButton && !activeTask.hasSeenStop) {
-      const confirmed = await showPanelDialog({
-        title: '重新发送当前轮',
-        message: `无法确认第 ${state.activeIndex + 1} 轮是否真正开始。是否重新发送这一轮？`,
-        confirmText: '重新发送',
-        danger: true,
-      });
-      if (!confirmed) return;
-      resetActiveTaskForRetry();
+      const editor = findEditor();
+      const fallbackReady = Boolean(
+        activeTask.inputClearedAfterSubmit &&
+        activeTask.submittedAt &&
+        Date.now() - activeTask.submittedAt >= START_GRACE_MS &&
+        editor &&
+        !normalizeText(editor.innerText)
+      );
+
+      if (!fallbackReady) {
+        const confirmed = await showPanelDialog({
+          title: '重新发送当前轮',
+          message: `无法确认第 ${state.activeIndex + 1} 轮是否真正开始。是否重新发送这一轮？`,
+          confirmText: '重新发送',
+          danger: true,
+        });
+        if (!confirmed) return;
+        resetActiveTaskForRetry();
+      }
     }
 
     resumeQueue();
@@ -1117,6 +1160,26 @@
         return;
       }
 
+      const editor = findEditor();
+      const editorEmpty = Boolean(editor && !normalizeText(editor.innerText));
+      const fallbackReady = Boolean(
+        task.inputClearedAfterSubmit &&
+        task.submittedAt &&
+        Date.now() - task.submittedAt >= START_GRACE_MS &&
+        editorEmpty
+      );
+
+      if (fallbackReady) {
+        task.status = 'submitted';
+        state.mode = 'running';
+        state.notice = `已恢复队列；正在确认第 ${state.activeIndex + 1} 轮的超短任务空闲状态。`;
+        idleSince = Date.now();
+        acquireLock();
+        saveState();
+        startMonitor();
+        return;
+      }
+
       state.mode = 'error';
       task.status = 'uncertain';
       state.notice = `无法确认第 ${state.activeIndex + 1} 轮是否真正开始。点击“开始/恢复”可在确认后重新发送这一轮。`;
@@ -1195,6 +1258,25 @@
       return;
     }
 
+    const editor = findEditor();
+    const editorEmpty = Boolean(editor && !normalizeText(editor.innerText));
+    const fallbackReady = Boolean(
+      task.inputClearedAfterSubmit &&
+      task.submittedAt &&
+      Date.now() - task.submittedAt >= START_GRACE_MS &&
+      editorEmpty
+    );
+
+    if (fallbackReady) {
+      task.status = 'submitted';
+      idleSince = Date.now();
+      state.notice = `未记录到停止按钮，但输入框已清空；正在确认第 ${state.activeIndex + 1} 轮的超短任务空闲状态，确认后仍保持暂停。`;
+      acquireLock();
+      saveState();
+      startMonitor();
+      return;
+    }
+
     task.status = 'uncertain';
     state.mode = 'error';
     state.notice = `页面当前空闲，但没有记录到第 ${state.activeIndex + 1} 轮的停止按钮，无法自动判定完成。`;
@@ -1210,6 +1292,7 @@
     const index = state.activeIndex;
     task.status = 'pending';
     task.hasSeenStop = false;
+    task.inputClearedAfterSubmit = false;
     task.submittedAt = 0;
     task.completedAt = 0;
     state.activeIndex = null;
@@ -1861,6 +1944,7 @@
         event.target.dataset.dirty = 'true';
         state.draftText = event.target.value;
         saveState({ render: false });
+        renderPanel();
       }
     });
 
@@ -1973,12 +2057,21 @@
     const conversation = getConversationStatus({ allowBind: false });
     const progress = getProgressSnapshot();
     const { totalCount, completedCount } = progress;
+    const draftLines = parseTasks(textarea?.value ?? state.draftText);
+    const draftCount = draftLines.length;
+    const draftSourceText = draftLines.join('\n');
+    const draftChanged = totalCount > 0 && draftSourceText !== state.sourceText;
+    const displayTotalCount = totalCount > 0 ? totalCount : draftCount;
     const progressText = totalCount > 0
-      ? `${progress.activePosition} / ${totalCount}`
-      : '尚未载入';
+      ? (draftChanged
+        ? `${progress.activePosition} / ${totalCount} · 草稿 ${draftCount}`
+        : `${progress.activePosition} / ${totalCount}`)
+      : (draftCount > 0 ? `0 / ${draftCount}` : '尚未载入');
     const launcherText = state.mode === 'error'
       ? '!'
-      : (totalCount > 0 ? `${progress.activePosition}/${totalCount}` : '+');
+      : (totalCount > 0
+        ? `${progress.activePosition}/${totalCount}`
+        : (draftCount > 0 ? `0/${draftCount}` : '+'));
 
     panel.dataset.mode = state.mode;
     panel.style.setProperty(`--${PREFIX}-progress-complete-angle`, `${progress.completedAngle}deg`);
@@ -2017,13 +2110,15 @@
 
     const progressTrack = panel.querySelector(`[data-field="progress-track"]`);
     if (progressTrack) {
-      progressTrack.setAttribute('aria-valuemax', String(totalCount));
-      progressTrack.setAttribute('aria-valuenow', String(progress.activePosition));
+      progressTrack.setAttribute('aria-valuemax', String(displayTotalCount));
+      progressTrack.setAttribute('aria-valuenow', String(totalCount > 0 ? progress.activePosition : 0));
       progressTrack.setAttribute('aria-label', totalCount > 0
-        ? (progress.activeVisible
-          ? `已完成 ${completedCount} 轮，正在执行第 ${progress.activePosition} / ${totalCount} 轮`
-          : `已完成 ${completedCount} / ${totalCount}`)
-        : '尚未载入任务');
+        ? (draftChanged
+          ? `当前队列进度 ${progress.activePosition} / ${totalCount}，草稿已修改为 ${draftCount} 条任务`
+          : (progress.activeVisible
+            ? `已完成 ${completedCount} 轮，正在执行第 ${progress.activePosition} / ${totalCount} 轮`
+            : `已完成 ${completedCount} / ${totalCount}`))
+        : (draftCount > 0 ? `草稿共 ${draftCount} 条任务，尚未开始` : '尚未载入任务'));
     }
 
     const completedFill = panel.querySelector(`[data-field="progress-completed"]`);
@@ -2041,7 +2136,9 @@
         'aria-label',
         totalCount > 0
           ? `展开 ChatGPT 顺序任务助手，进度 ${progress.activePosition} / ${totalCount}，已完成 ${completedCount} 轮，当前状态：${MODE_LABELS[state.mode] || state.mode}`
-          : '展开 ChatGPT 顺序任务助手'
+          : (draftCount > 0
+            ? `展开 ChatGPT 顺序任务助手，草稿共 ${draftCount} 条任务，尚未开始`
+            : '展开 ChatGPT 顺序任务助手')
       );
     }
 
