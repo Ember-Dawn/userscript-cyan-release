@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.1
+// @version      0.1.2
 // @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -34,10 +34,9 @@
     const STORAGE_KEY = 'cyan_chatgpt_long_chat_optimizer';
     const PATCH_FLAG = '__CYAN_LS_FETCH_PATCHED__';
     const HISTORY_PATCH_FLAG = '__CYAN_LS_HISTORY_PATCHED__';
-    const DEFAULT_CONFIG = Object.freeze({ enabled: true, keepRounds: 12 });
+    const DEFAULT_CONFIG = Object.freeze({ enabled: true, keepRounds: 10 });
     const MIN_ROUNDS = 1;
     const MAX_ROUNDS = 100;
-    const QUICK_VALUES = [5, 10, 20, 30];
     const HIDDEN_ROLES = new Set(['system', 'tool', 'thinking']);
 
     const state = {
@@ -413,25 +412,51 @@
         if (enabledSwitch) {
             enabledSwitch.checked = config.enabled;
         }
-        if (limitValue && draftLimit !== null) {
-            limitValue.textContent = String(draftLimit);
+        if (limitValue && draftLimit !== null && document.activeElement !== limitValue) {
+            limitValue.value = String(draftLimit);
         }
         updateApplyButton();
     }
 
     function updateApplyButton() {
-        if (!applyButton || draftLimit === null) {
+        if (!applyButton) {
             return;
         }
-        applyButton.disabled = draftLimit === config.keepRounds;
+        applyButton.disabled = draftLimit === null || draftLimit === config.keepRounds;
     }
 
     function setDraftLimit(value) {
         draftLimit = clampRounds(value);
         if (limitValue) {
-            limitValue.textContent = String(draftLimit);
+            limitValue.value = String(draftLimit);
         }
         updateApplyButton();
+    }
+
+    function handleLimitInput() {
+        if (!limitValue) {
+            return;
+        }
+        const raw = limitValue.value.trim();
+        if (!raw) {
+            draftLimit = null;
+            updateApplyButton();
+            return;
+        }
+        const parsed = Number.parseInt(raw, 10);
+        draftLimit = Number.isFinite(parsed) ? clampRounds(parsed) : null;
+        updateApplyButton();
+    }
+
+    function normalizeLimitInput() {
+        if (!limitValue) {
+            return;
+        }
+        if (draftLimit === null) {
+            setDraftLimit(config.keepRounds);
+            return;
+        }
+        setDraftLimit(draftLimit);
     }
 
     function reloadWithConfig(nextConfig) {
@@ -555,7 +580,7 @@
     margin: 7px 0 9px;
 }
 .cyan-ls-counter button,
-.cyan-ls-quick button,
+#cyan-ls-limit-value,
 #cyan-ls-apply {
     border: 1px solid rgba(0, 0, 0, .14);
     border-radius: 8px;
@@ -569,19 +594,20 @@
     font-size: 16px;
 }
 #cyan-ls-limit-value {
+    width: 100%;
+    height: 30px;
+    box-sizing: border-box;
+    padding: 0 6px;
     text-align: center;
     font-size: 13px;
     font-weight: 700;
+    appearance: textfield;
+    cursor: text;
 }
-.cyan-ls-quick {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-    margin-bottom: 10px;
-}
-.cyan-ls-quick button {
-    padding: 5px 0;
-    font-size: 11px;
+#cyan-ls-limit-value::-webkit-inner-spin-button,
+#cyan-ls-limit-value::-webkit-outer-spin-button {
+    margin: 0;
+    appearance: none;
 }
 #cyan-ls-apply {
     width: 100%;
@@ -614,7 +640,7 @@
         color: #9ca3af;
     }
     .cyan-ls-counter button,
-    .cyan-ls-quick button {
+    #cyan-ls-limit-value {
         color: #f3f4f6;
         background: #343541;
         border-color: rgba(255, 255, 255, .14);
@@ -641,7 +667,7 @@
 
         const title = document.createElement('div');
         title.className = 'cyan-ls-title';
-        title.textContent = 'LS 长对话优化';
+        title.textContent = 'Light Session 长对话优化';
 
         currentStatusLine = document.createElement('div');
         currentStatusLine.className = 'cyan-ls-current';
@@ -671,23 +697,20 @@
         minus.type = 'button';
         minus.textContent = '−';
         minus.setAttribute('aria-label', '减少保留轮数');
-        limitValue = document.createElement('div');
+        limitValue = document.createElement('input');
         limitValue.id = 'cyan-ls-limit-value';
+        limitValue.type = 'number';
+        limitValue.min = String(MIN_ROUNDS);
+        limitValue.max = String(MAX_ROUNDS);
+        limitValue.step = '1';
+        limitValue.inputMode = 'numeric';
+        limitValue.setAttribute('aria-label', '保留轮数');
+        limitValue.value = String(draftLimit);
         const plus = document.createElement('button');
         plus.type = 'button';
         plus.textContent = '+';
         plus.setAttribute('aria-label', '增加保留轮数');
         counter.append(minus, limitValue, plus);
-
-        const quick = document.createElement('div');
-        quick.className = 'cyan-ls-quick';
-        for (const value of QUICK_VALUES) {
-            const quickButton = document.createElement('button');
-            quickButton.type = 'button';
-            quickButton.textContent = String(value);
-            quickButton.addEventListener('click', () => setDraftLimit(value));
-            quick.appendChild(quickButton);
-        }
 
         applyButton = document.createElement('button');
         applyButton.id = 'cyan-ls-apply';
@@ -698,7 +721,7 @@
         note.className = 'cyan-ls-note';
         note.textContent = '开关会立即刷新；保留轮数仅在“应用并刷新”后生效。';
 
-        panel.append(title, currentStatusLine, switchRow, keepLabel, counter, quick, applyButton, note);
+        panel.append(title, currentStatusLine, switchRow, keepLabel, counter, applyButton, note);
 
         statusButton = document.createElement('button');
         statusButton.id = 'cyan-ls-status';
@@ -722,6 +745,15 @@
 
         minus.addEventListener('click', () => setDraftLimit((draftLimit ?? config.keepRounds) - 1));
         plus.addEventListener('click', () => setDraftLimit((draftLimit ?? config.keepRounds) + 1));
+        limitValue.addEventListener('input', handleLimitInput);
+        limitValue.addEventListener('blur', normalizeLimitInput);
+        limitValue.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                normalizeLimitInput();
+                applyButton?.click();
+            }
+        });
 
         enabledSwitch.addEventListener('change', () => {
             reloadWithConfig({
