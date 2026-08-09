@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-composer-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-composer-enhancer.user.js
-// @version      1.0.0
+// @version      1.0.1
 // @description  增强 ChatGPT 输入框；当前提供 Raw Text Mode，使输入和粘贴的 Markdown 保持原始文本，不自动转换为富文本。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -21,8 +21,6 @@
     const RAW_TEXT_TRIGGER_CHARACTERS = new Set([
         ' ', '#', '*', '_', '`', '~', '-', '>', '+', '.', '!', '[', ']', '(', ')', '=',
     ]);
-
-    let syntheticTextInsertionDepth = 0;
 
     function getComposer(target) {
         if (!(target instanceof Element)) {
@@ -49,12 +47,26 @@
     }
 
     function insertRawText(text) {
-        syntheticTextInsertionDepth += 1;
-        try {
-            return document.execCommand('insertText', false, text);
-        } finally {
-            syntheticTextInsertionDepth -= 1;
+        return document.execCommand('insertText', false, text);
+    }
+
+    function containsRawTextTrigger(text) {
+        return Array.from(text).some((character) => RAW_TEXT_TRIGGER_CHARACTERS.has(character));
+    }
+
+    function handleKeyPress(event) {
+        if (!getComposer(event.target) || event.isComposing) {
+            return;
         }
+
+        if (typeof event.key !== 'string' || event.key.length !== 1 || !containsRawTextTrigger(event.key)) {
+            return;
+        }
+
+        // ProseMirror may call handleTextInput from keypress before the browser
+        // applies the character. Stop that editor-level path, but deliberately
+        // keep the browser default action so the raw character is inserted.
+        event.stopImmediatePropagation();
     }
 
     function handleBeforeInput(event) {
@@ -66,18 +78,13 @@
             return;
         }
 
-        if (syntheticTextInsertionDepth > 0) {
-            event.stopImmediatePropagation();
+        if (!containsRawTextTrigger(event.data)) {
             return;
         }
 
-        if (!RAW_TEXT_TRIGGER_CHARACTERS.has(event.data)) {
-            return;
-        }
-
-        event.preventDefault();
+        // Do not preventDefault here. The browser should perform the native
+        // insertion, while ProseMirror's text-input hooks do not see this event.
         event.stopImmediatePropagation();
-        insertRawText(event.data);
     }
 
     function handlePaste(event) {
@@ -100,6 +107,7 @@
         insertRawText(text);
     }
 
+    document.addEventListener('keypress', handleKeyPress, true);
     document.addEventListener('beforeinput', handleBeforeInput, true);
     document.addEventListener('paste', handlePaste, true);
 })();

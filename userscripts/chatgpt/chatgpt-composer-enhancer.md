@@ -4,7 +4,7 @@
 
 `chatgpt-composer-enhancer.user.js` 是 ChatGPT 网页版输入框的增强脚本。脚本名称刻意保持宽泛，以便后续继续加入与 composer 直接相关的功能。
 
-当前版本：`1.0.0`
+当前版本：`1.0.1`
 
 当前只提供一个功能：**Raw Text Mode**。
 
@@ -66,7 +66,7 @@ Raw Text Mode 的目标是让 ChatGPT 输入框中的 Markdown 保持原始文�
 
 ## 实现原则
 
-v1.0.0 采用最小侵入策略：
+v1.0.1 延续最小侵入策略：
 
 - 保留 ChatGPT 原生 ProseMirror composer；
 - 不替换成自定义 textarea；
@@ -78,9 +78,24 @@ v1.0.0 采用最小侵入策略：
 
 ProseMirror 官方文档中的 input rules 机制本身就是“文本输入匹配规则后触发转换”的设计，因此该层是本脚本的主要关注点。
 
+### v1.0.1 键盘输入修复
+
+v1.0.0 已能让纯文本粘贴保持 raw text，但实测发现逐字键盘输入仍可能触发 Markdown 转换。原因是 v1.0.0 在 `beforeinput` 中取消原始输入后，再调用 `document.execCommand('insertText')` 重新插入字符；重新插入仍可能进入 ProseMirror 的文本输入处理链，因此 input rules 仍有机会运行。
+
+v1.0.1 改为：
+
+- 对可能触发 Markdown input rules 的键盘字符，在捕获阶段同时隔离 `keypress` 与 `beforeinput`；
+- 只调用 `stopImmediatePropagation()`，不调用 `preventDefault()`；
+- 不再为键盘字符主动调用 `execCommand('insertText')`；
+- 让浏览器执行原生字符插入，再由 ProseMirror 的 DOM 观察机制同步普通文本变化；
+- 纯文本粘贴继续沿用 v1.0.0 已验证有效的 raw-text 插入路径；
+- 图片和文件粘贴仍完全放行给 ChatGPT 原生逻辑。
+
+这样做的目的，是避开 ProseMirror 的 `handleTextInput` / input-rules 转换入口，同时尽量保留浏览器原生光标、选择和输入行为。
+
 ## 非目标
 
-v1.0.0 不负责：
+v1.0.1 不负责：
 
 - 提升 ChatGPT composer 性能；
 - 将 ProseMirror 替换为 textarea；
@@ -119,6 +134,8 @@ ChatGPT 是单页应用，composer 可能在导航、切换会话或功能更新
 
 - ProseMirror Reference Manual：Input Rules  
   https://prosemirror.net/docs/ref/#inputrules
+- ProseMirror View：`handleTextInput` / input handling source  
+  https://github.com/ProseMirror/prosemirror-view
 - 第三方 ChatGPT 前端技术分析  
   https://performance.dev/chatgpt
 
