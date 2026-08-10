@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.6.1
-// @description  ChatGPT 普通聊天文件夹管理：v0.6.1；修复标题清洗并保留真实标题中的 ChatGPT，同时支持 WebDAV 多端自动检查、操作级合并与删除墓碑。
+// @version      0.6.2
+// @description  ChatGPT 普通聊天文件夹管理：v0.6.2；修复多标签页将 WebDAV 状态写入误报为文件夹更新，并继续支持操作级多端合并。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -23,7 +23,7 @@
 /*
 ================================================================================
 ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
-适用版本：v0.6.1 附近
+适用版本：v0.6.2 附近
 ================================================================================
 
 这是一个用于 ChatGPT 网页端普通聊天的 Tampermonkey 用户脚本。它在 ChatGPT 左侧侧边栏中增加一个“文件夹”区域，用于本地管理聊天链接。它不是 ChatGPT 官方 Project 功能，也不会修改 ChatGPT 后端数据；它只保存“聊天标题 + 链接 + conversation id + 文件夹结构 + 部分 UI 设置”。
@@ -732,6 +732,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 12. 长期保留 nativeMenuObserver 或 nativeMenuPollTimer。
 13. 把文件夹拖动允许到自身子孙节点，导致循环引用。
 14. 多标签页同步回调里无条件重绘或无条件保存，导致卡顿或旧状态覆盖新状态。
+15. 仅 WebDAV 检查时间、ETag、状态等运行元数据变化时，不得误报为“另一个标签页的文件夹更新”，也不得因此丢弃当前标签页待保存的业务修改。
 
 --------------------------------------------------------------------------------
 二十一、当前期望行为总览
@@ -754,7 +755,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - 脚本不保存完整聊天内容。
 - 脚本不修改 ChatGPT 后端。
 - 通过最长约 90 秒的稀疏有限重试，降低书签打开 ChatGPT 首页时偶发未挂载的概率。
-- 同一 Firefox 多个 ChatGPT 标签页之间通过小 revision key 自动同步文件夹状态，并用 revision 防止旧标签页覆盖新状态。
+- 同一 Firefox 多个 ChatGPT 标签页之间通过小 revision key 自动同步文件夹状态，并用 revision 防止旧标签页覆盖新状态；v0.6.2 起先比较 `syncProjection`，仅 WebDAV 运行元数据变化时静默接收，不重绘文件夹树也不显示文件夹更新提示。
 - Windows / Firefox 休眠恢复后，通过 focus、pageshow、visibilitychange 触发短窗口自愈检查，修复文件夹 DOM 被 React 重绘移除或误隐藏的问题。
 - v0.3.14 起取消普通 pointerdown 自愈，避免影响正文选区、输入框聚焦和最近列表 hover 流畅度。
 - v0.3.15 起兼容 ChatGPT 最近列表中 draggable="false" 的 /c/ 对话：只在用户按下该具体对话时临时改为 draggable=true，dragend / mouseup / click / timeout 后恢复，不扫描、不注入、不监听 mousemove。
@@ -763,6 +764,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - v0.5.1 起文件夹树不再设置独立 max-height / overflow:auto；树按内容自然增高，并与 ChatGPT 原生侧边栏共用外层滚动条。设置弹窗与浮层菜单仍保留自己的最大高度和滚动。
 - v0.6.0 起 WebDAV 改为真正的多端同步：圆圈按钮执行真实同步；前台定时 GET；本地与远端同时变化时通过操作日志、三方快照和删除墓碑自动合并；412 会重新 GET、重新合并并有限重试。
 - v0.6.1 起按来源拆分标题清洗：侧边栏可见文本保留用户输入的 ChatGPT / OpenAI；aria-label 只移除完整 UI 包装；document.title 只移除明确的末尾 ChatGPT 品牌后缀。
+- v0.6.2 起跨标签页 revision 按业务投影分类：WebDAV 核对产生的状态/时间戳写入不再触发“已同步另一个标签页的文件夹更新”，并避免这类元数据 revision 抢先导致另一标签页待保存业务修改被丢弃。
 
 ================================================================================
 */
@@ -773,7 +775,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.6.1';
+  const VERSION = '0.6.2';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -845,6 +847,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
   let sidebarVisibilityTimers = [];
   let storageWriteSeq = 0;
   let lastSeenStorageRevision = '';
+  let lastSeenStorageProjection = '';
   let localUnsavedChanges = false;
   let storageSyncBound = false;
   let storageSyncListenerId = null;
@@ -1392,12 +1395,34 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     return { profile: stored, revision: getProfileStorageRevision(stored), writer: getProfileStorageWriter(stored) };
   }
 
+  function storageBusinessProjectionKey(profile) {
+    const projection = syncProjection(profile);
+    // The storage key already scopes data to one ChatGPT account. Profile id/label can
+    // be normalized differently while loading, so exclude that identity noise here.
+    projection.id = CURRENT_PROFILE_ID;
+    projection.label = '';
+    return stableStringify(projection);
+  }
+
+  function crossTabRenderProjectionKey(profile) {
+    const p = profile || {};
+    const collapsed = {};
+    Object.entries(p.folders || {}).forEach(([id, folder]) => { collapsed[id] = !!(folder && folder.collapsed); });
+    return stableStringify({
+      business: storageBusinessProjectionKey(p),
+      sectionCollapsed: !!((((p.settings || {}).ui || {}).sectionCollapsed)),
+      collapsed
+    });
+  }
+
   function applyStoredProfileFromRaw(raw, reason) {
     const incoming = parseStoredProfileRaw(raw);
     if (!incoming || !incoming.folders || !incoming.conversations) return false;
     const rev = getProfileStorageRevision(incoming);
     if (rev && !isRevisionNewer(rev, lastSeenStorageRevision)) return false;
 
+    const previousBusinessProjection = lastSeenStorageProjection || storageBusinessProjectionKey(state);
+    const previousRenderProjection = crossTabRenderProjectionKey(state);
     const oldWebdav = state && state.settings && state.settings.webdav ? JSON.parse(JSON.stringify(state.settings.webdav)) : null;
     const normalized = normalizeProfile(incoming, CURRENT_PROFILE_ID, incoming.label || (state && state.label) || 'ChatGPT account');
     if (oldWebdav && normalized.settings && normalized.settings.webdav) {
@@ -1407,36 +1432,51 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
       normalized.settings.webdav.password = oldWebdav.password || normalized.settings.webdav.password || '';
     }
 
+    const incomingBusinessProjection = storageBusinessProjectionKey(normalized);
+    const incomingRenderProjection = crossTabRenderProjectionKey(normalized);
+    const businessChanged = incomingBusinessProjection !== previousBusinessProjection;
+    const renderChanged = incomingRenderProjection !== previousRenderProjection;
+
     state = normalized;
     mutationBaseline = syncProjection(state);
     if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
     dirtySincePush = !!((state.settings.webdav || {}).pendingPush);
     syncStatus = (state.settings.webdav || {}).conflict ? 'error' : 'off';
     lastSeenStorageRevision = getProfileStorageRevision(state) || rev || lastSeenStorageRevision;
+    lastSeenStorageProjection = incomingBusinessProjection;
     localUnsavedChanges = false;
     if (pendingPersistTimer) {
       clearTimeout(pendingPersistTimer);
       pendingPersistTimer = null;
     }
     pendingPersistReason = '';
-    queueRender();
-    applySidebarWidth();
+    if (renderChanged) queueRender();
+    if (businessChanged) applySidebarWidth();
     restartPeriodicBackup();
     updateSyncStatusIcon();
-    if (reason === 'external-change') toast('已同步另一个标签页的文件夹更新。');
+    if (reason === 'external-change' && businessChanged) toast('已同步另一个标签页的文件夹更新。');
     return true;
   }
 
   function maybeApplyNewerStoredProfile(reason) {
     const stored = currentStorageRevisionInfo();
     if (!stored.revision || stored.writer === TAB_ID || !isRevisionNewer(stored.revision, lastSeenStorageRevision)) return false;
+    const raw = gmGet(activeProfileStorageKey(), '');
+    const incoming = parseStoredProfileRaw(raw);
+    const incomingProjection = incoming && incoming.folders && incoming.conversations ? storageBusinessProjectionKey(incoming) : '';
+    const knownProjection = lastSeenStorageProjection || storageBusinessProjectionKey(state);
+    const businessChanged = !incomingProjection || incomingProjection !== knownProjection;
     if (localUnsavedChanges || editingFolderId || (modalEl && !modalEl.hidden)) {
-      // Do not overwrite active local editing. persistNow() also checks revision before writing,
-      // so this tab will not erase the newer stored state by accident.
+      // Metadata-only writes (for example lastRemoteCheckAt after a WebDAV verification)
+      // must not masquerade as folder changes or block this tab's pending business edit.
+      if (!businessChanged && incomingProjection) {
+        lastSeenStorageRevision = getProfileStorageRevision(incoming) || stored.revision || lastSeenStorageRevision;
+        return true;
+      }
       if (reason === 'external-change') toast('另一个标签页有文件夹更新；完成当前编辑后会同步。');
       return false;
     }
-    return applyStoredProfileFromRaw(gmGet(activeProfileStorageKey(), ''), reason || 'newer-storage');
+    return applyStoredProfileFromRaw(raw, reason || 'newer-storage');
   }
 
   function flushPendingPersist(webdav) {
@@ -1472,18 +1512,28 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 
     const stored = currentStorageRevisionInfo();
     if (stored.revision && stored.writer !== TAB_ID && isRevisionNewer(stored.revision, lastSeenStorageRevision)) {
-      // A newer state was written by another tab. Do not overwrite it with a stale
-      // in-memory copy from this tab. In the normal single-editor workflow, adopting
-      // the newer state is safer than keeping an old pending save alive.
-      applyStoredProfileFromRaw(gmGet(activeProfileStorageKey(), ''), 'newer-before-write');
-      localUnsavedChanges = false;
-      updateSyncStatusIcon();
-      return;
+      const raw = gmGet(activeProfileStorageKey(), '');
+      const incoming = parseStoredProfileRaw(raw);
+      const incomingProjection = incoming && incoming.folders && incoming.conversations ? storageBusinessProjectionKey(incoming) : '';
+      const knownProjection = lastSeenStorageProjection || storageBusinessProjectionKey(state);
+      if (incomingProjection && incomingProjection === knownProjection) {
+        // Another tab only persisted runtime/storage metadata. Acknowledge its revision
+        // and continue saving this tab's pending business change instead of discarding it.
+        lastSeenStorageRevision = getProfileStorageRevision(incoming) || stored.revision || lastSeenStorageRevision;
+      } else {
+        // A genuinely newer business projection exists. Keep the established safety rule:
+        // do not overwrite it with this tab's stale in-memory copy.
+        applyStoredProfileFromRaw(raw, 'newer-before-write');
+        localUnsavedChanges = false;
+        updateSyncStatusIcon();
+        return;
+      }
     }
 
     state.version = VERSION;
     const revision = markStorageRevision(state);
     lastSeenStorageRevision = revision;
+    lastSeenStorageProjection = storageBusinessProjectionKey(state);
     gmSet(activeProfileStorageKey(), JSON.stringify(state));
     writeRevisionMeta(revision);
     localUnsavedChanges = false;
@@ -1615,6 +1665,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
       localUnsavedChanges = false;
       syncStatus = (state.settings.webdav || {}).conflict ? 'error' : 'off';
       lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
+      lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       restartPeriodicBackup();
       if (!initial) {
@@ -1652,7 +1703,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
         rememberAccountInfo(detected);
       }
     }
-    if (!state) { state = normalizeProfile(loadState(currentAccount), accountStableKey(currentAccount), (currentAccount && currentAccount.label) || 'ChatGPT account'); mutationBaseline = syncProjection(state); }
+    if (!state) { state = normalizeProfile(loadState(currentAccount), accountStableKey(currentAccount), (currentAccount && currentAccount.label) || 'ChatGPT account'); mutationBaseline = syncProjection(state); lastSeenStorageProjection = storageBusinessProjectionKey(state); }
     return state;
   }
 
@@ -4029,6 +4080,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
       mutationBaseline = syncProjection(state);
       dirtySincePush = !!(((state || {}).settings || {}).webdav || {}).pendingPush;
       lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
+      lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       bindSidebarToggleWatcher();
       // Sparse finite remount checks. This fixes normal-refresh/bookmark-open cases where

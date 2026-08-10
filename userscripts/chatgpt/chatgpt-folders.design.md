@@ -1,7 +1,7 @@
 # ChatGPT 文件夹油猴脚本：设计与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.6.0  
+> 当前说明版本：v0.6.2  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI
 
 ## 1. 脚本定位
@@ -23,7 +23,7 @@
 2. 同一浏览器多个标签页之间同步；
 3. 不同浏览器和不同设备之间通过 WebDAV 双向同步。
 
-## 2. v0.6.0 的核心设计结论
+## 2. v0.6.x 的核心设计结论
 
 维护时应优先保留以下结论，不要轻易退回旧方案：
 
@@ -42,6 +42,8 @@
 13. 文件夹树使用自然高度，与 ChatGPT 原生侧边栏共用外层滚动条。
 14. 不长期监听整个页面的 MutationObserver。
 15. 不给 ChatGPT “最近聊天”中的每一项常驻注入按钮或 wrapper。
+16. 同浏览器跨标签 revision 必须先用 `syncProjection` 判断业务投影是否变化；仅 WebDAV 状态、ETag、检查时间等运行元数据变化时静默接收，不显示“文件夹更新”提示。
+17. 元数据-only revision 不得抢先覆盖或取消另一个标签页尚未持久化的文件夹业务修改。
 
 ## 3. 仓库文件
 
@@ -328,7 +330,7 @@ cgfm.v3.remoteFileMap
 ```json
 {
   "app": "ChatGPT文件夹",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "schema": 3,
   "exportedAt": "ISO time",
   "account": {
@@ -602,7 +604,14 @@ cgfm.v1.lastAccount
 2. 写入小型 revision metadata；
 3. 其他标签页监听小键；
 4. 发现更新后才读取大型 profile；
-5. 应用后重新设置 `mutationBaseline`。
+5. 用 `syncProjection` 将新 profile 与该标签页最近已接受的业务投影比较；
+6. 业务投影变化：应用新 profile、按需重绘，并提示“已同步另一个标签页的文件夹更新”；
+7. 业务投影未变化：视为 WebDAV 运行状态、检查时间、ETag 或其他非业务元数据更新，静默接收，不重绘文件夹树、不显示文件夹更新提示；
+8. 应用后重新设置 `mutationBaseline`。
+
+为避免刷新标签页触发 WebDAV 核对时干扰另一个正在编辑的标签页，运行时还保存 `lastSeenStorageProjection`。若外部 revision 的业务投影与该基线完全一致，即使当前标签页存在待保存修改，也只确认该外部 revision，不用它覆盖当前内存中的业务数据；随后当前标签页可以正常持久化自己的修改。
+
+文件夹 `collapsed` 和整个区域 `sectionCollapsed` 不属于 WebDAV 业务投影；在当前标签页空闲时，如果它们确实由另一个标签页变化，允许静默重绘以保持同浏览器 UI 一致，但不会显示“文件夹更新”提示。
 
 账号切换时必须：
 
@@ -830,6 +839,16 @@ overflow: auto;
 
 同时确认根节点位于 ChatGPT 原生侧边栏滚动容器内。
 
+### 32.7 刷新一个标签页后另一个标签页提示“已同步文件夹更新”
+
+v0.6.1 及以前可能出现：刷新标签页触发 WebDAV 核对，虽然文件夹业务数据没有变化，但 `lastRemoteCheckAt`、ETag、状态等字段保存后仍会产生新的 storage revision，另一个标签页因此误报文件夹更新。
+
+v0.6.2 起检查：
+
+- 新 revision 的 `syncProjection` 是否真的与最近已接受业务投影不同；
+- 若仅运行元数据变化，应静默接收，不 `queueRender()` 文件夹树，也不显示文件夹更新 toast；
+- 若当前标签页恰有待保存业务修改，metadata-only revision 只更新 revision 认知，不能导致本地业务修改被丢弃。
+
 ## 33. 最低发布检查
 
 每次发布至少执行：
@@ -851,6 +870,8 @@ overflow: auto;
 15. 状态圆圈执行真实同步；
 16. 页面隐藏时不进行周期轮询；
 17. 导出和远端 JSON 不包含 WebDAV 密码。
+18. 刷新标签页或仅完成一次 WebDAV 内容一致核对时，其他标签页不出现“已同步另一个标签页的文件夹更新”提示。
+19. 一个标签页有待保存文件夹修改时，另一个标签页产生 metadata-only revision 不会取消该修改。
 
 ## 34. 建议的双端测试流程
 
@@ -938,3 +959,12 @@ overflow: auto;
 - 保留 Nextcloud ETag 兼容性回退；
 - 折叠状态改为明确的设备本地状态；
 - 同步说明文档更新为多端同步架构。
+
+
+## 39. v0.6.2 变更摘要
+
+- 跨标签页同步新增最近已接受业务投影基线 `lastSeenStorageProjection`；
+- 收到其他标签页 revision 时先比较 `syncProjection`，区分真实文件夹业务变化与 WebDAV 运行元数据变化；
+- 仅 WebDAV 核对时间、ETag、状态等变化时静默更新，不重绘文件夹树、不显示“已同步另一个标签页的文件夹更新”；
+- 文件夹折叠等本地 UI 状态变化仍可在空闲标签页静默刷新，但不冒充业务更新提示；
+- 当前标签页存在待保存业务修改时，metadata-only revision 只被确认，不再导致待保存业务数据被较新的元数据写入抢先覆盖。
