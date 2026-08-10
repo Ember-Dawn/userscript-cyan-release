@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.3
+// @version      0.1.4
 // @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -901,7 +901,7 @@
     }
 
     function extractConversationPageId() {
-        const match = location.pathname.match(/^\/c\/([^/?#]+)/);
+        const match = location.pathname.match(/(?:^|\/)c\/([^/]+)\/?$/);
         return match?.[1] ?? null;
     }
 

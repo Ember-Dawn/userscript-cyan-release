@@ -41,7 +41,7 @@
 处理顺序：
 
 1. 调用原始 `fetch` 获取正常响应。
-2. 从请求 URL 提取 conversation id，并与当前页面 `/c/<id>` 做一致性校验；不是当前页面的预取、迟到或旧会话响应直接原样返回。
+2. 从请求 URL 提取 conversation id，并与当前页面 URL 中的 `/c/<id>` 路由段做一致性校验；普通 `/c/<id>` 与 Project `/g/g-p-<project-id>/c/<id>` 都支持。不是当前页面的预取、迟到或旧会话响应直接原样返回。
 3. 对当前会话的 conversation 响应执行 `Response.clone().json()`，不消费 ChatGPT 原本要读取的 Response。
 4. 从 `current_node` 沿 `parent` 构建当前活动路径。
 5. 在裁剪前统计完整路径中的总轮数。
@@ -114,7 +114,7 @@ conversation GET 是总轮数的权威来源，但脚本 **不会为了更新数
 - 随后只等待 ChatGPT 自己加载 B；捕获到 B 的原生 conversation response 后再显示 B 的权威总轮数。
 - 不为“尽快显示数字”额外访问对话历史接口，以降低短时间重复访问 conversation history 的风险。
 
-脚本记录当前 `/c/<id>`，并在 conversation response 返回时再次核对请求 id 与当前 URL。快速执行 `A → B → C` 时，A/B 的迟到响应不会覆盖 C 的悬浮状态，也不会被本脚本改写；因此宁可暂时显示 `--`，也不沿用上一条会话的总轮数。
+脚本从当前 pathname 中识别 `/c/<id>` 路由段，因此既支持普通 `/c/<id>`，也支持 Project `/g/g-p-<project-id>/c/<id>`。conversation response 返回时会再次核对请求 id 与当前 URL。快速执行 `A → B → C` 时，A/B 的迟到响应不会覆盖 C 的悬浮状态，也不会被本脚本改写；因此宁可暂时显示 `--`，也不沿用上一条会话的总轮数。
 
 为避免用户在当前页面继续发送新消息后数字一直停留在初始值，脚本另外安装一个局部增量 MutationObserver：
 
@@ -187,3 +187,4 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 11. 按钮保持紧凑小圆角布局，`LS 10 / 86` 和 `LS Off / 86` 不因固定最小宽度产生明显两端空白。
 12. 新安装或没有旧配置时默认保留 10 轮；已有 `localStorage` 配置继续保留用户原值。
 13. 设置面板标题显示为 `Light Session 长对话优化`，保留轮数可在中间输入框直接输入 `1–100` 的整数，且不再显示 `5 / 10 / 20 / 30` 快捷按钮。
+14. 普通 `/c/<conversation-id>` 与 Project `/g/g-p-<project-id>/c/<conversation-id>` 页面都能识别当前 conversation id，并正常统计总轮数、执行裁剪和防止迟到响应串台。
