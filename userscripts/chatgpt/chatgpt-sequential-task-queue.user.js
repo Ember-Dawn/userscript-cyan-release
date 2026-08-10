@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.1
+// @version      1.3.2
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.1';
+  const VERSION = '1.3.2';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -1394,7 +1394,7 @@
     style.textContent = `
       #${PANEL_ID} {
         --${PREFIX}-accent: #10a37f;
-        --${PREFIX}-progress-complete: #12b76a;
+        --${PREFIX}-progress-complete: #10a37f;
         --${PREFIX}-progress-active: #f5b700;
         --${PREFIX}-progress-pending: #6b7280;
         --${PREFIX}-progress-complete-percent: 0%;
@@ -1870,7 +1870,7 @@
     panel.dataset.collapsed = 'true';
     panel.innerHTML = `
       <button type="button" class="${PREFIX}-launcher" data-action="expand" aria-label="展开 ChatGPT 顺序任务助手" title="ChatGPT 顺序任务助手">
-        <span class="${PREFIX}-launcher-text" data-field="launcher-progress">顺序任务 +</span>
+        <span class="${PREFIX}-launcher-text" data-field="launcher-progress">顺序任务</span>
       </button>
       <div class="${PREFIX}-header">
         <div class="${PREFIX}-title-group">
@@ -2084,7 +2084,7 @@
           : (state.mode === 'paused'
             ? `暂停 ${progress.activePosition} / ${totalCount}`
             : `任务 ${progress.activePosition} / ${totalCount}`))
-        : (draftCount > 0 ? `任务 0 / ${draftCount}` : '顺序任务 +'));
+        : (draftCount > 0 ? `任务 0 / ${draftCount}` : '顺序任务'));
 
     panel.dataset.mode = state.mode;
     const activeEndPercent = Math.min(100, progress.activeStartPercent + progress.activeWidthPercent);
