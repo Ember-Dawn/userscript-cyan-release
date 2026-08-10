@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.4.1
+// @version      11.4.2
 // @description  NocoDB folder tree with per-tab collapse state, single-leader WebDAV sync, resilient validators, verified conflicts, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
@@ -26,7 +26,7 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.4.1';
+    const SCRIPT_VERSION = '11.4.2';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
@@ -267,13 +267,12 @@
         return safe;
     };
 
-    const hydrateTabCollapsed = (rawConfig, legacyFallback = rawConfig) => {
+    const hydrateTabCollapsed = rawConfig => {
         const hydrated = normalizeConfig(rawConfig);
-        const legacy = normalizeConfig(legacyFallback);
         Object.entries(hydrated.bases).forEach(([baseId, base]) => {
             const validIds = new Set(base.folders.map(folder => folder.id));
-            const fallback = legacy.bases[baseId]?.collapsed || base.collapsed || {};
-            base.collapsed = sanitizeCollapsedState(readTabCollapsed(baseId, fallback), validIds);
+            const defaultCollapsed = Object.fromEntries(base.folders.map(folder => [folder.id, true]));
+            base.collapsed = sanitizeCollapsedState(readTabCollapsed(baseId, defaultCollapsed), validIds);
         });
         return hydrated;
     };
