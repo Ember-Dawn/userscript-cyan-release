@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.2
+// @version      0.1.3
 // @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -42,9 +42,11 @@
     const state = {
         totalRounds: null,
         keptRounds: null,
-        lastConversationUrl: '',
+        currentConversationId: extractConversationPageId(),
         uiReady: false,
         seenUserMessageIds: new Set(),
+        domIncrementReady: false,
+        domBaselineToken: 0,
     };
 
     let statusButton = null;
@@ -54,7 +56,6 @@
     let applyButton = null;
     let enabledSwitch = null;
     let draftLimit = null;
-    let nativeFetchRef = null;
     let documentClickInstalled = false;
 
     function clampRounds(value) {
@@ -309,6 +310,48 @@
         renderUiState();
     }
 
+    function getConversationRequestInfo(url) {
+        const match = url.pathname.match(/^\/backend-api\/(conversation|shared_conversation)\/([^/]+)\/?$/);
+        if (!match) {
+            return null;
+        }
+        return {
+            kind: match[1],
+            id: decodeURIComponent(match[2]),
+        };
+    }
+
+    function isRequestForCurrentPage(requestInfo) {
+        if (!requestInfo) {
+            return false;
+        }
+
+        if (requestInfo.kind === 'conversation') {
+            const currentId = extractConversationPageId();
+            return Boolean(
+                currentId &&
+                state.currentConversationId === currentId &&
+                requestInfo.id === currentId
+            );
+        }
+
+        // Shared conversation pages do not use /c/<id>; there is no normal-chat ID to compare.
+        return extractConversationPageId() === null;
+    }
+
+    function armDomIncrementBaseline() {
+        state.domIncrementReady = false;
+        const token = ++state.domBaselineToken;
+        const conversationId = state.currentConversationId;
+        window.setTimeout(() => {
+            if (token !== state.domBaselineToken || conversationId !== state.currentConversationId) {
+                return;
+            }
+            seedVisibleUserMessageIds();
+            state.domIncrementReady = true;
+        }, 1000);
+    }
+
     async function handleConversationResponse(response) {
         if (!isJsonResponse(response)) {
             return response;
@@ -323,6 +366,7 @@
 
             if (!config.enabled) {
                 setConversationStats(analysis.totalRounds, analysis.totalRounds);
+                armDomIncrementBaseline();
                 return response;
             }
 
@@ -332,6 +376,8 @@
             }
 
             setConversationStats(trimmed.totalRounds, trimmed.keptRounds);
+            armDomIncrementBaseline();
+
             if (!trimmed.changed) {
                 return response;
             }
@@ -348,7 +394,6 @@
         }
 
         const nativeFetch = window.fetch.bind(window);
-        nativeFetchRef = nativeFetch;
         const wrappedFetch = async (...args) => {
             let meta;
             try {
@@ -362,7 +407,10 @@
                 return response;
             }
 
-            state.lastConversationUrl = meta.url.href;
+            const requestInfo = getConversationRequestInfo(meta.url);
+            if (!isRequestForCurrentPage(requestInfo)) {
+                return response;
+            }
             return handleConversationResponse(response);
         };
 
@@ -825,11 +873,11 @@
             added += 1;
         }
 
-        if (added === 0) {
+        if (added === 0 || !state.domIncrementReady || state.totalRounds === null) {
             return;
         }
 
-        const previousTotal = state.totalRounds ?? 0;
+        const previousTotal = state.totalRounds;
         state.totalRounds = previousTotal + added;
         if (config.enabled) {
             state.keptRounds = Math.min(config.keepRounds, state.totalRounds);
@@ -857,43 +905,15 @@
         return match?.[1] ?? null;
     }
 
-    async function syncCurrentConversationStats() {
-        const conversationId = extractConversationPageId();
-        if (!conversationId || !nativeFetchRef) {
-            return;
-        }
-
-        try {
-            const response = await nativeFetchRef(
-                `/backend-api/conversation/${encodeURIComponent(conversationId)}`
-            );
-            if (!response.ok || !isJsonResponse(response)) {
-                return;
-            }
-            const json = await response.json();
-            const analysis = analyzeConversation(json);
-            if (!analysis) {
-                return;
-            }
-            setConversationStats(
-                analysis.totalRounds,
-                config.enabled ? Math.min(config.keepRounds, analysis.totalRounds) : analysis.totalRounds
-            );
-        } catch {
-            // SPA 导航后的统计同步失败不影响页面正常使用。
-        }
-    }
-
     function handleNavigation() {
         state.totalRounds = null;
         state.keptRounds = null;
-        state.lastConversationUrl = '';
+        state.currentConversationId = extractConversationPageId();
         state.seenUserMessageIds.clear();
+        state.domIncrementReady = false;
+        state.domBaselineToken += 1;
         renderUiState();
         queueMicrotask(seedVisibleUserMessageIds);
-        window.setTimeout(() => {
-            void syncCurrentConversationStats();
-        }, 350);
     }
 
     function patchHistoryForSpaNavigation() {
