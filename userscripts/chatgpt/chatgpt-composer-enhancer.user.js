@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-composer-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-composer-enhancer.user.js
-// @version      1.0.3
-// @description  增强 ChatGPT 输入框；当前提供 Raw Paste Mode，使短文本粘贴的 Markdown 保持原始文本，同时保留原生长文本附件与文件粘贴行为。
+// @version      1.0.4
+// @description  增强 ChatGPT 输入框；当前提供 Raw Paste Mode，使不超过 1,500 字符的纯文本粘贴保持原始 Markdown，并保留较长文本及图片/文件粘贴的原生行为。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -18,7 +18,7 @@
     'use strict';
 
     const COMPOSER_SELECTOR = 'form[data-type="unified-composer"] #prompt-textarea[contenteditable="true"][role="textbox"]';
-    const LARGE_PASTE_ATTACHMENT_THRESHOLD = 10000;
+    const RAW_PASTE_MAX_LENGTH = 1500;
 
     function getComposer(target) {
         if (!(target instanceof Element)) {
@@ -59,14 +59,7 @@
         }
 
         const text = clipboardData.getData('text/plain');
-        if (!text) {
-            return;
-        }
-
-        // ChatGPT currently converts pastes longer than 10,000 characters into
-        // attachments. Preserve that native path instead of forcing a huge text
-        // node into ProseMirror.
-        if (text.length > LARGE_PASTE_ATTACHMENT_THRESHOLD) {
+        if (!text || text.length > RAW_PASTE_MAX_LENGTH) {
             return;
         }
 
