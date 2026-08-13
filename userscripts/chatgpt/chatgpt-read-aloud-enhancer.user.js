@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.1
+// @version      4.0.2
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -20,6 +20,7 @@ Current behavior contract:
 - Adds a first-level read/replay button to each visible assistant response.
 - Delegates speech generation to ChatGPT's official read-aloud action.
 - Shows a compact floating player only after official audio starts.
+- Captures both DOM-attached and detached HTML audio playback.
 - Supports message navigation, seeking, persisted speed/seek settings, and shortcuts.
 - Renders seek and speed menus as body-level fixed overlays so they are never
   clipped by the player's rounded overflow boundary.
@@ -31,7 +32,7 @@ Current behavior contract:
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.1';
+  const SCRIPT_VERSION = '4.0.2';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -1989,6 +1990,35 @@ Current behavior contract:
     }
   }
 
+  function installMediaPlayHook() {
+    const mediaPrototype = window.HTMLMediaElement?.prototype;
+    if (!mediaPrototype || typeof mediaPrototype.play !== 'function') return;
+
+    const currentPlay = mediaPrototype.play;
+    if (currentPlay.__cyanReadAloudHook === true) return;
+
+    function cyanReadAloudPlay(...args) {
+      // ChatGPT may play a detached <audio> that never enters document, so bind
+      // it before play() fires. Direct listeners on the element still receive
+      // its media events even when document-level capture cannot.
+      if (isAudioElement(this)) bindAudio(this, false);
+      return currentPlay.apply(this, args);
+    }
+
+    Object.defineProperty(cyanReadAloudPlay, '__cyanReadAloudHook', {
+      value: true,
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+
+    try {
+      mediaPrototype.play = cyanReadAloudPlay;
+    } catch (error) {
+      console.warn(`${SCRIPT_PREFIX} 无法安装音频播放捕获钩子。`, error);
+    }
+  }
+
   function handleDocumentPlay(event) {
     const audio = event.target;
     if (!(isAudioElement(audio))) return;
@@ -2016,6 +2046,7 @@ Current behavior contract:
   // ---------------------------------------------------------------------------
 
   function startAudioTracking() {
+    installMediaPlayHook();
     document.addEventListener('play', handleDocumentPlay, true);
     document.addEventListener('keydown', handleGlobalKeydown, true);
     document.addEventListener('pointerdown', (event) => {
