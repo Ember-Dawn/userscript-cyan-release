@@ -110,11 +110,12 @@ LS Off / 86
 conversation GET 是总轮数的权威来源，但脚本 **不会为了更新数字额外主动 GET `/backend-api/conversation/<id>`**。它只被动利用 ChatGPT 自己本来就会发出的 conversation 请求：
 
 - 首次打开或刷新对话时，从 ChatGPT 原生 conversation response 得到权威总轮数。
-- 同一标签页通过 SPA 从对话 A 切换到 B 时，立即清空 A 的 `totalRounds`、`keptRounds` 和已见 message id，按钮先显示 `LS N / --`。
-- 随后只等待 ChatGPT 自己加载 B；捕获到 B 的原生 conversation response 后再显示 B 的权威总轮数。
+- 同一标签页通过 SPA 从对话 A 切换到 B 时，先切换当前 conversation id，并清空上一条会话的 DOM 增量基线。
+- 脚本使用当前标签页作用域的 `sessionStorage` 为已处理过的 conversation id 缓存轻量统计值（只保存 conversation id 与 `totalRounds`，不保存 conversation 内容）。这样即使 A → B 发生完整刷新，只要仍在同一个标签页会话中，之后从 B 通过 SPA 返回 A 仍可恢复 A 的已知总轮数；如果 B 在本标签页会话中从未取得过权威总轮数，按钮先显示 `LS N / --`。
+- 随后仍只等待 ChatGPT 自己加载 B；如果捕获到 B 的原生 conversation response，以该 response 的权威总轮数覆盖缓存。
 - 不为“尽快显示数字”额外访问对话历史接口，以降低短时间重复访问 conversation history 的风险。
 
-脚本从当前 pathname 中识别 `/c/<id>` 路由段，因此既支持普通 `/c/<id>`，也支持 Project `/g/g-p-<project-id>/c/<id>`。conversation response 返回时会再次核对请求 id 与当前 URL。快速执行 `A → B → C` 时，A/B 的迟到响应不会覆盖 C 的悬浮状态，也不会被本脚本改写；因此宁可暂时显示 `--`，也不沿用上一条会话的总轮数。
+脚本从当前 pathname 中识别 `/c/<id>` 路由段，因此既支持普通 `/c/<id>`，也支持 Project `/g/g-p-<project-id>/c/<id>`。conversation response 返回时会再次核对请求 id 与当前 URL。快速执行 `A → B → C` 时，A/B 的迟到响应不会覆盖 C 的悬浮状态，也不会被本脚本改写。对于同一标签页会话内已经处理过的会话，SPA 返回时可使用该 conversation id 对应的会话级统计缓存恢复总轮数。缓存使用 `sessionStorage`，因此同一标签页完整刷新后仍保留，但不会作为跨标签页的长期全局配置；缓存最多保留最近 100 个 conversation id。
 
 为避免用户在当前页面继续发送新消息后数字一直停留在初始值，脚本另外安装一个局部增量 MutationObserver：
 
@@ -134,14 +135,16 @@ conversation GET 是总轮数的权威来源，但脚本 **不会为了更新数
 - Fetch Proxy 主要优化 conversation 初始加载 / 重新加载时的历史渲染。当前页面继续产生的新轮次不会自动把 React 已有节点再次压回固定 N 轮；需要重新加载页面时才会重新严格裁剪为 N 轮。
 - “总轮数”以当前活动分支计算，不代表 conversation mapping 中所有历史分叉节点的总量。
 - 关闭裁剪后仍会 clone 并解析当前会话的 conversation GET 响应用于统计总轮数，因此并非完全零开销；但不会改写响应。
-- SPA 切换后如果 ChatGPT 没有重新发出可捕获的当前 conversation GET，总轮数会暂时保持 `--`；脚本不会用额外历史请求强行补齐。
+- SPA 切换后如果 ChatGPT 没有重新发出可捕获的当前 conversation GET：已在本标签页会话处理过的会话会从 session 缓存恢复已知总轮数；从未处理过的会话仍会保持 `--`，脚本不会用额外历史请求强行补齐。
+- 会话级统计缓存只恢复统计状态，不会制造新的 conversation response；因此如果 ChatGPT 直接用自身前端缓存恢复某条会话而完全不发 conversation GET，本次 SPA 返回不会重新执行 response-level 裁剪。
 - 如果 Tampermonkey 无法把 `raw` userscript 注入页面主上下文，`window.fetch` 可能无法正确代理。排错时首先确认脚本是否在页面第一次 conversation GET 之前完成 patch。
 
 ## 隐私
 
 - 不向第三方服务器发送数据。
 - 不保存 conversation response、Cookie、Token 或 Authorization Header。
-- 只在 ChatGPT 页面本地保存：是否启用，以及保留轮数。
+- `localStorage` 只持久保存：是否启用，以及保留轮数。
+- 当前标签页的 `sessionStorage` 另外暂存最多 100 条 conversation id 与对应总轮数，用于完整刷新后再通过 SPA 返回旧会话时恢复统计；不保存聊天正文。
 - 日志默认不输出完整响应内容。
 
 ## 上游同步基线
@@ -180,9 +183,9 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 4. 重新开启后自动刷新并恢复裁剪。
 5. 修改保留轮数时不会立即刷新，点击“应用并刷新”后才生效。
 6. 在当前会话新增用户消息时总轮数能够递增。
-7. ChatGPT SPA 切换不同会话后立即显示 `LS N / --`，不会沿用上一条会话的总轮数。
+7. ChatGPT SPA 切换到本标签页从未处理过的会话时显示 `LS N / --`；切回本标签页会话已经处理过的会话时，可立即恢复该 conversation id 的 session 总轮数；即使中间发生过同标签页完整刷新也应仍可恢复，不沿用其他会话的数字。
 8. 在 Network 中确认 SPA 切换只使用 ChatGPT 自己发出的 conversation 请求；脚本不额外主动 GET `/backend-api/conversation/<id>`。
-9. 快速执行 `A → B → C` 时，A/B 的迟到 conversation response 不会覆盖 C 的总轮数。
+9. 快速执行 `A → B → C` 时，A/B 的迟到 conversation response 不会覆盖 C 的总轮数；随后从 C SPA 返回已缓存的 A 时，恢复的是 A 自己的统计值；并验证 A → B 完整刷新、B → A SPA 返回这一组合场景。
 10. 刷新页面并等待 ChatGPT 完成 hydration 后，`#cyan-ls-root` 仍存在；若页面曾删除该节点，悬浮按钮会自动恢复且不会重复创建。
 11. 按钮保持紧凑小圆角布局，`LS 10 / 86` 和 `LS Off / 86` 不因固定最小宽度产生明显两端空白。
 12. 新安装或没有旧配置时默认保留 10 轮；已有 `localStorage` 配置继续保留用户原值。

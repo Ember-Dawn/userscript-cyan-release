@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.4
+// @version      0.1.5
 // @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -32,12 +32,15 @@
     'use strict';
 
     const STORAGE_KEY = 'cyan_chatgpt_long_chat_optimizer';
+    const SESSION_STATS_KEY = 'cyan_chatgpt_long_chat_optimizer_stats';
     const PATCH_FLAG = '__CYAN_LS_FETCH_PATCHED__';
     const HISTORY_PATCH_FLAG = '__CYAN_LS_HISTORY_PATCHED__';
     const DEFAULT_CONFIG = Object.freeze({ enabled: true, keepRounds: 10 });
     const MIN_ROUNDS = 1;
     const MAX_ROUNDS = 100;
+    const MAX_STATS_CACHE_ENTRIES = 100;
     const HIDDEN_ROLES = new Set(['system', 'tool', 'thinking']);
+    const conversationStatsCache = loadConversationStatsCache();
 
     const state = {
         totalRounds: null,
@@ -64,6 +67,38 @@
             return DEFAULT_CONFIG.keepRounds;
         }
         return Math.min(MAX_ROUNDS, Math.max(MIN_ROUNDS, parsed));
+    }
+
+    function loadConversationStatsCache() {
+        try {
+            const raw = sessionStorage.getItem(SESSION_STATS_KEY);
+            if (!raw) {
+                return new Map();
+            }
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) {
+                return new Map();
+            }
+
+            const cache = new Map();
+            for (const entry of parsed) {
+                if (!Array.isArray(entry) || typeof entry[0] !== 'string' || !Number.isFinite(entry[1])) {
+                    continue;
+                }
+                cache.set(entry[0], Math.max(0, entry[1]));
+            }
+            return cache;
+        } catch {
+            return new Map();
+        }
+    }
+
+    function saveConversationStatsCache() {
+        try {
+            sessionStorage.setItem(SESSION_STATS_KEY, JSON.stringify([...conversationStatsCache.entries()]));
+        } catch {
+            // sessionStorage 不可用时退化为当前 document 生命周期内的内存缓存。
+        }
     }
 
     function loadConfig() {
@@ -304,9 +339,42 @@
         return response;
     }
 
+    function cacheCurrentConversationStats() {
+        if (!state.currentConversationId || state.totalRounds === null) {
+            return;
+        }
+        conversationStatsCache.delete(state.currentConversationId);
+        conversationStatsCache.set(state.currentConversationId, state.totalRounds);
+        while (conversationStatsCache.size > MAX_STATS_CACHE_ENTRIES) {
+            const oldestId = conversationStatsCache.keys().next().value;
+            if (!oldestId) {
+                break;
+            }
+            conversationStatsCache.delete(oldestId);
+        }
+        saveConversationStatsCache();
+    }
+
+    function restoreCachedConversationStats() {
+        const conversationId = state.currentConversationId;
+        const cachedTotal = conversationId ? conversationStatsCache.get(conversationId) : null;
+        if (!Number.isFinite(cachedTotal)) {
+            return false;
+        }
+
+        state.totalRounds = Math.max(0, cachedTotal);
+        state.keptRounds = config.enabled
+            ? Math.min(config.keepRounds, state.totalRounds)
+            : state.totalRounds;
+        renderUiState();
+        armDomIncrementBaseline();
+        return true;
+    }
+
     function setConversationStats(totalRounds, keptRounds) {
         state.totalRounds = Number.isFinite(totalRounds) ? Math.max(0, totalRounds) : null;
         state.keptRounds = Number.isFinite(keptRounds) ? Math.max(0, keptRounds) : null;
+        cacheCurrentConversationStats();
         renderUiState();
     }
 
@@ -884,6 +952,7 @@
         } else {
             state.keptRounds = state.totalRounds;
         }
+        cacheCurrentConversationStats();
         renderUiState();
     }
 
@@ -912,8 +981,11 @@
         state.seenUserMessageIds.clear();
         state.domIncrementReady = false;
         state.domBaselineToken += 1;
-        renderUiState();
-        queueMicrotask(seedVisibleUserMessageIds);
+
+        if (!restoreCachedConversationStats()) {
+            renderUiState();
+            queueMicrotask(seedVisibleUserMessageIds);
+        }
     }
 
     function patchHistoryForSpaNavigation() {
