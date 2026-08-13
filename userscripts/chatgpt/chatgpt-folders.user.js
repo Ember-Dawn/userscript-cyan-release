@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.6.2
-// @description  ChatGPT 普通聊天文件夹管理：v0.6.2；修复多标签页将 WebDAV 状态写入误报为文件夹更新，并继续支持操作级多端合并。
+// @version      0.6.3
+// @description  ChatGPT 普通聊天文件夹管理：v0.6.3；修复侧边栏重建时误把脚本聊天链接识别为原生历史区域导致的挂载异常。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -23,7 +23,7 @@
 /*
 ================================================================================
 ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
-适用版本：v0.6.2 附近
+适用版本：v0.6.3 附近
 ================================================================================
 
 这是一个用于 ChatGPT 网页端普通聊天的 Tampermonkey 用户脚本。它在 ChatGPT 左侧侧边栏中增加一个“文件夹”区域，用于本地管理聊天链接。它不是 ChatGPT 官方 Project 功能，也不会修改 ChatGPT 后端数据；它只保存“聊天标题 + 链接 + conversation id + 文件夹结构 + 部分 UI 设置”。
@@ -765,6 +765,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - v0.6.0 起 WebDAV 改为真正的多端同步：圆圈按钮执行真实同步；前台定时 GET；本地与远端同时变化时通过操作日志、三方快照和删除墓碑自动合并；412 会重新 GET、重新合并并有限重试。
 - v0.6.1 起按来源拆分标题清洗：侧边栏可见文本保留用户输入的 ChatGPT / OpenAI；aria-label 只移除完整 UI 包装；document.title 只移除明确的末尾 ChatGPT 品牌后缀。
 - v0.6.2 起跨标签页 revision 按业务投影分类：WebDAV 核对产生的状态/时间戳写入不再触发“已同步另一个标签页的文件夹更新”，并避免这类元数据 revision 抢先导致另一标签页待保存业务修改被丢弃。
+- v0.6.3 起侧边栏宿主探测明确排除脚本自身的聊天链接，并阻止根节点挂载到自身后代，避免 React 重建期间的 HierarchyRequestError。
 
 ================================================================================
 */
@@ -775,7 +776,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.6.2';
+  const VERSION = '0.6.3';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1836,17 +1837,24 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
   // 5. Mounting and folder tree rendering
   // ---------------------------------------------------------------------------
 
+  function findNativeChatLink(scope) {
+    const searchRoot = scope && scope.querySelector ? scope : document;
+    const selector = 'a[href^="/c/"]:not(.cgfm-chat-title), a[href*="/c/"]:not(.cgfm-chat-title)';
+    const link = searchRoot.querySelector(selector);
+    return link && !(rootEl && rootEl.contains(link)) ? link : null;
+  }
+
   function findHistorySection() {
     const history = document.getElementById('history');
     // In current ChatGPT markup, #history is inside the whole "最近" section.
     // Returning the section itself lets us insert our root as a sibling before Recent,
     // instead of mutating inside React's history list section.
     if (history) return (history.parentElement && history.parentElement !== document.body) ? history.parentElement : history;
-    const firstChat = document.querySelector('a[href^="/c/"], a[href*="/c/"]');
+    const firstChat = findNativeChatLink(document.getElementById('stage-slideover-sidebar') || document);
     if (!firstChat) return null;
     let node = firstChat;
     for (let i = 0; i < 8 && node && node !== document.body; i++, node = node.parentElement) {
-      if (node.tagName === 'DIV' && node.querySelectorAll && node.querySelectorAll('a[href*="/c/"]').length >= 2) return node;
+      if (node.tagName === 'DIV' && node.querySelectorAll && node.querySelectorAll('a[href*="/c/"]:not(.cgfm-chat-title)').length >= 2) return node;
     }
     return firstChat.parentElement;
   }
@@ -1856,8 +1864,12 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     if (history) return history.closest('nav[aria-label], nav, aside, [id*="sidebar"]') || history.parentElement;
     const nav = document.querySelector('#stage-slideover-sidebar nav, nav[aria-label*="Chat"], nav[aria-label*="历史"], nav[aria-label*="sidebar"], aside nav');
     if (nav) return nav;
-    const link = document.querySelector('a[href^="/c/"], a[href*="/c/"]');
+    const link = findNativeChatLink(document.getElementById('stage-slideover-sidebar') || document);
     return link ? (link.closest('nav, aside, [id*="sidebar"]') || link.parentElement) : null;
+  }
+
+  function isSafeMountParent(parent) {
+    return !!(parent && parent instanceof Element && (!rootEl || (parent !== rootEl && !rootEl.contains(parent))));
   }
 
   function mount() {
@@ -1866,7 +1878,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     applySidebarWidth();
     const recent = findHistorySection();
     const parent = (recent && recent.parentElement) || findSidebarParent();
-    if (!parent) return false;
+    if (!isSafeMountParent(parent)) return false;
     sidebarEl = findSidebarParent() || parent;
     if (!rootEl) {
       document.querySelectorAll('#cgfm-root').forEach(el => el.remove());
@@ -4055,7 +4067,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
       const recent = findHistorySection();
       const expectedParent = (recent && recent.parentElement) || findSidebarParent();
       const rootMissing = !rootEl || !document.body.contains(rootEl);
-      const parentChanged = !!(rootEl && expectedParent && rootEl.parentElement !== expectedParent);
+      const parentChanged = !!(rootEl && isSafeMountParent(expectedParent) && rootEl.parentElement !== expectedParent);
 
       if (rootMissing || parentChanged) mount();
       else {
