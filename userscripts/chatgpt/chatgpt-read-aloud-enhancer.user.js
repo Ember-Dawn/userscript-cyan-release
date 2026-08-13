@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.7
+// @version      4.0.8
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -32,7 +32,7 @@ Current behavior contract:
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.7';
+  const SCRIPT_VERSION = '4.0.8';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -89,6 +89,8 @@ Current behavior contract:
       activeOperation: null,
       scanFrame: null,
       pendingScanRoots: new Set(),
+      layoutRecheckTimer: null,
+      layoutSettleTimer: null,
     },
     playback: {
       audio: null,
@@ -562,7 +564,13 @@ Current behavior contract:
 
   function placeVoiceButtonAtVisualEnd(group, button) {
     const flexDirection = window.getComputedStyle(group).flexDirection;
-    if (flexDirection === 'row-reverse') {
+    const isRowReverse = flexDirection === 'row-reverse';
+    const desiredOrder = isRowReverse ? '-2147483647' : '2147483647';
+    if (button.style.order !== desiredOrder) button.style.order = desiredOrder;
+
+    // CSS order keeps the button at the visual end even if ChatGPT rebuilds the
+    // action row. DOM placement remains a fallback for non-flex/transitional layouts.
+    if (isRowReverse) {
       if (button !== group.firstElementChild) group.prepend(button);
       return;
     }
@@ -640,6 +648,23 @@ Current behavior contract:
         if (scanTarget === document || scanTarget.isConnected) scanRoot(scanTarget);
       }
     });
+  }
+
+  function scheduleActionGroupLayoutRecheck() {
+    window.clearTimeout(state.enhancement.layoutRecheckTimer);
+    window.clearTimeout(state.enhancement.layoutSettleTimer);
+
+    state.enhancement.layoutRecheckTimer = window.setTimeout(() => {
+      state.enhancement.layoutRecheckTimer = null;
+      scanRoot(document);
+    }, 120);
+
+    // Voice mode can restore the action-row classes before its final flex layout
+    // settles. Recheck once more after that transition without polling forever.
+    state.enhancement.layoutSettleTimer = window.setTimeout(() => {
+      state.enhancement.layoutSettleTimer = null;
+      scanRoot(document);
+    }, 600);
   }
 
   function isVisibleVoiceItem(item) {
@@ -2351,18 +2376,27 @@ Current behavior contract:
   function observePage() {
     const observer = new MutationObserver((mutations) => {
       checkRouteChange();
+      let shouldRecheckLayout = false;
       for (const mutation of mutations) {
+        if (mutation.type === 'attributes') {
+          shouldRecheckLayout = true;
+          continue;
+        }
         for (const node of mutation.addedNodes) {
           if (isElementNode(node)) {
             scheduleScan(node);
+            shouldRecheckLayout = true;
           }
         }
       }
+      if (shouldRecheckLayout) scheduleActionGroupLayoutRecheck();
     });
 
     observer.observe(document.body, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style'],
     });
   }
 
