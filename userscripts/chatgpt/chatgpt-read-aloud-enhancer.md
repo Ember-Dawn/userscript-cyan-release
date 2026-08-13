@@ -86,6 +86,14 @@
 - 在实际调用 `play()` 前绑定目标 `<audio>` 的媒体事件，因此即使 `audio.isConnected === false`，播放器仍可接收播放、暂停、进度和结束事件；
 - 不改变官方朗读菜单触发、播放器 UI、浮层菜单、MP3 下载和诊断逻辑。
 
+## 4.0.3 Blob 音频 MP3 下载兼容修复
+
+- 兼容普通对话朗读使用 `blob:` URL，而 ChatGPT 当前 CSP 禁止再次 `fetch(blob:...)` 的情况；
+- 通过 `URL.createObjectURL` 捕获原始音频 `Blob`，并在 detached `<audio>` 播放时与音频对象关联；
+- `blob:` 音频下载时直接读取已捕获的原始 `Blob`，绕过受 CSP 限制的二次 `fetch`；
+- `https:` / `http:` 音频仍沿用原有 `fetch(source) -> decode -> MP3` 路径，因此 Voice 模式结束后的“重播”下载行为保持不变；
+- Blob URL 缓存仅保留最近 32 项，避免长期无界持有临时对象。
+
 ## 数据与隐私
 
 - 跳转秒数、播放速度、播放器折叠状态和最近一次失败日志只保存在浏览器本地；

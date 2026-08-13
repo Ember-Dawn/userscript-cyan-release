@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.2
+// @version      4.0.3
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -32,7 +32,7 @@ Current behavior contract:
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.2';
+  const SCRIPT_VERSION = '4.0.3';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -102,7 +102,11 @@ Current behavior contract:
       lastKnownIndex: -1,
       switchTimer: null,
     },
-    download: { inProgress: false },
+    download: {
+      inProgress: false,
+      objectUrlBlobs: new Map(),
+      audioBlobs: new WeakMap(),
+    },
     overlay: { openSelect: null, nextSelectId: 0 },
     timers: { status: null },
   };
@@ -1001,6 +1005,16 @@ Current behavior contract:
     return `${state.playback.audio.currentSrc || state.playback.audio.src || ''}`.trim();
   }
 
+  function getCurrentAudioBlob() {
+    if (!state.playback.audio) return null;
+    const directBlob = state.download.audioBlobs.get(state.playback.audio);
+    if (directBlob instanceof Blob) return directBlob;
+
+    const source = getCurrentAudioSource();
+    const capturedBlob = state.download.objectUrlBlobs.get(source);
+    return capturedBlob instanceof Blob ? capturedBlob : null;
+  }
+
   const MP3_BITRATE_KBPS = 96;
   const MP3_SAMPLE_BLOCK_SIZE = 1152;
   const MP3_LOG_STORAGE_KEY = 'cyanChatgptMp3LastErrorLog';
@@ -1393,11 +1407,23 @@ Current behavior contract:
 
     try {
       addDiagnosticStage(log, 'start');
-      const response = await fetch(source, { credentials: 'include' });
-      addDiagnosticStage(log, 'fetched', { status: response.status, ok: response.ok });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const sourceBlob = await response.blob();
-      addDiagnosticStage(log, 'source-blob', { bytes: sourceBlob.size, type: sourceBlob.type });
+      let sourceBlob;
+      if (source.startsWith('blob:')) {
+        sourceBlob = getCurrentAudioBlob();
+        if (!sourceBlob) {
+          throw new Error('blob audio source was not captured before playback');
+        }
+        addDiagnosticStage(log, 'source-blob-captured', {
+          bytes: sourceBlob.size,
+          type: sourceBlob.type,
+        });
+      } else {
+        const response = await fetch(source, { credentials: 'include' });
+        addDiagnosticStage(log, 'fetched', { status: response.status, ok: response.ok });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        sourceBlob = await response.blob();
+        addDiagnosticStage(log, 'source-blob', { bytes: sourceBlob.size, type: sourceBlob.type });
+      }
       if (!sourceBlob.size) throw new Error('empty audio blob');
 
       const audioBuffer = await decodeAudioBlob(sourceBlob, log);
@@ -1990,6 +2016,39 @@ Current behavior contract:
     }
   }
 
+  function installObjectUrlCaptureHook() {
+    const urlApi = window.URL;
+    if (!urlApi || typeof urlApi.createObjectURL !== 'function') return;
+
+    const currentCreateObjectURL = urlApi.createObjectURL;
+    if (currentCreateObjectURL.__cyanReadAloudHook === true) return;
+
+    function cyanReadAloudCreateObjectURL(object) {
+      const objectUrl = currentCreateObjectURL.apply(this, arguments);
+      if (object instanceof Blob && typeof objectUrl === 'string' && objectUrl.startsWith('blob:')) {
+        state.download.objectUrlBlobs.set(objectUrl, object);
+        while (state.download.objectUrlBlobs.size > 32) {
+          const oldestUrl = state.download.objectUrlBlobs.keys().next().value;
+          state.download.objectUrlBlobs.delete(oldestUrl);
+        }
+      }
+      return objectUrl;
+    }
+
+    Object.defineProperty(cyanReadAloudCreateObjectURL, '__cyanReadAloudHook', {
+      value: true,
+      configurable: false,
+      enumerable: false,
+      writable: false,
+    });
+
+    try {
+      urlApi.createObjectURL = cyanReadAloudCreateObjectURL;
+    } catch (error) {
+      console.warn(`${SCRIPT_PREFIX} 无法安装 Blob 音频捕获钩子。`, error);
+    }
+  }
+
   function installMediaPlayHook() {
     const mediaPrototype = window.HTMLMediaElement?.prototype;
     if (!mediaPrototype || typeof mediaPrototype.play !== 'function') return;
@@ -2001,7 +2060,14 @@ Current behavior contract:
       // ChatGPT may play a detached <audio> that never enters document, so bind
       // it before play() fires. Direct listeners on the element still receive
       // its media events even when document-level capture cannot.
-      if (isAudioElement(this)) bindAudio(this, false);
+      if (isAudioElement(this)) {
+        const source = `${this.currentSrc || this.src || ''}`.trim();
+        const capturedBlob = state.download.objectUrlBlobs.get(source);
+        if (capturedBlob instanceof Blob) {
+          state.download.audioBlobs.set(this, capturedBlob);
+        }
+        bindAudio(this, false);
+      }
       return currentPlay.apply(this, args);
     }
 
@@ -2046,6 +2112,7 @@ Current behavior contract:
   // ---------------------------------------------------------------------------
 
   function startAudioTracking() {
+    installObjectUrlCaptureHook();
     installMediaPlayHook();
     document.addEventListener('play', handleDocumentPlay, true);
     document.addEventListener('keydown', handleGlobalKeydown, true);
