@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.5
+// @version      4.0.6
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -20,7 +20,7 @@ Current behavior contract:
 - Adds a first-level read/replay button to each visible assistant response.
 - Delegates speech generation to ChatGPT's official read-aloud action.
 - Shows a compact floating player only after official audio starts.
-- Captures both DOM-attached and detached HTML audio playback.
+- Captures both DOM-attached and detached HTML audio playback for script-requested read/replay sessions.
 - Supports message navigation, seeking, persisted speed/seek settings, and shortcuts.
 - Renders seek and speed menus as body-level fixed overlays so they are never
   clipped by the player's rounded overflow boundary.
@@ -32,7 +32,7 @@ Current behavior contract:
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.5';
+  const SCRIPT_VERSION = '4.0.6';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -1821,33 +1821,28 @@ Current behavior contract:
     return true;
   }
 
-  function activatePlaybackSession(audio) {
+  function isExpectedPlaybackAudio(audio) {
     if (!(isAudioElement(audio))) return false;
 
     if (state.playback.sessionState === 'opening') {
       if (Date.now() > state.playback.openingRequestUntil) {
         state.playback.sessionState = 'idle';
         state.playback.openingRequestUntil = 0;
-      } else {
-        state.playback.sessionState = 'active';
-        state.playback.openingRequestUntil = 0;
-        state.playback.dismissedAudio = null;
-        if (state.navigation.pendingContext) {
-          state.navigation.currentContext = state.navigation.pendingContext;
-          state.navigation.pendingContext = null;
-        }
-        state.navigation.inProgress = false;
-        window.clearTimeout(state.navigation.switchTimer);
-        setPlayerStatus('');
-        return true;
+        return false;
       }
+      return true;
     }
 
-    if (state.playback.sessionState === 'dismissed' && audio === state.playback.dismissedAudio) {
-      return false;
-    }
+    if (audio !== state.playback.audio) return false;
+    return state.playback.sessionState === 'active' ||
+      state.playback.sessionState === 'idle';
+  }
+
+  function activatePlaybackSession(audio) {
+    if (!isExpectedPlaybackAudio(audio)) return false;
 
     state.playback.sessionState = 'active';
+    state.playback.openingRequestUntil = 0;
     state.playback.dismissedAudio = null;
     if (state.navigation.pendingContext) {
       state.navigation.currentContext = state.navigation.pendingContext;
@@ -2286,7 +2281,7 @@ Current behavior contract:
         if (mediaSession) {
           state.download.audioMediaSessions.set(this, mediaSession);
         }
-        bindAudio(this, false);
+        if (isExpectedPlaybackAudio(this)) bindAudio(this, false);
       }
       return currentPlay.apply(this, args);
     }
@@ -2307,7 +2302,7 @@ Current behavior contract:
 
   function handleDocumentPlay(event) {
     const audio = event.target;
-    if (!(isAudioElement(audio))) return;
+    if (!isExpectedPlaybackAudio(audio)) return;
 
     const shouldShow = activatePlaybackSession(audio);
     bindAudio(audio, shouldShow);
@@ -2316,14 +2311,9 @@ Current behavior contract:
   function scanForAudio() {
     checkRouteChange();
     const audio = findBestAudio();
-    if (!audio || audio.paused || audio.ended) return;
+    if (!audio || audio.paused || audio.ended || !isExpectedPlaybackAudio(audio)) return;
 
-    if (state.playback.sessionState === 'opening' && Date.now() > state.playback.openingRequestUntil) {
-      state.playback.sessionState = 'idle';
-      state.playback.openingRequestUntil = 0;
-    }
-
-    const shouldShow = state.playback.sessionState !== 'dismissed' && canShowAudio(audio);
+    const shouldShow = activatePlaybackSession(audio);
     bindAudio(audio, shouldShow);
   }
 
