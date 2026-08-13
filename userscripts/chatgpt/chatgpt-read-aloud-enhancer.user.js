@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.6
+// @version      4.0.7
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -32,7 +32,7 @@ Current behavior contract:
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.6';
+  const SCRIPT_VERSION = '4.0.7';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -560,6 +560,15 @@ Current behavior contract:
     return button;
   }
 
+  function placeVoiceButtonAtVisualEnd(group, button) {
+    const flexDirection = window.getComputedStyle(group).flexDirection;
+    if (flexDirection === 'row-reverse') {
+      if (button !== group.firstElementChild) group.prepend(button);
+      return;
+    }
+    if (button !== group.lastElementChild) group.appendChild(button);
+  }
+
   function enhanceActionGroup(group) {
     if (!isAssistantActionGroup(group)) return;
 
@@ -574,12 +583,12 @@ Current behavior contract:
     }
 
     if (existingButton) {
-      if (existingButton !== group.lastElementChild) group.appendChild(existingButton);
+      placeVoiceButtonAtVisualEnd(group, existingButton);
       group.setAttribute(PROCESSED_GROUP_ATTRIBUTE, 'true');
       return;
     }
 
-    group.appendChild(createVoiceButton(moreButton));
+    placeVoiceButtonAtVisualEnd(group, createVoiceButton(moreButton));
     group.setAttribute(PROCESSED_GROUP_ATTRIBUTE, 'true');
   }
 
