@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.3
+// @version      4.0.4
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -32,7 +32,7 @@ Current behavior contract:
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.3';
+  const SCRIPT_VERSION = '4.0.4';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -106,6 +106,10 @@ Current behavior contract:
       inProgress: false,
       objectUrlBlobs: new Map(),
       audioBlobs: new WeakMap(),
+      mediaSourceSessions: new WeakMap(),
+      objectUrlMediaSessions: new Map(),
+      sourceBufferSessions: new WeakMap(),
+      audioMediaSessions: new WeakMap(),
     },
     overlay: { openSelect: null, nextSelectId: 0 },
     timers: { status: null },
@@ -1015,6 +1019,94 @@ Current behavior contract:
     return capturedBlob instanceof Blob ? capturedBlob : null;
   }
 
+  function getOrCreateMediaSourceSession(mediaSource) {
+    if (!mediaSource) return null;
+    let session = state.download.mediaSourceSessions.get(mediaSource);
+    if (session) return session;
+
+    session = {
+      mediaSource,
+      objectUrl: '',
+      mimeType: '',
+      segments: [],
+      totalBytes: 0,
+      sourceBuffers: new Set(),
+      lastAppendAt: 0,
+    };
+    state.download.mediaSourceSessions.set(mediaSource, session);
+    return session;
+  }
+
+  function rememberMediaSourceObjectUrl(objectUrl, mediaSource) {
+    const session = getOrCreateMediaSourceSession(mediaSource);
+    if (!session || typeof objectUrl !== 'string' || !objectUrl.startsWith('blob:')) return;
+    session.objectUrl = objectUrl;
+    state.download.objectUrlMediaSessions.set(objectUrl, session);
+    while (state.download.objectUrlMediaSessions.size > 8) {
+      const oldestUrl = state.download.objectUrlMediaSessions.keys().next().value;
+      state.download.objectUrlMediaSessions.delete(oldestUrl);
+    }
+  }
+
+  function getCurrentMediaSourceSession() {
+    if (!state.playback.audio) return null;
+    const directSession = state.download.audioMediaSessions.get(state.playback.audio);
+    if (directSession) return directSession;
+    return state.download.objectUrlMediaSessions.get(getCurrentAudioSource()) || null;
+  }
+
+  function copyBufferSourceBytes(buffer) {
+    if (ArrayBuffer.isView(buffer)) {
+      return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength).slice();
+    }
+    if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer).slice();
+    return null;
+  }
+
+  function getMediaSourceBufferedEnd(session) {
+    let bufferedEnd = 0;
+    for (const sourceBuffer of session?.sourceBuffers || []) {
+      try {
+        const ranges = sourceBuffer.buffered;
+        if (ranges.length > 0) bufferedEnd = Math.max(bufferedEnd, ranges.end(ranges.length - 1));
+      } catch (_) {
+        // SourceBuffer 状态切换时读取 buffered 可能失败，稍后重试即可。
+      }
+    }
+    return bufferedEnd;
+  }
+
+  async function buildCapturedMediaSourceBlob(session, log) {
+    if (!session) throw new Error('MediaSource audio session was not captured');
+
+    const targetDuration = hasUsableDuration() ? state.playback.audio.duration : 0;
+    const waitDeadline = Date.now() + 5000;
+    while (Date.now() < waitDeadline) {
+      const isUpdating = Array.from(session.sourceBuffers).some((buffer) => buffer.updating);
+      const bufferedEnd = getMediaSourceBufferedEnd(session);
+      const bufferedComplete = targetDuration > 0 && bufferedEnd >= targetDuration - 0.1;
+      const streamEnded = session.mediaSource?.readyState === 'ended';
+      if (!isUpdating && (bufferedComplete || streamEnded)) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+
+    if (!session.segments.length || session.totalBytes <= 0) {
+      throw new Error('MediaSource audio contained no captured segments');
+    }
+
+    const mimeType = session.mimeType || 'audio/aac';
+    const sourceBlob = new Blob(session.segments, { type: mimeType });
+    addDiagnosticStage(log, 'mse-source-captured', {
+      bytes: sourceBlob.size,
+      type: sourceBlob.type,
+      segments: session.segments.length,
+      bufferedEnd: getMediaSourceBufferedEnd(session),
+      targetDuration,
+      mediaSourceState: session.mediaSource?.readyState || 'unknown',
+    });
+    return sourceBlob;
+  }
+
   const MP3_BITRATE_KBPS = 96;
   const MP3_SAMPLE_BLOCK_SIZE = 1152;
   const MP3_LOG_STORAGE_KEY = 'cyanChatgptMp3LastErrorLog';
@@ -1410,13 +1502,14 @@ Current behavior contract:
       let sourceBlob;
       if (source.startsWith('blob:')) {
         sourceBlob = getCurrentAudioBlob();
-        if (!sourceBlob) {
-          throw new Error('blob audio source was not captured before playback');
+        if (sourceBlob) {
+          addDiagnosticStage(log, 'source-blob-captured', {
+            bytes: sourceBlob.size,
+            type: sourceBlob.type,
+          });
+        } else {
+          sourceBlob = await buildCapturedMediaSourceBlob(getCurrentMediaSourceSession(), log);
         }
-        addDiagnosticStage(log, 'source-blob-captured', {
-          bytes: sourceBlob.size,
-          type: sourceBlob.type,
-        });
       } else {
         const response = await fetch(source, { credentials: 'include' });
         addDiagnosticStage(log, 'fetched', { status: response.status, ok: response.ok });
@@ -2031,6 +2124,8 @@ Current behavior contract:
           const oldestUrl = state.download.objectUrlBlobs.keys().next().value;
           state.download.objectUrlBlobs.delete(oldestUrl);
         }
+      } else if (window.MediaSource && object instanceof window.MediaSource) {
+        rememberMediaSourceObjectUrl(objectUrl, object);
       }
       return objectUrl;
     }
@@ -2045,7 +2140,70 @@ Current behavior contract:
     try {
       urlApi.createObjectURL = cyanReadAloudCreateObjectURL;
     } catch (error) {
-      console.warn(`${SCRIPT_PREFIX} 无法安装 Blob 音频捕获钩子。`, error);
+      console.warn(`${SCRIPT_PREFIX} 无法安装 Blob / MediaSource 捕获钩子。`, error);
+    }
+  }
+
+  function installMediaSourceCaptureHooks() {
+    const mediaSourcePrototype = window.MediaSource?.prototype;
+    const sourceBufferPrototype = window.SourceBuffer?.prototype;
+    if (!mediaSourcePrototype || !sourceBufferPrototype) return;
+
+    const currentAddSourceBuffer = mediaSourcePrototype.addSourceBuffer;
+    if (typeof currentAddSourceBuffer === 'function' &&
+        currentAddSourceBuffer.__cyanReadAloudHook !== true) {
+      function cyanReadAloudAddSourceBuffer(mimeType) {
+        const sourceBuffer = currentAddSourceBuffer.apply(this, arguments);
+        const session = getOrCreateMediaSourceSession(this);
+        if (session && sourceBuffer) {
+          session.mimeType ||= String(mimeType || '');
+          session.sourceBuffers.add(sourceBuffer);
+          state.download.sourceBufferSessions.set(sourceBuffer, session);
+        }
+        return sourceBuffer;
+      }
+
+      Object.defineProperty(cyanReadAloudAddSourceBuffer, '__cyanReadAloudHook', {
+        value: true,
+        configurable: false,
+        enumerable: false,
+        writable: false,
+      });
+
+      try {
+        mediaSourcePrototype.addSourceBuffer = cyanReadAloudAddSourceBuffer;
+      } catch (error) {
+        console.warn(`${SCRIPT_PREFIX} 无法安装 MediaSource SourceBuffer 捕获钩子。`, error);
+      }
+    }
+
+    const currentAppendBuffer = sourceBufferPrototype.appendBuffer;
+    if (typeof currentAppendBuffer === 'function' &&
+        currentAppendBuffer.__cyanReadAloudHook !== true) {
+      function cyanReadAloudAppendBuffer(buffer) {
+        const session = state.download.sourceBufferSessions.get(this);
+        const bytes = session ? copyBufferSourceBytes(buffer) : null;
+        const result = currentAppendBuffer.apply(this, arguments);
+        if (session && bytes?.byteLength) {
+          session.segments.push(bytes);
+          session.totalBytes += bytes.byteLength;
+          session.lastAppendAt = Date.now();
+        }
+        return result;
+      }
+
+      Object.defineProperty(cyanReadAloudAppendBuffer, '__cyanReadAloudHook', {
+        value: true,
+        configurable: false,
+        enumerable: false,
+        writable: false,
+      });
+
+      try {
+        sourceBufferPrototype.appendBuffer = cyanReadAloudAppendBuffer;
+      } catch (error) {
+        console.warn(`${SCRIPT_PREFIX} 无法安装 SourceBuffer 音频片段捕获钩子。`, error);
+      }
     }
   }
 
@@ -2065,6 +2223,10 @@ Current behavior contract:
         const capturedBlob = state.download.objectUrlBlobs.get(source);
         if (capturedBlob instanceof Blob) {
           state.download.audioBlobs.set(this, capturedBlob);
+        }
+        const mediaSession = state.download.objectUrlMediaSessions.get(source);
+        if (mediaSession) {
+          state.download.audioMediaSessions.set(this, mediaSession);
         }
         bindAudio(this, false);
       }
@@ -2113,6 +2275,7 @@ Current behavior contract:
 
   function startAudioTracking() {
     installObjectUrlCaptureHook();
+    installMediaSourceCaptureHooks();
     installMediaPlayHook();
     document.addEventListener('play', handleDocumentPlay, true);
     document.addEventListener('keydown', handleGlobalKeydown, true);

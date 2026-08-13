@@ -94,6 +94,14 @@
 - `https:` / `http:` 音频仍沿用原有 `fetch(source) -> decode -> MP3` 路径，因此 Voice 模式结束后的“重播”下载行为保持不变；
 - Blob URL 缓存仅保留最近 32 项，避免长期无界持有临时对象。
 
+## 4.0.4 MediaSource / AAC 下载兼容修复
+
+- 兼容普通“朗读”使用 `MediaSource` + `SourceBuffer` 流式播放 `audio/aac` 的实现；
+- 通过 `URL.createObjectURL(MediaSource)`、`MediaSource.addSourceBuffer()` 和 `SourceBuffer.appendBuffer()` 建立当前 `blob:` 音频与 AAC 数据片段的关联；
+- 对每次追加的 `ArrayBuffer` / TypedArray 立即复制并按原顺序保存，下载时拼成 `audio/aac` Blob 后继续复用现有 Web Audio 解码与 MP3 编码流程；
+- `blob:` URL 如果本身来自普通 `Blob`，仍保留 4.0.3 的直接 Blob 路径；`https:` / `http:` 音频继续沿用原有 `fetch(source) -> decode -> MP3` 路径，因此 Voice 模式结束后的“重播”下载路径不变；
+- MSE 下载会等待 SourceBuffer 停止更新并短暂静默后再快照片段，诊断日志会记录捕获的片段数、总字节数、MIME 与 MediaSource 状态。
+
 ## 数据与隐私
 
 - 跳转秒数、播放速度、播放器折叠状态和最近一次失败日志只保存在浏览器本地；
