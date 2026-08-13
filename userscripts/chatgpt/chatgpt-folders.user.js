@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.6.3
-// @description  ChatGPT 普通聊天文件夹管理：v0.6.3；修复侧边栏重建时误把脚本聊天链接识别为原生历史区域导致的挂载异常。
+// @version      0.6.4
+// @description  ChatGPT 普通聊天文件夹管理：v0.6.4；延后首次侧边栏 DOM 注入以避开 React hydration，并保留侧边栏重建挂载保护。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -23,7 +23,7 @@
 /*
 ================================================================================
 ChatGPT文件夹 - 脚本维护说明 / AI 交接说明
-适用版本：v0.6.3 附近
+适用版本：v0.6.4 附近
 ================================================================================
 
 这是一个用于 ChatGPT 网页端普通聊天的 Tampermonkey 用户脚本。它在 ChatGPT 左侧侧边栏中增加一个“文件夹”区域，用于本地管理聊天链接。它不是 ChatGPT 官方 Project 功能，也不会修改 ChatGPT 后端数据；它只保存“聊天标题 + 链接 + conversation id + 文件夹结构 + 部分 UI 设置”。
@@ -766,6 +766,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 - v0.6.1 起按来源拆分标题清洗：侧边栏可见文本保留用户输入的 ChatGPT / OpenAI；aria-label 只移除完整 UI 包装；document.title 只移除明确的末尾 ChatGPT 品牌后缀。
 - v0.6.2 起跨标签页 revision 按业务投影分类：WebDAV 核对产生的状态/时间戳写入不再触发“已同步另一个标签页的文件夹更新”，并避免这类元数据 revision 抢先导致另一标签页待保存业务修改被丢弃。
 - v0.6.3 起侧边栏宿主探测明确排除脚本自身的聊天链接，并阻止根节点挂载到自身后代，避免 React 重建期间的 HierarchyRequestError。
+- v0.6.4 起首次挂载要求同一原生侧边栏宿主稳定存在一段短窗口，并在确认前不注入脚本样式/根节点，避免抢在 React hydration 完成前修改 DOM。
 
 ================================================================================
 */
@@ -776,7 +777,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.6.3';
+  const VERSION = '0.6.4';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -795,6 +796,7 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
   const MAX_LOCAL_OPERATIONS = 500;
   const SYNC_EPOCH = '1970-01-01T00:00:00.000Z';
   const DEFAULT_SIDEBAR_WIDTH_PX = 312;
+  const INITIAL_MOUNT_STABLE_MS = 1200;
   const MIN_SIDEBAR_WIDTH_PX = 240;
   const MAX_SIDEBAR_WIDTH_PX = 520;
   const FOLDER_SORT_LOCALE = undefined;
@@ -865,6 +867,8 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
   let accountSwitching = false;
   let accountGeneration = 0;
   let mutationBaseline = null;
+  let initialMountCandidate = null;
+  let initialMountCandidateSince = 0;
   const DEVICE_ID = getOrCreateDeviceId();
 
   // ---------------------------------------------------------------------------
@@ -1872,13 +1876,31 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     return !!(parent && parent instanceof Element && (!rootEl || (parent !== rootEl && !rootEl.contains(parent))));
   }
 
+  function initialMountHostStable(parent) {
+    if (mounted) return true;
+    if (document.readyState !== 'complete' || !isSafeMountParent(parent) || !parent.isConnected) {
+      initialMountCandidate = null;
+      initialMountCandidateSince = 0;
+      return false;
+    }
+    const now = Date.now();
+    if (initialMountCandidate !== parent) {
+      initialMountCandidate = parent;
+      initialMountCandidateSince = now;
+      return false;
+    }
+    return now - initialMountCandidateSince >= INITIAL_MOUNT_STABLE_MS;
+  }
+
   function mount() {
-    injectStyle();
     ensureActiveProfile();
-    applySidebarWidth();
     const recent = findHistorySection();
     const parent = (recent && recent.parentElement) || findSidebarParent();
-    if (!isSafeMountParent(parent)) return false;
+    // The first mount must not mutate React-managed DOM until the same native host has
+    // remained connected for a short stability window. Later remounts stay immediate.
+    if (!isSafeMountParent(parent) || !initialMountHostStable(parent)) return false;
+    injectStyle();
+    applySidebarWidth();
     sidebarEl = findSidebarParent() || parent;
     if (!rootEl) {
       document.querySelectorAll('#cgfm-root').forEach(el => el.remove());
@@ -1896,6 +1918,8 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
     setupNativeDragCache();
     setupNativeMenuHook();
     mounted = true;
+    initialMountCandidate = null;
+    initialMountCandidateSince = 0;
     return true;
   }
 
@@ -4095,12 +4119,13 @@ v0.5.0 使用按账号隔离的本地 profile；不再自动迁移旧单 profile
       lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       bindSidebarToggleWatcher();
-      // Sparse finite remount checks. This fixes normal-refresh/bookmark-open cases where
-      // ChatGPT hydrates or lazily creates the sidebar after the userscript has already run.
-      // There is no long-running observer; each check is lightweight and becomes a no-op once mounted.
+      // Sparse finite remount checks. The first successful mount additionally requires the
+      // same native sidebar host to stay connected for a short stability window, so we do not
+      // inject into React-managed DOM while hydration is still replacing the sidebar. Later
+      // remounts stay immediate. There is no long-running observer.
       [700, 1500, 2800, 4800, 8000, 13000, 21000, 34000, 55000, 90000].forEach(delay => setTimeout(ensureMountedLight, delay));
       const idle = window.requestIdleCallback || (fn => setTimeout(fn, 3500));
-      idle(() => { try { ensureSettingsModal(); } catch (_) {} });
+      idle(() => { try { if (mounted) ensureSettingsModal(); } catch (_) {} });
       restartPeriodicBackup();
       setTimeout(() => checkRemoteUpdate(false, 'boot'), 1800);
       window.addEventListener('beforeunload', () => { flushPendingPersist(false); teardownCrossTabStorageSync(); });
