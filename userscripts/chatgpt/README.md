@@ -7,7 +7,7 @@
 | 中文名称 | 文件 | 用途 |
 |---|---|---|
 | ChatGPT 宽屏 | `chatgpt-wide.user.js` | 放宽对话区和输入区，改善长文本与代码阅读。 |
-| ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。 |
+| ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。参见[详细说明](./chatgpt-folders.md)。 |
 | ChatGPT 文件链接高亮助手 | `chatgpt-file-link-highlighter.user.js` | 高亮助手回答中的文件链接和官方文件入口。 |
 | ChatGPT GitHub 自动允许助手 | `chatgpt-auto-allow-github.user.js` | 自动处理 ChatGPT 中明确指向 GitHub 的授权卡片。 |
 | ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度。 |
