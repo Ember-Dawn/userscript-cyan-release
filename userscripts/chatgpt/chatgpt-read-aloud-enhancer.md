@@ -48,6 +48,8 @@
 4. Worker 不可用时回退到主线程编码；
 5. 通过浏览器普通下载方式保存文件。
 
+音频读取按来源分流：`https:` / `http:` 音频直接读取官方资源；普通 `Blob` URL 使用已捕获的原始 Blob；普通“朗读”当前使用的 `MediaSource` / `audio/aac` 则从 `SourceBuffer.appendBuffer()` 捕获并按顺序拼接 AAC 数据。三种来源在取得可解码音频后共用同一套 Web Audio 与 MP3 编码流程。
+
 转换期间下载按钮显示独立的纯 CSS 圆环。圆环仅表示“处理中”，不与编码进度绑定，也不会显示百分比或中间文字。成功后短暂显示勾号；失败时显示感叹号并保存最近一次脱敏日志。
 
 音频不会上传到第三方服务器。编码器通过 userscript 头部的 `@require` 加载：
@@ -100,20 +102,30 @@
 - 通过 `URL.createObjectURL(MediaSource)`、`MediaSource.addSourceBuffer()` 和 `SourceBuffer.appendBuffer()` 建立当前 `blob:` 音频与 AAC 数据片段的关联；
 - 对每次追加的 `ArrayBuffer` / TypedArray 立即复制并按原顺序保存，下载时拼成 `audio/aac` Blob 后继续复用现有 Web Audio 解码与 MP3 编码流程；
 - `blob:` URL 如果本身来自普通 `Blob`，仍保留 4.0.3 的直接 Blob 路径；`https:` / `http:` 音频继续沿用原有 `fetch(source) -> decode -> MP3` 路径，因此 Voice 模式结束后的“重播”下载路径不变；
-- MSE 下载会等待 SourceBuffer 停止更新并短暂静默后再快照片段，诊断日志会记录捕获的片段数、总字节数、MIME 与 MediaSource 状态。
+- MSE 下载会等待 SourceBuffer 停止更新，并尽量等到已缓冲时长覆盖当前音频总时长或 MediaSource 进入 ended 状态后再快照片段；诊断日志会记录捕获的片段数、总字节数、MIME 与 MediaSource 状态。
+
+## 4.0.5 音频来源状态整理与生命周期优化
+
+- 不改变已经验证可用的“朗读 / 重播”下载路径、播放器 UI、菜单、导航和 MP3 编码行为；
+- 将下载内部命名进一步区分普通 Blob 与 MediaSource 捕获来源，避免后续维护时把 `blob:` URL 与 `Blob` 对象混为一谈；
+- 为 MP3 诊断日志增加 `source-kind` 阶段，明确记录当前走 `http`、`blob` 或 `mse` 来源路径；
+- 对 `URL.revokeObjectURL()` 使用延迟清理：仅在对象 URL 不再属于当前音频时移除索引；聊天路由切换时则立即释放已捕获的 Blob / MediaSource / SourceBuffer 关联和 AAC 分段，减少长时间使用时的内存驻留；
+- 保留捕获数量上限，且不改变当前音频仍在播放或当前路由内重复下载时所需的数据。
 
 ## 数据与隐私
 
 - 跳转秒数、播放速度、播放器折叠状态和最近一次失败日志只保存在浏览器本地；
 - 脚本不保存对话正文；
 - 诊断日志不包含对话正文、音频内容或带查询参数的完整音频地址；
-- 音频读取、解码、编码和保存均在当前浏览器中完成。
+- 音频读取、解码、编码和保存均在当前浏览器中完成；
+- MSE/AAC 分段只保存在页面内存中用于当前朗读的本地转换；Object URL 撤销后会延迟清理不再使用的索引，聊天路由切换会立即清理相关缓存。
 
 ## 已知限制
 
 - ChatGPT 页面结构或官方朗读实现变化后，DOM 选择器可能需要更新；
 - 官方流式音频刚开始播放时，总时长可能暂时不可用；
 - 音频源无法读取、格式无法解码或编码器加载失败时，MP3 下载会失败；
+- 如果 ChatGPT 后续改变 MediaSource 的 MIME、分段容器或不再通过 SourceBuffer 提供普通朗读音频，MSE 捕获路径可能需要再次适配；
 - 长音频转换会占用一定 CPU 和内存。
 
 ## 安装与更新

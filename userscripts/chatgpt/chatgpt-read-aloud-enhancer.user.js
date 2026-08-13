@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js
-// @version      4.0.4
+// @version      4.0.5
 // @description  增强 ChatGPT 官方朗读：一级入口、紧凑播放器、消息切换、进度与倍速控制、MP3 下载和键盘快捷键。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -24,15 +24,15 @@ Current behavior contract:
 - Supports message navigation, seeking, persisted speed/seek settings, and shortcuts.
 - Renders seek and speed menus as body-level fixed overlays so they are never
   clipped by the player's rounded overflow boundary.
-- Converts the active official audio to mono 96 kbps MP3 locally, preferring an
-  inline Worker and retaining a main-thread fallback plus local diagnostics.
+- Converts HTTP, Blob, and captured MediaSource/AAC audio to mono 96 kbps MP3
+  locally, preferring an inline Worker and retaining a main-thread fallback.
 */
 
 (() => {
   'use strict';
 
   const SCRIPT_PREFIX = '[ChatGPT 朗读增强助手]';
-  const SCRIPT_VERSION = '4.0.4';
+  const SCRIPT_VERSION = '4.0.5';
 
   function isElementNode(value) {
     return !!value && value.nodeType === 1;
@@ -78,6 +78,9 @@ Current behavior contract:
   const AUDIO_SCAN_INTERVAL_MS = 500;
   const MESSAGE_SWITCH_TIMEOUT_MS = 12000;
   const STATUS_DISPLAY_MS = 1500;
+  const CAPTURED_BLOB_URL_LIMIT = 32;
+  const CAPTURED_MEDIA_SOURCE_URL_LIMIT = 8;
+  const REVOKED_OBJECT_URL_CLEANUP_DELAY_MS = 300000;
 
   // Runtime state is grouped by responsibility while the deliverable remains
   // one standalone userscript file.
@@ -1009,7 +1012,7 @@ Current behavior contract:
     return `${state.playback.audio.currentSrc || state.playback.audio.src || ''}`.trim();
   }
 
-  function getCurrentAudioBlob() {
+  function getCurrentCapturedBlob() {
     if (!state.playback.audio) return null;
     const directBlob = state.download.audioBlobs.get(state.playback.audio);
     if (directBlob instanceof Blob) return directBlob;
@@ -1031,7 +1034,6 @@ Current behavior contract:
       segments: [],
       totalBytes: 0,
       sourceBuffers: new Set(),
-      lastAppendAt: 0,
     };
     state.download.mediaSourceSessions.set(mediaSource, session);
     return session;
@@ -1042,17 +1044,44 @@ Current behavior contract:
     if (!session || typeof objectUrl !== 'string' || !objectUrl.startsWith('blob:')) return;
     session.objectUrl = objectUrl;
     state.download.objectUrlMediaSessions.set(objectUrl, session);
-    while (state.download.objectUrlMediaSessions.size > 8) {
+    while (state.download.objectUrlMediaSessions.size > CAPTURED_MEDIA_SOURCE_URL_LIMIT) {
       const oldestUrl = state.download.objectUrlMediaSessions.keys().next().value;
       state.download.objectUrlMediaSessions.delete(oldestUrl);
     }
   }
 
-  function getCurrentMediaSourceSession() {
+  function getCurrentCapturedMediaSourceSession() {
     if (!state.playback.audio) return null;
     const directSession = state.download.audioMediaSessions.get(state.playback.audio);
     if (directSession) return directSession;
     return state.download.objectUrlMediaSessions.get(getCurrentAudioSource()) || null;
+  }
+
+  function scheduleCapturedObjectUrlCleanup(objectUrl) {
+    if (typeof objectUrl !== 'string' || !objectUrl.startsWith('blob:')) return;
+    window.setTimeout(() => {
+      if (getCurrentAudioSource() === objectUrl) return;
+      state.download.objectUrlBlobs.delete(objectUrl);
+      state.download.objectUrlMediaSessions.delete(objectUrl);
+    }, REVOKED_OBJECT_URL_CLEANUP_DELAY_MS);
+  }
+
+  function clearCapturedAudioSourceCaches() {
+    for (const session of new Set(state.download.objectUrlMediaSessions.values())) {
+      for (const sourceBuffer of session.sourceBuffers) {
+        state.download.sourceBufferSessions.delete(sourceBuffer);
+      }
+      session.segments.length = 0;
+      session.totalBytes = 0;
+      session.sourceBuffers.clear();
+    }
+
+    state.download.objectUrlBlobs.clear();
+    state.download.objectUrlMediaSessions.clear();
+    state.download.audioBlobs = new WeakMap();
+    state.download.mediaSourceSessions = new WeakMap();
+    state.download.sourceBufferSessions = new WeakMap();
+    state.download.audioMediaSessions = new WeakMap();
   }
 
   function copyBufferSourceBytes(buffer) {
@@ -1501,16 +1530,23 @@ Current behavior contract:
       addDiagnosticStage(log, 'start');
       let sourceBlob;
       if (source.startsWith('blob:')) {
-        sourceBlob = getCurrentAudioBlob();
+        sourceBlob = getCurrentCapturedBlob();
         if (sourceBlob) {
+          addDiagnosticStage(log, 'source-kind', { kind: 'blob' });
           addDiagnosticStage(log, 'source-blob-captured', {
             bytes: sourceBlob.size,
             type: sourceBlob.type,
           });
         } else {
-          sourceBlob = await buildCapturedMediaSourceBlob(getCurrentMediaSourceSession(), log);
+          const mediaSession = getCurrentCapturedMediaSourceSession();
+          addDiagnosticStage(log, 'source-kind', {
+            kind: 'mse',
+            type: mediaSession?.mimeType || 'audio/aac',
+          });
+          sourceBlob = await buildCapturedMediaSourceBlob(mediaSession, log);
         }
       } else {
+        addDiagnosticStage(log, 'source-kind', { kind: 'http' });
         const response = await fetch(source, { credentials: 'include' });
         addDiagnosticStage(log, 'fetched', { status: response.status, ok: response.ok });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1953,6 +1989,7 @@ Current behavior contract:
     if (state.enhancement.activeOperation) finishOperation(state.enhancement.activeOperation);
     if (state.playback.audio && !state.playback.audio.paused) state.playback.audio.pause();
     unbindCurrentAudio();
+    clearCapturedAudioSourceCaches();
     closeFloatingSelect();
     if (ui.player) ui.player.hidden = true;
     setPlayerStatus('');
@@ -2120,7 +2157,7 @@ Current behavior contract:
       const objectUrl = currentCreateObjectURL.apply(this, arguments);
       if (object instanceof Blob && typeof objectUrl === 'string' && objectUrl.startsWith('blob:')) {
         state.download.objectUrlBlobs.set(objectUrl, object);
-        while (state.download.objectUrlBlobs.size > 32) {
+        while (state.download.objectUrlBlobs.size > CAPTURED_BLOB_URL_LIMIT) {
           const oldestUrl = state.download.objectUrlBlobs.keys().next().value;
           state.download.objectUrlBlobs.delete(oldestUrl);
         }
@@ -2141,6 +2178,28 @@ Current behavior contract:
       urlApi.createObjectURL = cyanReadAloudCreateObjectURL;
     } catch (error) {
       console.warn(`${SCRIPT_PREFIX} 无法安装 Blob / MediaSource 捕获钩子。`, error);
+    }
+
+    const currentRevokeObjectURL = urlApi.revokeObjectURL;
+    if (typeof currentRevokeObjectURL === 'function' &&
+        currentRevokeObjectURL.__cyanReadAloudHook !== true) {
+      function cyanReadAloudRevokeObjectURL(objectUrl) {
+        scheduleCapturedObjectUrlCleanup(String(objectUrl || ''));
+        return currentRevokeObjectURL.apply(this, arguments);
+      }
+
+      Object.defineProperty(cyanReadAloudRevokeObjectURL, '__cyanReadAloudHook', {
+        value: true,
+        configurable: false,
+        enumerable: false,
+        writable: false,
+      });
+
+      try {
+        urlApi.revokeObjectURL = cyanReadAloudRevokeObjectURL;
+      } catch (error) {
+        console.warn(`${SCRIPT_PREFIX} 无法安装 Object URL 清理钩子。`, error);
+      }
     }
   }
 
@@ -2187,7 +2246,6 @@ Current behavior contract:
         if (session && bytes?.byteLength) {
           session.segments.push(bytes);
           session.totalBytes += bytes.byteLength;
-          session.lastAppendAt = Date.now();
         }
         return result;
       }
