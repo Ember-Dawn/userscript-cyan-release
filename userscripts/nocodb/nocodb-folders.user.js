@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-folders.user.js
-// @version      11.4.2
+// @version      11.4.3
 // @description  NocoDB folder tree with per-tab collapse state, single-leader WebDAV sync, resilient validators, verified conflicts, and daily snapshots
 // @author       Cyan
 // @match        *://nocodb.380782744.xyz/*
@@ -26,7 +26,7 @@
     }
     window.__NDF_SCRIPT_INITIALIZED__ = true;
 
-    const SCRIPT_VERSION = '11.4.2';
+    const SCRIPT_VERSION = '11.4.3';
     const STORAGE_KEY = 'nc_folder_config_v9';
     const SYNC_STATE_KEY = 'nc_folder_sync_state_v11';
     const CONFLICT_KEY = 'nc_folder_sync_conflict_v11';
@@ -284,6 +284,12 @@
         });
     };
 
+    const toSharedConfigSnapshot = rawConfig => {
+        const snapshot = normalizeConfig(rawConfig);
+        Object.values(snapshot.bases).forEach(base => { base.collapsed = {}; });
+        return snapshot;
+    };
+
     let config = normalizeConfig(defaultSettings);
     const storedConfig = loadStoredJson(STORAGE_KEY, null);
     if (storedConfig) {
@@ -296,6 +302,7 @@
         config = normalizeConfig(migrated);
     }
     config = hydrateTabCollapsed(config, config);
+    let sharedConfigBaseline = toSharedConfigSnapshot(storedConfig || config);
 
     const defaultSyncState = {
         deviceId: '',
@@ -456,7 +463,7 @@
         });
         config = normalizeConfig({ ...config, bases: nextBases });
         persistTabCollapsed(config);
-        saveLocalConfig({ structural: false });
+        saveLocalConfig({ structural: false, replaceStructure: true });
         triggerRebuild();
     };
 
@@ -532,10 +539,113 @@
         if (resumeSync) resumeSyncAfterFolderEdit();
     };
 
-    function saveLocalConfig({ structural = true, schedulePush = true } = {}) {
+    const mergeCurrentSettings = (targetConfig, sourceConfig) => normalizeConfig({
+        ...targetConfig,
+        spacing: sourceConfig.spacing,
+        indent: sourceConfig.indent,
+        tableOffset: sourceConfig.tableOffset,
+        enableTableOffset: sourceConfig.enableTableOffset,
+        clickDelay: sourceConfig.clickDelay,
+        webdav: { ...sourceConfig.webdav },
+        bases: targetConfig.bases
+    });
+
+    const mergeStructuralDelta = (latestRaw, baselineRaw, desiredRaw) => {
+        const latest = toSharedConfigSnapshot(latestRaw);
+        const baseline = toSharedConfigSnapshot(baselineRaw);
+        const desired = toSharedConfigSnapshot(desiredRaw);
+        const merged = toSharedConfigSnapshot(latest);
+        const baseIds = new Set([...Object.keys(baseline.bases), ...Object.keys(desired.bases)]);
+
+        baseIds.forEach(baseId => {
+            const hadBase = Object.prototype.hasOwnProperty.call(baseline.bases, baseId);
+            const wantsBase = Object.prototype.hasOwnProperty.call(desired.bases, baseId);
+            if (hadBase && !wantsBase) {
+                delete merged.bases[baseId];
+                return;
+            }
+            if (!hadBase && wantsBase) {
+                merged.bases[baseId] = normalizeBaseState(desired.bases[baseId]);
+                merged.bases[baseId].collapsed = {};
+                return;
+            }
+            if (!wantsBase) return;
+
+            const before = normalizeBaseState(baseline.bases[baseId]);
+            const after = normalizeBaseState(desired.bases[baseId]);
+            const target = normalizeBaseState(merged.bases[baseId] || {});
+            const beforeFolders = new Map(before.folders.map(folder => [folder.id, folder]));
+            const afterFolders = new Map(after.folders.map(folder => [folder.id, folder]));
+            const targetFolders = new Map(target.folders.map(folder => [folder.id, folder]));
+            const deletedFolderParents = new Map();
+
+            beforeFolders.forEach((beforeFolder, folderId) => {
+                if (!afterFolders.has(folderId)) {
+                    deletedFolderParents.set(folderId, beforeFolder.parentId || null);
+                    targetFolders.delete(folderId);
+                }
+            });
+
+            afterFolders.forEach((afterFolder, folderId) => {
+                const beforeFolder = beforeFolders.get(folderId);
+                // If another tab already deleted a folder that existed in our baseline, deletion wins over a stale edit.
+                if (beforeFolder && !targetFolders.has(folderId)) return;
+                if (!beforeFolder || stableStringify(beforeFolder) !== stableStringify(afterFolder)) {
+                    targetFolders.set(folderId, { ...afterFolder });
+                }
+            });
+
+            target.folders = Array.from(targetFolders.values());
+            const survivingIds = new Set(target.folders.map(folder => folder.id));
+            target.folders.forEach(folder => {
+                if (!deletedFolderParents.has(folder.parentId)) return;
+                const replacementParent = deletedFolderParents.get(folder.parentId);
+                folder.parentId = replacementParent && survivingIds.has(replacementParent) ? replacementParent : null;
+            });
+
+            const tableIds = new Set([...Object.keys(before.map), ...Object.keys(after.map)]);
+            tableIds.forEach(tableId => {
+                const beforeFolderId = before.map[tableId] || '';
+                const afterFolderId = after.map[tableId] || '';
+                if (beforeFolderId === afterFolderId) return;
+                if (afterFolderId) target.map[tableId] = afterFolderId;
+                else delete target.map[tableId];
+            });
+
+            Object.entries(target.map).forEach(([tableId, folderId]) => {
+                if (!deletedFolderParents.has(folderId)) return;
+                const replacementParent = deletedFolderParents.get(folderId);
+                if (replacementParent && survivingIds.has(replacementParent)) target.map[tableId] = replacementParent;
+                else delete target.map[tableId];
+            });
+
+            merged.bases[baseId] = normalizeBaseState(target);
+            merged.bases[baseId].collapsed = {};
+        });
+
+        return merged;
+    };
+
+    function saveLocalConfig({ structural = true, schedulePush = true, replaceStructure = false } = {}) {
         config = normalizeConfig(config);
-        const persistableConfig = getPersistableConfig();
+        const desiredConfig = getPersistableConfig();
+        const latestStored = toSharedConfigSnapshot(loadStoredJson(STORAGE_KEY, sharedConfigBaseline || desiredConfig));
+        let persistableConfig;
+
+        if (replaceStructure) {
+            persistableConfig = toSharedConfigSnapshot(desiredConfig);
+        } else if (structural) {
+            persistableConfig = mergeStructuralDelta(latestStored, sharedConfigBaseline || latestStored, desiredConfig);
+        } else {
+            // UI-only/settings saves must never write this tab's possibly stale folder tree back over shared storage.
+            persistableConfig = latestStored;
+        }
+
+        persistableConfig = mergeCurrentSettings(persistableConfig, desiredConfig);
+        Object.values(persistableConfig.bases).forEach(base => { base.collapsed = {}; });
         GM_setValue(STORAGE_KEY, JSON.stringify(persistableConfig));
+        sharedConfigBaseline = toSharedConfigSnapshot(persistableConfig);
+        config = hydrateTabCollapsed(persistableConfig);
         updateGlobalCSSVars();
 
         if (structural) {
@@ -1417,7 +1527,10 @@
             const leader = isSyncLeader || await tryAcquireLeadership(reason);
             if (!leader) return;
             const latestConfig = loadStoredJson(STORAGE_KEY, null);
-            if (latestConfig) config = hydrateTabCollapsed(latestConfig, config);
+            if (latestConfig) {
+                sharedConfigBaseline = toSharedConfigSnapshot(latestConfig);
+                config = hydrateTabCollapsed(latestConfig);
+            }
             syncState = normalizeSyncState(loadStoredJson(SYNC_STATE_KEY, syncState));
             updateGlobalCSSVars();
             triggerRebuild();
@@ -1437,7 +1550,8 @@
 
     const applyExternalConfig = incoming => {
         if (!incoming) return;
-        config = hydrateTabCollapsed(incoming, config);
+        sharedConfigBaseline = toSharedConfigSnapshot(incoming);
+        config = hydrateTabCollapsed(incoming);
         updateGlobalCSSVars();
         triggerRebuild();
     };
@@ -1446,7 +1560,8 @@
         const latestStored = deferredExternalConfig || loadStoredJson(STORAGE_KEY, null);
         deferredExternalConfig = null;
         if (!latestStored || !session) return { active: getActive(), folder };
-        config = hydrateTabCollapsed(latestStored, config);
+        sharedConfigBaseline = toSharedConfigSnapshot(latestStored);
+        config = hydrateTabCollapsed(latestStored);
         const base = config.bases[session.baseId] || (config.bases[session.baseId] = normalizeBaseState({}));
         let target = base.folders.find(item => item.id === session.folderId);
         if (session.isNew) {
