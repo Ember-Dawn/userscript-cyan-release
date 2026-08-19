@@ -8,17 +8,12 @@
 |---|---|---|
 | NocoDB 代码块工具 | `nocodb-code-tools.user.js` | 为 Rich Text 代码块提供悬浮复制和带确认的安全清空功能。参见[详细说明](./nocodb-code-tools.md)。 |
 | NocoDB 彩虹标题 | `nocodb-rainbow-headings.user.js` | 为 H1-H6 标题应用不同颜色。 |
-| NocoDB 文件夹 | `nocodb-folders.user.js` | 为 NocoDB 表格提供文件夹式组织、排序和低开销 WebDAV 自动同步。参见[详细说明](./nocodb-folders.md)。 |
 | NocoDB LongText 字体改色 | `nocodb-longtext-color.user.js` | 为特定富文本内容应用颜色。 |
 | NocoDB Markdown 表格 | `nocodb-markdown-table.user.js` | 将粘贴的 Markdown 表格转换为可显示、可编辑的表格。 |
 | NocoDB Rich Text Markdown 导出 | `nocodb-richtext-markdown-export.user.js` | 复制或下载当前 Rich Text 编辑器的全部内容为普通 Markdown。 |
 | NocoDB Rich Text 大纲 | `nocodb-richtext-outline.user.js` | 在 Rich Text 弹窗中显示可滚动、可调整宽度的 TOC。 |
 
-## NocoDB 文件夹同步
-
-`nocodb-folders.user.js` V11.1.1 使用紧凑的“加号 + Folder”文件夹按钮、首次同步四分支决策、设置面板实时状态反馈、页面聚焦触发、仅前台低频检查、ETag 条件写入、冲突安全副本和每日快照实现自动多端同步。WebDAV 主文件仍采用完整 JSON 快照，但连续操作会被防抖合并，相同内容不会重复上传。展开状态和外观设置只保存在当前设备。
-
-配置方式、冲突处理、性能策略和备份目录结构见 [`nocodb-folders.md`](./nocodb-folders.md)。
+`nocodb-folders.user.js` 已归档并停止公开发布。该脚本曾长期配合 NocoDB v2026.05.1 使用；NocoDB v2026.08.1 原生加入 Data 侧边栏文件夹（Base Sections）后，不再作为现役脚本维护。
 
 ## Markdown 表格的实际保存与渲染结果
 
@@ -120,4 +115,3 @@ NocoDB LongText Rich Text 弹窗的右下角带有原生尺寸调整手柄，可
 - 导出只在用户点击按钮时遍历正文，不要在 `input`、`scroll` 或 MutationObserver 热路径中持续转换 Markdown。
 - 修改跨脚本接口时，应同时检查表格脚本、导出脚本和本说明。
 - NocoDB 或 Tiptap 升级后，优先检查展开弹窗、编辑器、TOC 按钮和表格 NodeView 的选择器是否仍然有效。
-- 修改文件夹同步逻辑时，应同时检查 `nocodb-folders.user.js` 和 `nocodb-folders.md`，并保留原存储键的兼容性。
