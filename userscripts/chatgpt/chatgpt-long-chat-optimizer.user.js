@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.6
+// @version      0.1.7
 // @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -166,7 +166,7 @@
         if (method !== 'GET') {
             return false;
         }
-        return /^\/backend-api\/(conversation|shared_conversation)\/[^/]+\/?$/.test(url.pathname);
+        return /^\/backend-api\/(conversation|conversations|shared_conversation)\/[^/]+\/?$/.test(url.pathname);
     }
 
     function isJsonResponse(response) {
@@ -392,7 +392,7 @@
     }
 
     function getConversationRequestInfo(url) {
-        const match = url.pathname.match(/^\/backend-api\/(conversation|shared_conversation)\/([^/]+)\/?$/);
+        const match = url.pathname.match(/^\/backend-api\/(conversation|conversations|shared_conversation)\/([^/]+)\/?$/);
         if (!match) {
             return null;
         }
@@ -407,7 +407,7 @@
             return false;
         }
 
-        if (requestInfo.kind === 'conversation') {
+        if (requestInfo.kind === 'conversation' || requestInfo.kind === 'conversations') {
             const currentId = extractConversationPageId();
             return Boolean(
                 currentId &&
@@ -471,6 +471,15 @@
                 : { success: false });
 
             if (!analysis) {
+                return response;
+            }
+
+            if (requestInfo?.kind === 'conversations') {
+                diagnosticLog('conversations endpoint observed; response left unchanged', {
+                    totalRounds: analysis.totalRounds,
+                    activePathLength: analysis.path.length,
+                    segmentCount: analysis.segments.length,
+                });
                 return response;
             }
 
