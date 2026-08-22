@@ -21,9 +21,12 @@
 @sandbox raw
 @grant GM_getValue
 @grant GM_setValue
+@grant unsafeWindow
 ```
 
-启动后立即在页面主上下文安装 Fetch Proxy。当前 ChatGPT 正常会话主要使用：
+v0.3.1 起采用“Tampermonkey 沙箱 + 页面主上下文桥接”的双层结构：GM API 只在 userscript 沙箱中负责持久缓存，`unsafeWindow` 只用于取得真实页面的 `window`、`fetch`、`Request`、`Response` 等对象并安装 Fetch Proxy。这样既保留 Tampermonkey 持久存储，也确保 `num_turns` 改写和分页观察实际作用于 ChatGPT 页面自己的网络请求。
+
+当前 ChatGPT 正常会话主要使用：
 
 ```text
 /backend-api/conversations/<id>?include_has_versions=true&num_turns=10
@@ -39,7 +42,7 @@ num_turns=10  ->  num_turns=20
 
 处理顺序：
 
-1. 在 `document-start` 阶段代理 `window.fetch`。
+1. 在 `document-start` 阶段通过 `unsafeWindow` 取得页面主上下文，并代理页面真实的 `window.fetch`；GM storage 仍留在 Tampermonkey userscript 沙箱。
 2. 识别 `/backend-api/conversations/<id>`、旧 `/backend-api/conversation/<id>` 和 `shared_conversation` GET。
 3. 校验请求 conversation id 与当前 `/c/<id>` 路由；普通对话与 Project `/g/g-p-<project-id>/c/<id>` 都支持。
 4. 对新版 `conversations` 接口：启用时覆盖 `num_turns`，关闭时保持 ChatGPT 原始请求完全不变。
@@ -187,6 +190,7 @@ context_truncation_continuation
 - 旧 `mapping` 裁剪逻辑继续保留，但仅作为兼容回退。
 - v0.2.0 首先停止强求精确总轮数，只在能够确认存在更早历史时使用 `LS N / +`。
 - 同日后续 v0.3.0 在实测确认 `/messages?before=<cursor>` 分页方式后，加入低速后台统计、Tampermonkey 持久缓存和断点续跑；统计完成后恢复 `LS N / 总轮数`。
+- v0.3.1 修复 v0.3.0 在声明 GM 权限后可能只运行在 userscript 隔离环境、未真正 patch ChatGPT 页面 `window.fetch` 的问题；改为通过 `unsafeWindow` 显式桥接页面主上下文，并使用页面 realm 的 `Request` / `URL` / `Headers` / `Response` 构造器。
 
 这两个日期分别代表“旧架构参考基线”和“当前 ChatGPT 接口适配节点”，不应混为同一个维护日期。
 
@@ -218,7 +222,7 @@ context_truncation_continuation
 - `LS N / +` 表示仍有更早历史但当前没有进行统计；`LS N / …` 表示统计进行中。
 - 关闭脚本覆盖后，ChatGPT 自己仍可能只加载默认数量的历史轮次；“Off”不等于强制完整加载。
 - 当前页面继续产生新消息后，ChatGPT 自己如何维护分页窗口由网页原生逻辑决定；重新加载时脚本会再次把 `num_turns` 设为当前配置。
-- 如果 Tampermonkey 无法在页面主上下文及时代理 `window.fetch`，脚本可能无法改写首次会话请求。
+- v0.3.1 通过 `unsafeWindow` 显式代理页面主上下文 `window.fetch`；如果未来 Tampermonkey、浏览器或 ChatGPT 改变跨上下文访问策略，首次会话请求仍可能需要重新适配。
 
 ## 隐私与安全
 
@@ -226,7 +230,7 @@ context_truncation_continuation
 - 不保存 conversation response、Cookie、Token 或 Authorization Header。
 - 首屏历史窗口不额外拉取完整历史；开启精确总轮数统计后会低速调用 ChatGPT 原生分页 history 接口，只读取计数所需 JSON。
 - `localStorage` 只保存是否启用和 `keepRounds`。
-- Tampermonkey GM storage 保存总轮数统计缓存与未完成的分页断点；不保存聊天正文、Cookie、Token 或 Authorization Header。
+- Tampermonkey GM storage 保存总轮数统计缓存与未完成的分页断点；不保存聊天正文、Cookie、Token 或 Authorization Header。`unsafeWindow` 仅作为页面主上下文桥接，不用于持久保存页面数据。
 - 认证请求头只在当前页面内存中临时复用，用于让后台分页请求沿用 ChatGPT 已有认证上下文，不写入持久缓存。
 
 ## 上游同步基线
@@ -261,16 +265,17 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 实际页面建议至少验证：
 
 1. 普通 `/c/<id>` 能捕获 `/backend-api/conversations/<id>`。
-2. Project `/g/g-p-.../c/<id>` 同样能正确匹配当前 conversation id。
-3. 启用且配置为 10 时，Network 中原生请求的 `num_turns` 为 10；改成 20 后刷新变为 20。
-4. 关闭后脚本不修改 ChatGPT 原生 `num_turns`。
-5. 首屏不会一次性拉取完整历史；存在更早历史时，后台分页 GET 串行且带 2.5–4.5 秒随机间隔。
-6. `/textdocs`、`/url_safe`、`/stream_status` 不被误当作主体请求。
-7. `messages/page_info/context_truncation_continuation` 响应能够正常交还 ChatGPT，不改写 response body。
-8. 如果分页信息确认有更早历史，统计未启动/暂停时显示 `LS N / +`，统计中显示 `LS N / …`，完成后显示 `LS N / 总轮数`。
-9. 统计到一半执行 SPA 切换后请求被中止；返回原会话后从 Tampermonkey 缓存的 `nextBeforeCursor` 继续，而不是从头开始。
-10. 手动清理 `chatgpt.com` 网站数据后，如果 Tampermonkey 脚本数据未被清理，已完成总轮数缓存仍能恢复。
-11. 后台分页响应不会被插入 DOM；向上滚动触发的 ChatGPT 原生 `/messages?before=` 请求如果恰好推进当前断点，可被脚本顺带用于计数。
-12. 非 2xx / 非 JSON / cursor 不推进时停止本轮后台统计，不进行高频重试。
-13. 旧 `mapping + current_node` 接口如果仍出现，旧裁剪兼容路径不报错。
-14. switch、数字输入与“应用并刷新”继续沿用旧配置并正常工作。
+2. 页面 Console 中 `window.__CYAN_LS_FETCH_PATCHED__ === true`，确认补丁实际安装在 ChatGPT 页面主上下文，而不是仅存在于 userscript 隔离环境。
+3. Project `/g/g-p-.../c/<id>` 同样能正确匹配当前 conversation id。
+4. 启用且配置为 10 时，Network 中原生请求的 `num_turns` 为 10；改成 20 后刷新变为 20。
+5. 关闭后脚本不修改 ChatGPT 原生 `num_turns`。
+6. 首屏不会一次性拉取完整历史；存在更早历史时，后台分页 GET 串行且带 2.5–4.5 秒随机间隔。
+7. `/textdocs`、`/url_safe`、`/stream_status` 不被误当作主体请求。
+8. `messages/page_info/context_truncation_continuation` 响应能够正常交还 ChatGPT，不改写 response body。
+9. 如果分页信息确认有更早历史，统计未启动/暂停时显示 `LS N / +`，统计中显示 `LS N / …`，完成后显示 `LS N / 总轮数`。
+10. 统计到一半执行 SPA 切换后请求被中止；返回原会话后从 Tampermonkey 缓存的 `nextBeforeCursor` 继续，而不是从头开始。
+11. 手动清理 `chatgpt.com` 网站数据后，如果 Tampermonkey 脚本数据未被清理，已完成总轮数缓存仍能恢复。
+12. 后台分页响应不会被插入 DOM；向上滚动触发的 ChatGPT 原生 `/messages?before=` 请求如果恰好推进当前断点，可被脚本顺带用于计数。
+13. 非 2xx / 非 JSON / cursor 不推进时停止本轮后台统计，不进行高频重试。
+14. 旧 `mapping + current_node` 接口如果仍出现，旧裁剪兼容路径不报错。
+15. switch、数字输入与“应用并刷新”继续沿用旧配置并正常工作。

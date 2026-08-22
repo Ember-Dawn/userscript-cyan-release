@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.3.0
+// @version      0.3.1
 // @description  适配 ChatGPT 分页会话接口，限制初始历史窗口，并低速后台统计与持久缓存总轮数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -16,6 +16,7 @@
 // @sandbox      raw
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        unsafeWindow
 // ==/UserScript==
 
 /*
@@ -31,6 +32,12 @@
 
 (function () {
     'use strict';
+
+    const PAGE_WINDOW = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    const PageRequest = PAGE_WINDOW.Request;
+    const PageURL = PAGE_WINDOW.URL;
+    const PageHeaders = PAGE_WINDOW.Headers;
+    const PageResponse = PAGE_WINDOW.Response;
 
     const STORAGE_KEY = 'cyan_chatgpt_long_chat_optimizer';
     const SESSION_STATS_KEY = 'cyan_chatgpt_long_chat_optimizer_stats';
@@ -267,10 +274,10 @@
         let urlString;
         let method;
 
-        if (input instanceof Request) {
+        if (input instanceof PageRequest) {
             urlString = input.url;
             method = (init?.method ?? input.method ?? 'GET').toUpperCase();
-        } else if (input instanceof URL) {
+        } else if (input instanceof PageURL) {
             urlString = input.href;
             method = (init?.method ?? 'GET').toUpperCase();
         } else {
@@ -279,7 +286,7 @@
         }
 
         return {
-            url: new URL(urlString, location.href),
+            url: new PageURL(urlString, PAGE_WINDOW.location.href),
             method,
         };
     }
@@ -449,12 +456,12 @@
     }
 
     function createModifiedResponse(originalResponse, modifiedData) {
-        const headers = new Headers(originalResponse.headers);
+        const headers = new PageHeaders(originalResponse.headers);
         headers.delete('content-length');
         headers.delete('content-encoding');
         headers.set('content-type', 'application/json; charset=utf-8');
 
-        const response = new Response(JSON.stringify(modifiedData), {
+        const response = new PageResponse(JSON.stringify(modifiedData), {
             status: originalResponse.status,
             statusText: originalResponse.statusText,
             headers,
@@ -728,7 +735,7 @@
 
     function captureRoundCountRequestTemplate(args, conversationId) {
         try {
-            const request = new Request(args[0], args[1]);
+            const request = new PageRequest(args[0], args[1]);
             state.roundCountRequestTemplate = {
                 conversationId,
                 headers: [...request.headers.entries()],
@@ -745,12 +752,12 @@
             return null;
         }
         const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}/messages`;
-        const url = new URL(path, location.origin);
+        const url = new PageURL(path, PAGE_WINDOW.location.origin);
         url.searchParams.set('before', beforeCursor);
         url.searchParams.set('include_has_versions', 'true');
         url.searchParams.set('num_turns', String(BACKGROUND_PAGE_TURNS));
 
-        const headers = new Headers(template.headers);
+        const headers = new PageHeaders(template.headers);
         if (headers.has('x-openai-target-path')) {
             headers.set('x-openai-target-path', path);
         }
@@ -759,7 +766,7 @@
         }
         headers.delete('content-length');
 
-        return new Request(url.href, {
+        return new PageRequest(url.href, {
             method: 'GET',
             headers,
             credentials: template.credentials,
@@ -1008,15 +1015,15 @@
             return { args, url: meta.url };
         }
 
-        const nextUrl = new URL(meta.url.href);
+        const nextUrl = new PageURL(meta.url.href);
         nextUrl.searchParams.set('num_turns', String(config.keepRounds));
         if (nextUrl.href === meta.url.href) {
             return { args, url: meta.url };
         }
 
         const [input, init] = args;
-        if (input instanceof Request) {
-            const rewritten = new Request(nextUrl.href, {
+        if (input instanceof PageRequest) {
+            const rewritten = new PageRequest(nextUrl.href, {
                 method: input.method,
                 headers: input.headers,
                 mode: input.mode,
@@ -1031,18 +1038,18 @@
             });
             return { args: init === undefined ? [rewritten] : [rewritten, init], url: nextUrl };
         }
-        if (input instanceof URL) {
+        if (input instanceof PageURL) {
             return { args: [nextUrl, ...args.slice(1)], url: nextUrl };
         }
         return { args: [nextUrl.href, ...args.slice(1)], url: nextUrl };
     }
 
     function patchFetch() {
-        if (window[PATCH_FLAG]) {
+        if (PAGE_WINDOW[PATCH_FLAG]) {
             return;
         }
 
-        const nativeFetch = window.fetch.bind(window);
+        const nativeFetch = PAGE_WINDOW.fetch.bind(PAGE_WINDOW);
         nativePageFetch = nativeFetch;
         const wrappedFetch = async (...args) => {
             let meta;
@@ -1081,8 +1088,8 @@
             return handleConversationResponse(response, requestInfo, rewritten.url);
         };
 
-        window.fetch = wrappedFetch;
-        window[PATCH_FLAG] = true;
+        PAGE_WINDOW.fetch = wrappedFetch;
+        PAGE_WINDOW[PATCH_FLAG] = true;
     }
 
     function getStatusText() {
@@ -1613,36 +1620,36 @@
     }
 
     function patchHistoryForSpaNavigation() {
-        if (window[HISTORY_PATCH_FLAG]) {
+        if (PAGE_WINDOW[HISTORY_PATCH_FLAG]) {
             return;
         }
-        window[HISTORY_PATCH_FLAG] = true;
+        PAGE_WINDOW[HISTORY_PATCH_FLAG] = true;
 
-        let lastHref = location.href;
+        let lastHref = PAGE_WINDOW.location.href;
         const checkNavigation = () => {
-            if (location.href === lastHref) {
+            if (PAGE_WINDOW.location.href === lastHref) {
                 return;
             }
-            lastHref = location.href;
+            lastHref = PAGE_WINDOW.location.href;
             handleNavigation();
         };
 
-        const originalPushState = history.pushState.bind(history);
-        const originalReplaceState = history.replaceState.bind(history);
+        const originalPushState = PAGE_WINDOW.history.pushState.bind(PAGE_WINDOW.history);
+        const originalReplaceState = PAGE_WINDOW.history.replaceState.bind(PAGE_WINDOW.history);
 
-        history.pushState = function (...args) {
+        PAGE_WINDOW.history.pushState = function (...args) {
             const result = originalPushState(...args);
             queueMicrotask(checkNavigation);
             return result;
         };
 
-        history.replaceState = function (...args) {
+        PAGE_WINDOW.history.replaceState = function (...args) {
             const result = originalReplaceState(...args);
             queueMicrotask(checkNavigation);
             return result;
         };
 
-        window.addEventListener('popstate', () => queueMicrotask(checkNavigation));
+        PAGE_WINDOW.addEventListener('popstate', () => queueMicrotask(checkNavigation));
     }
 
     function initializeDomFeatures() {
@@ -1655,7 +1662,7 @@
                 scheduleBackgroundRoundCount(false);
             }
         });
-        window.addEventListener('pagehide', () => cancelBackgroundRoundCount(false));
+        PAGE_WINDOW.addEventListener('pagehide', () => cancelBackgroundRoundCount(false));
     }
 
     patchFetch();
