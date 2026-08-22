@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.5
+// @version      0.1.6
 // @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -40,6 +40,7 @@
     const MAX_ROUNDS = 100;
     const MAX_STATS_CACHE_ENTRIES = 100;
     const HIDDEN_ROLES = new Set(['system', 'tool', 'thinking']);
+    const DIAGNOSTIC_PREFIX = '[LS]';
     const conversationStatsCache = loadConversationStatsCache();
 
     const state = {
@@ -60,6 +61,18 @@
     let enabledSwitch = null;
     let draftLimit = null;
     let documentClickInstalled = false;
+
+    function diagnosticLog(message, details) {
+        if (details === undefined) {
+            console.info(`${DIAGNOSTIC_PREFIX} ${message}`);
+            return;
+        }
+        console.info(`${DIAGNOSTIC_PREFIX} ${message}`, details);
+    }
+
+    function diagnosticError(message, error) {
+        console.error(`${DIAGNOSTIC_PREFIX} ${message}`, error);
+    }
 
     function clampRounds(value) {
         const parsed = Number.parseInt(String(value), 10);
@@ -420,14 +433,43 @@
         }, 1000);
     }
 
-    async function handleConversationResponse(response) {
+    async function handleConversationResponse(response, requestInfo, requestUrl) {
+        const contentType = response.headers.get('content-type') || '';
+        diagnosticLog('conversation response', {
+            url: requestUrl.href,
+            status: response.status,
+            contentType,
+            requestInfo,
+        });
+
         if (!isJsonResponse(response)) {
+            diagnosticLog('response skipped: content-type is not application/json', { contentType });
             return response;
         }
 
         try {
             const json = await response.clone().json();
+            const topLevelKeys = json && typeof json === 'object' ? Object.keys(json) : [];
+            diagnosticLog('JSON parsed', {
+                topLevelKeys,
+                hasMapping: Boolean(json?.mapping),
+                hasCurrentNode: Boolean(json?.current_node),
+                mappingSize: json?.mapping && typeof json.mapping === 'object'
+                    ? Object.keys(json.mapping).length
+                    : null,
+                currentNode: json?.current_node ?? null,
+            });
+
             const analysis = analyzeConversation(json);
+            diagnosticLog('analysis result', analysis
+                ? {
+                    success: true,
+                    totalRounds: analysis.totalRounds,
+                    activePathLength: analysis.path.length,
+                    segmentCount: analysis.segments.length,
+                }
+                : { success: false });
+
             if (!analysis) {
                 return response;
             }
@@ -439,6 +481,15 @@
             }
 
             const trimmed = trimConversation(json, config.keepRounds);
+            diagnosticLog('trim result', trimmed
+                ? {
+                    success: true,
+                    changed: trimmed.changed,
+                    totalRounds: trimmed.totalRounds,
+                    keptRounds: trimmed.keptRounds,
+                }
+                : { success: false });
+
             if (!trimmed) {
                 return response;
             }
@@ -451,13 +502,15 @@
             }
 
             return createModifiedResponse(response, trimmed.data);
-        } catch {
+        } catch (error) {
+            diagnosticError('conversation response handling failed', error);
             return response;
         }
     }
 
     function patchFetch() {
         if (window[PATCH_FLAG]) {
+            diagnosticLog('fetch patch already installed');
             return;
         }
 
@@ -466,24 +519,60 @@
             let meta;
             try {
                 meta = getRequestMeta(args[0], args[1]);
-            } catch {
+            } catch (error) {
+                diagnosticError('request metadata parsing failed', error);
                 return nativeFetch(...args);
             }
 
+            const currentId = extractConversationPageId();
+            const referencesCurrentConversation = Boolean(
+                currentId && meta.url.href.includes(currentId)
+            );
+            const conversationMatched = isConversationGet(meta.method, meta.url);
+
+            if (referencesCurrentConversation || conversationMatched) {
+                diagnosticLog('fetch candidate', {
+                    url: meta.url.href,
+                    method: meta.method,
+                    pathname: meta.url.pathname,
+                    pageConversationId: currentId,
+                    stateConversationId: state.currentConversationId,
+                    conversationMatched,
+                });
+            }
+
             const response = await nativeFetch(...args);
-            if (!isConversationGet(meta.method, meta.url)) {
+            if (!conversationMatched) {
+                if (referencesCurrentConversation) {
+                    diagnosticLog('candidate skipped: URL does not match conversation endpoint', {
+                        url: meta.url.href,
+                        status: response.status,
+                    });
+                }
                 return response;
             }
 
             const requestInfo = getConversationRequestInfo(meta.url);
-            if (!isRequestForCurrentPage(requestInfo)) {
+            const currentPageMatched = isRequestForCurrentPage(requestInfo);
+            diagnosticLog('conversation request match check', {
+                requestInfo,
+                currentPageMatched,
+                pageConversationId: extractConversationPageId(),
+                stateConversationId: state.currentConversationId,
+            });
+
+            if (!currentPageMatched) {
                 return response;
             }
-            return handleConversationResponse(response);
+            return handleConversationResponse(response, requestInfo, meta.url);
         };
 
         window.fetch = wrappedFetch;
         window[PATCH_FLAG] = true;
+        diagnosticLog('fetch patch installed', {
+            pageConversationId: extractConversationPageId(),
+            stateConversationId: state.currentConversationId,
+        });
     }
 
     function getStatusText() {
@@ -981,6 +1070,11 @@
         state.seenUserMessageIds.clear();
         state.domIncrementReady = false;
         state.domBaselineToken += 1;
+
+        diagnosticLog('navigation detected', {
+            href: location.href,
+            pageConversationId: state.currentConversationId,
+        });
 
         if (!restoreCachedConversationStats()) {
             renderUiState();
