@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.1.7
-// @description  在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并通过轻量悬浮按钮显示“保留 / 总轮数”。
+// @version      0.2.0
+// @description  适配 ChatGPT 分页会话接口，通过 num_turns 限制初始历史窗口，并提供轻量悬浮设置。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
 // @match        *://chat.openai.com/*
@@ -51,6 +51,8 @@
         seenUserMessageIds: new Set(),
         domIncrementReady: false,
         domBaselineToken: 0,
+        loadedRounds: null,
+        hasEarlierHistory: null,
     };
 
     let statusButton = null;
@@ -433,53 +435,57 @@
         }, 1000);
     }
 
-    async function handleConversationResponse(response, requestInfo, requestUrl) {
-        const contentType = response.headers.get('content-type') || '';
-        diagnosticLog('conversation response', {
-            url: requestUrl.href,
-            status: response.status,
-            contentType,
-            requestInfo,
-        });
+    function getMessageRole(item) {
+        return item?.author?.role ?? item?.message?.author?.role ?? null;
+    }
 
+    function analyzePagedConversation(data, requestUrl) {
+        const messages = Array.isArray(data?.messages) ? data.messages : [];
+        const loadedRounds = messages.reduce((count, item) => {
+            return count + (getMessageRole(item) === 'user' ? 1 : 0);
+        }, 0);
+        const pageInfo = data?.page_info;
+        const continuation = data?.context_truncation_continuation;
+        const booleanKeys = [
+            'has_previous_page', 'has_previous', 'has_more', 'has_more_before',
+            'has_prev_page', 'has_older', 'has_older_messages', 'has_previous_messages',
+        ];
+        let hasEarlierHistory = null;
+        if (pageInfo && typeof pageInfo === 'object') {
+            for (const key of booleanKeys) {
+                if (typeof pageInfo[key] === 'boolean') {
+                    hasEarlierHistory = pageInfo[key];
+                    break;
+                }
+            }
+        }
+        if (hasEarlierHistory === null && continuation != null) {
+            hasEarlierHistory = Boolean(continuation);
+        }
+        const requestedRounds = clampRounds(requestUrl.searchParams.get('num_turns') ?? config.keepRounds);
+        return { loadedRounds, requestedRounds, hasEarlierHistory };
+    }
+
+    async function handleConversationResponse(response, requestInfo, requestUrl) {
         if (!isJsonResponse(response)) {
-            diagnosticLog('response skipped: content-type is not application/json', { contentType });
             return response;
         }
 
         try {
             const json = await response.clone().json();
-            const topLevelKeys = json && typeof json === 'object' ? Object.keys(json) : [];
-            diagnosticLog('JSON parsed', {
-                topLevelKeys,
-                hasMapping: Boolean(json?.mapping),
-                hasCurrentNode: Boolean(json?.current_node),
-                mappingSize: json?.mapping && typeof json.mapping === 'object'
-                    ? Object.keys(json.mapping).length
-                    : null,
-                currentNode: json?.current_node ?? null,
-            });
 
-            const analysis = analyzeConversation(json);
-            diagnosticLog('analysis result', analysis
-                ? {
-                    success: true,
-                    totalRounds: analysis.totalRounds,
-                    activePathLength: analysis.path.length,
-                    segmentCount: analysis.segments.length,
-                }
-                : { success: false });
-
-            if (!analysis) {
+            if (requestInfo?.kind === 'conversations') {
+                const paged = analyzePagedConversation(json, requestUrl);
+                state.loadedRounds = paged.loadedRounds;
+                state.hasEarlierHistory = paged.hasEarlierHistory;
+                state.totalRounds = null;
+                state.keptRounds = config.enabled ? paged.requestedRounds : null;
+                renderUiState();
                 return response;
             }
 
-            if (requestInfo?.kind === 'conversations') {
-                diagnosticLog('conversations endpoint observed; response left unchanged', {
-                    totalRounds: analysis.totalRounds,
-                    activePathLength: analysis.path.length,
-                    segmentCount: analysis.segments.length,
-                });
+            const analysis = analyzeConversation(json);
+            if (!analysis) {
                 return response;
             }
 
@@ -490,15 +496,6 @@
             }
 
             const trimmed = trimConversation(json, config.keepRounds);
-            diagnosticLog('trim result', trimmed
-                ? {
-                    success: true,
-                    changed: trimmed.changed,
-                    totalRounds: trimmed.totalRounds,
-                    keptRounds: trimmed.keptRounds,
-                }
-                : { success: false });
-
             if (!trimmed) {
                 return response;
             }
@@ -517,9 +514,42 @@
         }
     }
 
+    function rewritePagedConversationFetchArgs(args, meta, requestInfo) {
+        if (!config.enabled || requestInfo?.kind !== 'conversations') {
+            return { args, url: meta.url };
+        }
+
+        const nextUrl = new URL(meta.url.href);
+        nextUrl.searchParams.set('num_turns', String(config.keepRounds));
+        if (nextUrl.href === meta.url.href) {
+            return { args, url: meta.url };
+        }
+
+        const [input, init] = args;
+        if (input instanceof Request) {
+            const rewritten = new Request(nextUrl.href, {
+                method: input.method,
+                headers: input.headers,
+                mode: input.mode,
+                credentials: input.credentials,
+                cache: input.cache,
+                redirect: input.redirect,
+                referrer: input.referrer,
+                referrerPolicy: input.referrerPolicy,
+                integrity: input.integrity,
+                keepalive: input.keepalive,
+                signal: input.signal,
+            });
+            return { args: init === undefined ? [rewritten] : [rewritten, init], url: nextUrl };
+        }
+        if (input instanceof URL) {
+            return { args: [nextUrl, ...args.slice(1)], url: nextUrl };
+        }
+        return { args: [nextUrl.href, ...args.slice(1)], url: nextUrl };
+    }
+
     function patchFetch() {
         if (window[PATCH_FLAG]) {
-            diagnosticLog('fetch patch already installed');
             return;
         }
 
@@ -528,85 +558,58 @@
             let meta;
             try {
                 meta = getRequestMeta(args[0], args[1]);
-            } catch (error) {
-                diagnosticError('request metadata parsing failed', error);
+            } catch {
                 return nativeFetch(...args);
             }
 
-            const currentId = extractConversationPageId();
-            const referencesCurrentConversation = Boolean(
-                currentId && meta.url.href.includes(currentId)
-            );
-            const conversationMatched = isConversationGet(meta.method, meta.url);
-
-            if (referencesCurrentConversation || conversationMatched) {
-                diagnosticLog('fetch candidate', {
-                    url: meta.url.href,
-                    method: meta.method,
-                    pathname: meta.url.pathname,
-                    pageConversationId: currentId,
-                    stateConversationId: state.currentConversationId,
-                    conversationMatched,
-                });
-            }
-
-            const response = await nativeFetch(...args);
-            if (!conversationMatched) {
-                if (referencesCurrentConversation) {
-                    diagnosticLog('candidate skipped: URL does not match conversation endpoint', {
-                        url: meta.url.href,
-                        status: response.status,
-                    });
-                }
-                return response;
+            if (!isConversationGet(meta.method, meta.url)) {
+                return nativeFetch(...args);
             }
 
             const requestInfo = getConversationRequestInfo(meta.url);
-            const currentPageMatched = isRequestForCurrentPage(requestInfo);
-            diagnosticLog('conversation request match check', {
-                requestInfo,
-                currentPageMatched,
-                pageConversationId: extractConversationPageId(),
-                stateConversationId: state.currentConversationId,
-            });
-
-            if (!currentPageMatched) {
-                return response;
+            if (!isRequestForCurrentPage(requestInfo)) {
+                return nativeFetch(...args);
             }
-            return handleConversationResponse(response, requestInfo, meta.url);
+
+            const rewritten = rewritePagedConversationFetchArgs(args, meta, requestInfo);
+            const response = await nativeFetch(...rewritten.args);
+            return handleConversationResponse(response, requestInfo, rewritten.url);
         };
 
         window.fetch = wrappedFetch;
         window[PATCH_FLAG] = true;
-        diagnosticLog('fetch patch installed', {
-            pageConversationId: extractConversationPageId(),
-            stateConversationId: state.currentConversationId,
-        });
     }
 
     function getStatusText() {
-        const total = state.totalRounds;
         if (!config.enabled) {
-            return `LS Off / ${total ?? '--'}`;
+            return 'LS Off';
         }
-
+        if (state.loadedRounds !== null) {
+            const suffix = state.hasEarlierHistory === true ? ' / +' : '';
+            return `LS ${config.keepRounds}${suffix}`;
+        }
+        const total = state.totalRounds;
         if (total === null) {
-            return `LS ${config.keepRounds} / --`;
+            return `LS ${config.keepRounds}`;
         }
-
         const kept = state.keptRounds ?? Math.min(config.keepRounds, total);
         return `LS ${kept} / ${total}`;
     }
 
     function getCurrentLineText() {
-        const total = state.totalRounds;
         if (!config.enabled) {
-            return `当前  Off / ${total ?? '--'} 轮`;
+            return '当前  Off（不覆盖 ChatGPT 原生历史窗口）';
         }
+        if (state.loadedRounds !== null) {
+            return state.hasEarlierHistory === true
+                ? `当前  最近 ${config.keepRounds} 轮 / 仍有更早历史`
+                : `当前  最近 ${config.keepRounds} 轮`;
+        }
+        const total = state.totalRounds;
         const kept = total === null
             ? config.keepRounds
             : (state.keptRounds ?? Math.min(config.keepRounds, total));
-        return `当前  ${kept} / ${total ?? '--'} 轮`;
+        return `当前  ${kept}${total === null ? '' : ` / ${total}`} 轮`;
     }
 
     function renderUiState() {
@@ -617,8 +620,8 @@
         statusButton.textContent = getStatusText();
         statusButton.dataset.enabled = config.enabled ? 'true' : 'false';
         statusButton.title = config.enabled
-            ? `已启用：保留最近 ${config.keepRounds} 轮`
-            : '已关闭裁剪；点击可重新启用';
+            ? `已启用：请求最近 ${config.keepRounds} 轮`
+            : '已关闭覆盖；使用 ChatGPT 原生历史窗口';
 
         if (currentStatusLine) {
             currentStatusLine.textContent = getCurrentLineText();
@@ -933,7 +936,7 @@
 
         const note = document.createElement('div');
         note.className = 'cyan-ls-note';
-        note.textContent = '开关会立即刷新；保留轮数仅在“应用并刷新”后生效。';
+        note.textContent = '开关会立即刷新；启用时覆盖 ChatGPT 的 num_turns，关闭时保持原生请求。';
 
         panel.append(title, currentStatusLine, switchRow, keepLabel, counter, applyButton, note);
 
@@ -1075,15 +1078,13 @@
     function handleNavigation() {
         state.totalRounds = null;
         state.keptRounds = null;
+        state.loadedRounds = null;
+        state.hasEarlierHistory = null;
         state.currentConversationId = extractConversationPageId();
         state.seenUserMessageIds.clear();
         state.domIncrementReady = false;
         state.domBaselineToken += 1;
 
-        diagnosticLog('navigation detected', {
-            href: location.href,
-            pageConversationId: state.currentConversationId,
-        });
 
         if (!restoreCachedConversationStats()) {
             renderUiState();

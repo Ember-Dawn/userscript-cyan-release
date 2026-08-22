@@ -1,29 +1,18 @@
 # ChatGPT 长对话优化助手
 
-`chatgpt-long-chat-optimizer.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。它参考 LightSession 的“在 React 渲染之前裁剪 conversation mapping”思路，但以单文件 userscript 形式重新实现，并使用“轮”而不是可见角色段作为用户侧计数单位。
+`chatgpt-long-chat-optimizer.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。当前版本针对 ChatGPT 新版分页会话接口工作：优先复用网页自身的 `/backend-api/conversations/<id>` 请求，通过修改 `num_turns` 控制首次加载的历史窗口，而不是再依赖旧版完整 `mapping` 树进行本地裁剪。
 
 ## 目标
 
-- 缓解超长 ChatGPT 对话在浏览器中的 DOM、React 渲染和滚动负担。
+- 缓解超长 ChatGPT 对话在浏览器中的网络、React 渲染、DOM 和滚动负担。
 - 不修改 OpenAI 服务端保存的完整对话。
-- 通过页面右下角的轻量悬浮按钮显示保留轮数和总轮数。
-- 不要求用户在 Tampermonkey 中反复启用或禁用整个脚本；裁剪功能由脚本面板内的 switch 控制。
+- 不额外主动请求完整历史，只修改 ChatGPT 本来就会发出的当前会话请求。
+- 通过页面右下角的轻量悬浮按钮设置最近 N 轮历史窗口。
+- 保留对旧 `/backend-api/conversation/<id>` / `shared_conversation` 响应的兼容逻辑，作为旧页面或接口回退路径。
 
-## 一轮的定义
+## 新版核心机制
 
-本脚本中：
-
-- 一次 `user` 提问及其后续 `assistant` 回答视为 **1 轮**。
-- 底层通过当前 active conversation path 中的 `user` 可见角色段计数。
-- `system`、`tool`、`thinking` 等内部节点不单独计为一轮。
-- 同一角色连续出现的多个节点视为同一个角色段，因此附件、内部拆分节点等不会因为节点数量增加而轻易重复计数。
-- 如果当前最后一轮只有用户提问、回答尚未完成，该用户提问仍计为当前一轮。
-
-脚本只处理 `current_node` 向上追溯得到的当前活动分支，不把未选中的分叉分支加入总轮数。
-
-## 核心流程
-
-脚本使用以下 UserScript 元数据：
+脚本使用：
 
 ```text
 @run-at document-start
@@ -31,125 +20,162 @@
 @grant none
 ```
 
-启动后立即在页面主上下文中安装 Fetch Proxy。脚本只处理 ChatGPT 页面自身发出的以下 GET 请求，不再为了同步总轮数额外主动请求 conversation 接口：
+启动后立即在页面主上下文安装 Fetch Proxy。当前 ChatGPT 正常会话主要使用：
+
+```text
+/backend-api/conversations/<id>?include_has_versions=true&num_turns=10
+```
+
+启用脚本时，若该请求属于当前页面会话，脚本只把 `num_turns` 改为用户配置的 `keepRounds`，例如：
+
+```text
+num_turns=10  ->  num_turns=20
+```
+
+其余 URL 参数、请求头、认证上下文和请求生命周期仍由 ChatGPT 原生代码负责。脚本不会自行构造一个新的裸认证请求，因此不会为了限制历史窗口额外访问 conversation history。
+
+处理顺序：
+
+1. 在 `document-start` 阶段代理 `window.fetch`。
+2. 识别 `/backend-api/conversations/<id>`、旧 `/backend-api/conversation/<id>` 和 `shared_conversation` GET。
+3. 校验请求 conversation id 与当前 `/c/<id>` 路由；普通对话与 Project `/g/g-p-<project-id>/c/<id>` 都支持。
+4. 对新版 `conversations` 接口：启用时覆盖 `num_turns`，关闭时保持 ChatGPT 原始请求完全不变。
+5. 读取返回 JSON 中的 `messages`、`page_info`、`context_truncation_continuation` 等分页信息，仅用于轻量状态展示，不改写新版 response body。
+6. 对仍返回旧 `mapping + current_node` 的旧接口，继续保留原来的活动分支分析与本地 mapping 裁剪逻辑作为兼容路径。
+
+新版方案的重点是：**尽可能让服务端从一开始就只返回需要的历史窗口，而不是先下载完整 mapping 再在浏览器内删除。**
+
+## “轮”与 `num_turns`
+
+用户设置仍以“保留轮数”表达，例如 10、20、30。新版主路径直接把该值写入 ChatGPT 原生请求的 `num_turns` 参数。
+
+需要注意：`num_turns` 是 ChatGPT 内部接口参数，不属于公开稳定 API。脚本把它当作当前网页实现中的历史窗口参数使用；网站将来再次更改接口语义时需要重新验证。
+
+旧接口回退路径中，一次 `user` 提问及其后续 `assistant` 回答仍按 1 轮处理；`system`、`tool`、`thinking` 等内部节点不单独计轮。
+
+## 悬浮按钮
+
+启用新版分页模式时，按钮优先显示：
+
+```text
+LS 10
+LS 10 / +
+```
+
+含义：
+
+- `LS 10`：脚本把当前会话的历史窗口请求设置为最近 10 轮；当前响应没有可靠提供完整总轮数。
+- `LS 10 / +`：同样请求最近 10 轮，并且从分页信息中确认仍存在更早历史。
+- `LS Off`：脚本仍加载 UI，但不覆盖 `num_turns`，完全采用 ChatGPT 自己的原生请求参数。
+
+旧接口兼容路径如果仍能取得完整活动分支总轮数，则可以继续显示传统的 `LS N / 总轮数`。
+
+脚本**不会为了恢复“总轮数”数字而额外拉取完整历史**。这是新版设计中的主动取舍：长对话优化优先于显示一个精确总数。
+
+点击按钮打开设置面板：
+
+- switch：启用 / 关闭历史窗口覆盖。
+- `−` / `+`：调整保留轮数。
+- 数字输入框：允许 `1–100`。
+- “应用并刷新”：保存新值并刷新当前页面。
+
+## 默认值与配置兼容
+
+- 默认 `keepRounds = 10`。
+- 旧版本已保存的 `keepRounds` 与 `enabled` 继续沿用。
+- 配置仍保存在 `localStorage` 的 `cyan_chatgpt_long_chat_optimizer` 中。
+- 允许范围仍为 `1–100`。
+
+## 启用、关闭与刷新
+
+### 启用
+
+启用后刷新页面，使下一次 ChatGPT 原生 `/backend-api/conversations/<id>` 请求从开始阶段就被改写：
+
+```text
+num_turns=<keepRounds>
+```
+
+### 关闭
+
+关闭后刷新页面。脚本不再覆盖 `num_turns`，而是把 ChatGPT 自己生成的请求原样发出。
+
+因此新版中的“Off”含义是“关闭本脚本对历史窗口的覆盖”，**不保证 ChatGPT 会一次加载完整历史**；ChatGPT 自身仍可能采用分页或默认 `num_turns`。
+
+### 修改保留轮数
+
+`−`、`+` 和输入框只修改面板草稿；点击“应用并刷新”后才写入配置并重新加载。
+
+## 新旧接口兼容
+
+当前主要接口：
+
+```text
+/backend-api/conversations/<id>
+```
+
+已观察到新版响应顶层包含：
+
+```text
+messages
+current_node
+page_info
+context_truncation_continuation
+```
+
+而不再提供旧版完整 `mapping`。因此新版不能继续把 `mapping` 作为主要裁剪基础。
+
+脚本仍保留旧接口：
 
 ```text
 /backend-api/conversation/<id>
 /backend-api/shared_conversation/<id>
 ```
 
-处理顺序：
+如果旧接口仍返回 `mapping + current_node`，则继续使用旧活动分支裁剪逻辑。这只是兼容回退，不再是主实现。
 
-1. 调用原始 `fetch` 获取正常响应。
-2. 从请求 URL 提取 conversation id，并与当前页面 URL 中的 `/c/<id>` 路由段做一致性校验；普通 `/c/<id>` 与 Project `/g/g-p-<project-id>/c/<id>` 都支持。不是当前页面的预取、迟到或旧会话响应直接原样返回。
-3. 对当前会话的 conversation 响应执行 `Response.clone().json()`，不消费 ChatGPT 原本要读取的 Response。
-4. 从 `current_node` 沿 `parent` 构建当前活动路径。
-5. 在裁剪前统计完整路径中的总轮数。
-6. 启用裁剪时，从倒数第 N 个用户轮开始保留后缀路径，并重建该活动路径的 `parent` / `children`。
-7. 如果总轮数不超过限制，直接把原 Response 交还 ChatGPT，不重写 conversation tree。
-8. 关闭裁剪时仍会读取当前会话的 conversation JSON 统计总轮数，但不修改响应。
+`/textdocs`、`/url_safe`、`/stream_status` 等子路径不是对话主体接口，不参与历史窗口处理。
 
-这种方式的重点是让 ChatGPT 的 React 在初始渲染时只看到保留的最近 N 轮，而不是先渲染全部历史再从 DOM 中删除旧内容。
+## SPA 与 Project 对话
 
-## 悬浮按钮
-
-右下角按钮保持简短格式：
+脚本从 pathname 中识别最后的 `/c/<conversation-id>`，因此同时支持：
 
 ```text
-LS 10 / 86
-LS Off / 86
+/c/<conversation-id>
+/g/g-p-<project-id>/c/<conversation-id>
 ```
 
-含义：
+请求返回前会核对当前页面 conversation id，避免 SPA 快速切换时旧会话请求影响新会话状态。
 
-- `LS 10 / 86`：裁剪已启用，当前配置保留最近 10 轮，完整活动分支共 86 轮。
-- `LS Off / 86`：脚本仍在运行并统计总轮数，但不会裁剪 conversation response。
-- 请求尚未取得总轮数时使用 `--` 作为总数占位。
+## DOM 观察器
 
-启用时按钮使用绿色强调色；关闭时使用灰色。按钮采用紧凑的小圆角矩形，不使用大胶囊圆角和固定最小宽度，以减少文本两侧空白。
+脚本继续保留轻量 MutationObserver，主要承担：
 
-点击按钮打开设置面板，面板包含：
+- ChatGPT hydration / SPA 重建后恢复 `#cyan-ls-root` 悬浮 UI。
+- 旧接口兼容路径中的本地用户消息增量统计。
 
-- 横向 switch：启用 / 关闭裁剪。
-- `−` / `+`：逐轮调整保留数量。
-- 中间数字输入框：可直接输入 `1–100` 的整数；离开输入框时会归一化到合法范围。
-- “应用并刷新”：保存新的保留轮数并刷新页面。
-
-## 默认值与旧配置
-
-- 新安装或没有保存配置时，默认保留 **10 轮**。
-- 已经保存过 `keepRounds` 的用户升级后继续使用原值，不因默认值变化被强制覆盖。
-- 保留轮数允许 `1–100`；输入为空或不合法时，离开输入框会恢复为当前已保存值。
-- 设置面板标题为 `Light Session 长对话优化`。
-
-## 刷新规则
-
-### 启用 / 关闭
-
-切换 switch 后立即：
-
-1. 把 `enabled` 和当前面板中的保留轮数写入 `localStorage`。
-2. 刷新当前页面。
-
-关闭时刷新是为了重新取得未裁剪的完整 conversation response；开启时刷新是为了保证下一次 conversation GET 从首轮加载开始就经过 Fetch Proxy。
-
-### 修改保留轮数
-
-点击 `−`、`+` 或直接修改数字输入框只改变面板草稿，不立即刷新。
-
-只有点击“应用并刷新”后才：
-
-1. 保存新的 `keepRounds`。
-2. 刷新当前页面。
-3. 用新的限制重新裁剪 conversation response。
-
-这样可以避免连续调整数字时多次 reload。
-
-## 总轮数与 SPA 切换
-
-conversation GET 是总轮数的权威来源，但脚本 **不会为了更新数字额外主动 GET `/backend-api/conversation/<id>`**。它只被动利用 ChatGPT 自己本来就会发出的 conversation 请求：
-
-- 首次打开或刷新对话时，从 ChatGPT 原生 conversation response 得到权威总轮数。
-- 同一标签页通过 SPA 从对话 A 切换到 B 时，先切换当前 conversation id，并清空上一条会话的 DOM 增量基线。
-- 脚本使用当前标签页作用域的 `sessionStorage` 为已处理过的 conversation id 缓存轻量统计值（只保存 conversation id 与 `totalRounds`，不保存 conversation 内容）。这样即使 A → B 发生完整刷新，只要仍在同一个标签页会话中，之后从 B 通过 SPA 返回 A 仍可恢复 A 的已知总轮数；如果 B 在本标签页会话中从未取得过权威总轮数，按钮先显示 `LS N / --`。
-- 随后仍只等待 ChatGPT 自己加载 B；如果捕获到 B 的原生 conversation response，以该 response 的权威总轮数覆盖缓存。
-- 不为“尽快显示数字”额外访问对话历史接口，以降低短时间重复访问 conversation history 的风险。
-
-脚本从当前 pathname 中识别 `/c/<id>` 路由段，因此既支持普通 `/c/<id>`，也支持 Project `/g/g-p-<project-id>/c/<id>`。conversation response 返回时会再次核对请求 id 与当前 URL。快速执行 `A → B → C` 时，A/B 的迟到响应不会覆盖 C 的悬浮状态，也不会被本脚本改写。对于同一标签页会话内已经处理过的会话，SPA 返回时可使用该 conversation id 对应的会话级统计缓存恢复总轮数。缓存使用 `sessionStorage`，因此同一标签页完整刷新后仍保留，但不会作为跨标签页的长期全局配置；缓存最多保留最近 100 个 conversation id。
-
-为避免用户在当前页面继续发送新消息后数字一直停留在初始值，脚本另外安装一个局部增量 MutationObserver：
-
-- 只检查 `addedNodes`，不持续扫描完整正文。
-- 只识别带 `data-message-author-role="user"` 和 `data-message-id` 的新增用户消息节点。
-- 已见过的 message id 不重复计数。
-- 权威 conversation response 到达后先建立当前 DOM 的 message-id 基线，之后才允许新增用户消息令总轮数 `+1`，减少初始历史渲染被误计为新轮次的风险。
-- SPA 导航时禁用本地增量并清空基线，直到新会话的权威 response 建立新的基线。
-
-这个 DOM 观察器只用于补充当前页面中新产生的轮数；真正的裁剪仍然发生在 conversation API response 层。
-
-同一个观察器还承担轻量 UI 自愈：每批 DOM 变化只检查一次 `#cyan-ls-root` 是否仍存在。如果 ChatGPT 在 hydration 或 SPA 页面重建时移除了悬浮按钮，脚本会重新创建 UI；样式节点也会按需补回。该检查不遍历完整对话正文。
+观察器只处理新增节点，不持续扫描完整正文。新版 `conversations + num_turns` 主路径不依赖 DOM 来决定历史窗口大小。
 
 ## 已知限制
 
-- ChatGPT 的内部 API 路径、conversation mapping 结构和 DOM 属性都不是公开稳定接口；网站大改后可能需要维护。
-- Fetch Proxy 主要优化 conversation 初始加载 / 重新加载时的历史渲染。当前页面继续产生的新轮次不会自动把 React 已有节点再次压回固定 N 轮；需要重新加载页面时才会重新严格裁剪为 N 轮。
-- “总轮数”以当前活动分支计算，不代表 conversation mapping 中所有历史分叉节点的总量。
-- 关闭裁剪后仍会 clone 并解析当前会话的 conversation GET 响应用于统计总轮数，因此并非完全零开销；但不会改写响应。
-- SPA 切换后如果 ChatGPT 没有重新发出可捕获的当前 conversation GET：已在本标签页会话处理过的会话会从 session 缓存恢复已知总轮数；从未处理过的会话仍会保持 `--`，脚本不会用额外历史请求强行补齐。
-- 会话级统计缓存只恢复统计状态，不会制造新的 conversation response；因此如果 ChatGPT 直接用自身前端缓存恢复某条会话而完全不发 conversation GET，本次 SPA 返回不会重新执行 response-level 裁剪。
-- 如果 Tampermonkey 无法把 `raw` userscript 注入页面主上下文，`window.fetch` 可能无法正确代理。排错时首先确认脚本是否在页面第一次 conversation GET 之前完成 patch。
+- `/backend-api/conversations`、`num_turns`、`messages`、`page_info` 等都是 ChatGPT 内部实现，不是公开稳定 API。
+- 新版响应目前没有发现可靠的完整总轮数字段，因此按钮默认不再承诺 `LS N / 总轮数`。
+- `LS N / +` 只在分页元数据能够明确判断“存在更早历史”时显示；无法确认时只显示 `LS N`。
+- 关闭脚本覆盖后，ChatGPT 自己仍可能只加载默认数量的历史轮次；“Off”不等于强制完整加载。
+- 当前页面继续产生新消息后，ChatGPT 自己如何维护分页窗口由网页原生逻辑决定；重新加载时脚本会再次把 `num_turns` 设为当前配置。
+- 如果 Tampermonkey 无法在页面主上下文及时代理 `window.fetch`，脚本可能无法改写首次会话请求。
 
-## 隐私
+## 隐私与安全
 
 - 不向第三方服务器发送数据。
 - 不保存 conversation response、Cookie、Token 或 Authorization Header。
-- `localStorage` 只持久保存：是否启用，以及保留轮数。
-- 当前标签页的 `sessionStorage` 另外暂存最多 100 条 conversation id 与对应总轮数，用于完整刷新后再通过 SPA 返回旧会话时恢复统计；不保存聊天正文。
-- 日志默认不输出完整响应内容。
+- 不额外主动调用 conversation history 接口。
+- `localStorage` 只保存是否启用和 `keepRounds`。
+- 旧版兼容统计缓存如果存在，只保存 conversation id 与数字，不保存聊天正文。
 
 ## 上游同步基线
 
-核心架构思路参考 LightSession：
+早期实现参考 LightSession：
 
 ```text
 Repository: https://github.com/11me/light-session
@@ -158,14 +184,7 @@ Commit:     300aade18bff188749d062ac2fad7216c7bc36ca
 Checked:    2026-08-09
 ```
 
-这里同时记录版本号和 commit SHA：版本号便于人工阅读，commit SHA 用作未来与上游精确 diff 的基线。检查上游更新时，优先比较该 commit 到上游最新 `master` 的变化，并重点关注：
-
-- `extension/src/page/page-script.ts`：Fetch Proxy、conversation 请求识别和响应改写。
-- `extension/src/shared/trimmer.ts`：conversation mapping 裁剪、隐藏节点保留和计数语义。
-- `extension/src/content/page-inject.ts`：document-start 与页面主上下文注入。
-- 与 bootstrap、状态同步相关的 content script 逻辑：用于判断 ChatGPT SPA 生命周期变化是否需要同步适配。
-
-LightSession 使用 MIT License。当前 userscript 不是原扩展的官方 Tampermonkey 版本，而是针对本仓库单文件 userscript 结构重新实现的版本；本脚本的“一问一答按轮计数”、localStorage 设置、悬浮 switch、UI 自愈和刷新交互均属于本地适配层。
+当前 v0.2.x 已因 ChatGPT 内部接口从完整 `mapping` 转向 `messages + page_info + num_turns` 而采用不同的主路径。以后同步上游时，应把 LightSession 视为旧架构参考，而不是机械复制其 mapping 裁剪方式。
 
 ## 维护检查
 
@@ -175,19 +194,15 @@ LightSession 使用 MIT License。当前 userscript 不是原扩展的官方 Tam
 node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 ```
 
-实际页面验证建议覆盖：
+实际页面建议至少验证：
 
-1. 第一次打开长对话时按钮能显示 `LS N / 总轮数`。
-2. 总轮数大于 N 时页面只初始渲染最近 N 轮附近的 conversation path。
-3. 关闭 switch 后自动刷新并显示 `LS Off / 总轮数`，完整历史恢复。
-4. 重新开启后自动刷新并恢复裁剪。
-5. 修改保留轮数时不会立即刷新，点击“应用并刷新”后才生效。
-6. 在当前会话新增用户消息时总轮数能够递增。
-7. ChatGPT SPA 切换到本标签页从未处理过的会话时显示 `LS N / --`；切回本标签页会话已经处理过的会话时，可立即恢复该 conversation id 的 session 总轮数；即使中间发生过同标签页完整刷新也应仍可恢复，不沿用其他会话的数字。
-8. 在 Network 中确认 SPA 切换只使用 ChatGPT 自己发出的 conversation 请求；脚本不额外主动 GET `/backend-api/conversation/<id>`。
-9. 快速执行 `A → B → C` 时，A/B 的迟到 conversation response 不会覆盖 C 的总轮数；随后从 C SPA 返回已缓存的 A 时，恢复的是 A 自己的统计值；并验证 A → B 完整刷新、B → A SPA 返回这一组合场景。
-10. 刷新页面并等待 ChatGPT 完成 hydration 后，`#cyan-ls-root` 仍存在；若页面曾删除该节点，悬浮按钮会自动恢复且不会重复创建。
-11. 按钮保持紧凑小圆角布局，`LS 10 / 86` 和 `LS Off / 86` 不因固定最小宽度产生明显两端空白。
-12. 新安装或没有旧配置时默认保留 10 轮；已有 `localStorage` 配置继续保留用户原值。
-13. 设置面板标题显示为 `Light Session 长对话优化`，保留轮数可在中间输入框直接输入 `1–100` 的整数，且不再显示 `5 / 10 / 20 / 30` 快捷按钮。
-14. 普通 `/c/<conversation-id>` 与 Project `/g/g-p-<project-id>/c/<conversation-id>` 页面都能识别当前 conversation id，并正常统计总轮数、执行裁剪和防止迟到响应串台。
+1. 普通 `/c/<id>` 能捕获 `/backend-api/conversations/<id>`。
+2. Project `/g/g-p-.../c/<id>` 同样能正确匹配当前 conversation id。
+3. 启用且配置为 10 时，Network 中原生请求的 `num_turns` 为 10；改成 20 后刷新变为 20。
+4. 关闭后脚本不修改 ChatGPT 原生 `num_turns`。
+5. 不产生脚本主动发起的额外 conversation history GET。
+6. `/textdocs`、`/url_safe`、`/stream_status` 不被误当作主体请求。
+7. `messages/page_info/context_truncation_continuation` 响应能够正常交还 ChatGPT，不改写 response body。
+8. 如果分页信息确认有更早历史，按钮显示 `LS N / +`；无法确认总历史时不伪造总轮数。
+9. 旧 `mapping + current_node` 接口如果仍出现，旧裁剪兼容路径不报错。
+10. switch、数字输入与“应用并刷新”继续沿用旧配置并正常工作。
