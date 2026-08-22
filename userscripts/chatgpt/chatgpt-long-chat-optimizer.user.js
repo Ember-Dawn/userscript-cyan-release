@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.2.0
-// @description  适配 ChatGPT 分页会话接口，通过 num_turns 限制初始历史窗口，并提供轻量悬浮设置。
+// @version      0.3.0
+// @description  适配 ChatGPT 分页会话接口，限制初始历史窗口，并低速后台统计与持久缓存总轮数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
 // @match        *://chat.openai.com/*
@@ -14,7 +14,8 @@
 // @match        *://chatgpt.com/*
 // @run-at       document-start
 // @sandbox      raw
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
 // ==/UserScript==
 
 /*
@@ -33,15 +34,23 @@
 
     const STORAGE_KEY = 'cyan_chatgpt_long_chat_optimizer';
     const SESSION_STATS_KEY = 'cyan_chatgpt_long_chat_optimizer_stats';
+    const ROUND_COUNT_CACHE_KEY = 'cyan_chatgpt_long_chat_optimizer_round_cache_v1';
     const PATCH_FLAG = '__CYAN_LS_FETCH_PATCHED__';
     const HISTORY_PATCH_FLAG = '__CYAN_LS_HISTORY_PATCHED__';
     const DEFAULT_CONFIG = Object.freeze({ enabled: true, keepRounds: 10 });
     const MIN_ROUNDS = 1;
     const MAX_ROUNDS = 100;
     const MAX_STATS_CACHE_ENTRIES = 100;
+    const MAX_ROUND_COUNT_CACHE_ENTRIES = 300;
+    const BACKGROUND_PAGE_TURNS = 10;
+    const BACKGROUND_INITIAL_DELAY_MIN_MS = 2500;
+    const BACKGROUND_INITIAL_DELAY_MAX_MS = 4500;
+    const BACKGROUND_PAGE_DELAY_MIN_MS = 2500;
+    const BACKGROUND_PAGE_DELAY_MAX_MS = 4500;
     const HIDDEN_ROLES = new Set(['system', 'tool', 'thinking']);
     const DIAGNOSTIC_PREFIX = '[LS]';
     const conversationStatsCache = loadConversationStatsCache();
+    const roundCountCache = loadRoundCountCache();
 
     const state = {
         totalRounds: null,
@@ -53,8 +62,14 @@
         domBaselineToken: 0,
         loadedRounds: null,
         hasEarlierHistory: null,
+        roundCountStatus: 'idle',
+        roundCountRequestTemplate: null,
+        roundCountTimer: null,
+        roundCountAbortController: null,
+        roundCountToken: 0,
     };
 
+    let nativePageFetch = null;
     let statusButton = null;
     let panel = null;
     let currentStatusLine = null;
@@ -114,6 +129,111 @@
         } catch {
             // sessionStorage 不可用时退化为当前 document 生命周期内的内存缓存。
         }
+    }
+
+    function normalizeRoundCountEntry(entry) {
+        if (!entry || typeof entry !== 'object') {
+            return null;
+        }
+        const completed = entry.completed === true;
+        const totalRounds = Number.isFinite(entry.totalRounds) ? Math.max(0, entry.totalRounds) : null;
+        const countedRounds = Number.isFinite(entry.countedRounds) ? Math.max(0, entry.countedRounds) : 0;
+        const nextBeforeCursor = typeof entry.nextBeforeCursor === 'string' && entry.nextBeforeCursor
+            ? entry.nextBeforeCursor
+            : null;
+        const latestUserMessageId = typeof entry.latestUserMessageId === 'string' && entry.latestUserMessageId
+            ? entry.latestUserMessageId
+            : null;
+        const seenUserMessageIds = Array.isArray(entry.seenUserMessageIds)
+            ? [...new Set(entry.seenUserMessageIds.filter((id) => typeof id === 'string' && id))]
+            : [];
+        if (completed && totalRounds === null) {
+            return null;
+        }
+        if (!completed && countedRounds === 0 && seenUserMessageIds.length === 0 && !nextBeforeCursor) {
+            return null;
+        }
+        return {
+            completed,
+            totalRounds,
+            countedRounds: completed ? (totalRounds ?? countedRounds) : Math.max(countedRounds, seenUserMessageIds.length),
+            nextBeforeCursor: completed ? null : nextBeforeCursor,
+            seenUserMessageIds: completed ? [] : seenUserMessageIds,
+            latestUserMessageId,
+            updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
+        };
+    }
+
+    function loadRoundCountCache() {
+        try {
+            if (typeof GM_getValue !== 'function') {
+                return { version: 1, entries: {} };
+            }
+            const stored = GM_getValue(ROUND_COUNT_CACHE_KEY, { version: 1, entries: {} });
+            const sourceEntries = stored?.entries && typeof stored.entries === 'object' ? stored.entries : {};
+            const entries = {};
+            for (const [conversationId, rawEntry] of Object.entries(sourceEntries)) {
+                if (typeof conversationId !== 'string' || !conversationId) {
+                    continue;
+                }
+                const entry = normalizeRoundCountEntry(rawEntry);
+                if (entry) {
+                    entries[conversationId] = entry;
+                }
+            }
+            return { version: 1, entries };
+        } catch {
+            return { version: 1, entries: {} };
+        }
+    }
+
+    function saveRoundCountCache() {
+        try {
+            if (typeof GM_setValue !== 'function') {
+                return;
+            }
+            const entries = Object.entries(roundCountCache.entries)
+                .sort((a, b) => (b[1]?.updatedAt ?? 0) - (a[1]?.updatedAt ?? 0))
+                .slice(0, MAX_ROUND_COUNT_CACHE_ENTRIES);
+            roundCountCache.entries = Object.fromEntries(entries);
+            GM_setValue(ROUND_COUNT_CACHE_KEY, roundCountCache);
+        } catch {
+            // Tampermonkey 存储不可用时不影响核心历史窗口功能。
+        }
+    }
+
+    function getRoundCountEntry(conversationId) {
+        if (!conversationId) {
+            return null;
+        }
+        return normalizeRoundCountEntry(roundCountCache.entries[conversationId]);
+    }
+
+    function setRoundCountEntry(conversationId, entry) {
+        if (!conversationId) {
+            return;
+        }
+        const normalized = normalizeRoundCountEntry({ ...entry, updatedAt: Date.now() });
+        if (!normalized) {
+            delete roundCountCache.entries[conversationId];
+        } else {
+            roundCountCache.entries[conversationId] = normalized;
+        }
+        saveRoundCountCache();
+    }
+
+    function restorePersistentRoundCountStats() {
+        const conversationId = state.currentConversationId;
+        const entry = getRoundCountEntry(conversationId);
+        if (!entry?.completed || !Number.isFinite(entry.totalRounds)) {
+            return false;
+        }
+        state.totalRounds = entry.totalRounds;
+        state.keptRounds = config.enabled ? Math.min(config.keepRounds, entry.totalRounds) : entry.totalRounds;
+        state.roundCountStatus = 'complete';
+        renderUiState();
+        armDomIncrementBaseline();
+        return true;
     }
 
     function loadConfig() {
@@ -439,31 +559,368 @@
         return item?.author?.role ?? item?.message?.author?.role ?? null;
     }
 
-    function analyzePagedConversation(data, requestUrl) {
-        const messages = Array.isArray(data?.messages) ? data.messages : [];
-        const loadedRounds = messages.reduce((count, item) => {
-            return count + (getMessageRole(item) === 'user' ? 1 : 0);
-        }, 0);
-        const pageInfo = data?.page_info;
-        const continuation = data?.context_truncation_continuation;
+    function getMessageId(item) {
+        return item?.id ?? item?.message?.id ?? null;
+    }
+
+    function getUniqueUserMessageIds(messages) {
+        const ids = [];
+        const seen = new Set();
+        for (const item of messages) {
+            if (getMessageRole(item) !== 'user') {
+                continue;
+            }
+            const id = getMessageId(item);
+            if (typeof id !== 'string' || !id || seen.has(id)) {
+                continue;
+            }
+            seen.add(id);
+            ids.push(id);
+        }
+        return ids;
+    }
+
+    function getHasEarlierHistory(pageInfo, continuation) {
         const booleanKeys = [
             'has_previous_page', 'has_previous', 'has_more', 'has_more_before',
             'has_prev_page', 'has_older', 'has_older_messages', 'has_previous_messages',
         ];
-        let hasEarlierHistory = null;
         if (pageInfo && typeof pageInfo === 'object') {
             for (const key of booleanKeys) {
                 if (typeof pageInfo[key] === 'boolean') {
-                    hasEarlierHistory = pageInfo[key];
-                    break;
+                    return pageInfo[key];
                 }
             }
         }
-        if (hasEarlierHistory === null && continuation != null) {
-            hasEarlierHistory = Boolean(continuation);
+        if (continuation != null) {
+            return Boolean(continuation);
         }
+        return null;
+    }
+
+    function analyzePagedConversation(data, requestUrl) {
+        const messages = Array.isArray(data?.messages) ? data.messages : [];
+        const userMessageIds = getUniqueUserMessageIds(messages);
+        const pageInfo = data?.page_info;
+        const continuation = data?.context_truncation_continuation;
+        const hasEarlierHistory = getHasEarlierHistory(pageInfo, continuation);
+        const startCursor = typeof pageInfo?.start_cursor === 'string' && pageInfo.start_cursor
+            ? pageInfo.start_cursor
+            : null;
         const requestedRounds = clampRounds(requestUrl.searchParams.get('num_turns') ?? config.keepRounds);
-        return { loadedRounds, requestedRounds, hasEarlierHistory };
+        return {
+            loadedRounds: userMessageIds.length,
+            requestedRounds,
+            hasEarlierHistory,
+            startCursor,
+            userMessageIds,
+        };
+    }
+
+    function createFreshRoundCountEntry(paged) {
+        const ids = [...new Set(paged.userMessageIds)];
+        const completed = paged.hasEarlierHistory === false;
+        return {
+            completed,
+            totalRounds: completed ? ids.length : null,
+            countedRounds: ids.length,
+            nextBeforeCursor: completed ? null : paged.startCursor,
+            seenUserMessageIds: completed ? [] : ids,
+            latestUserMessageId: ids.at(-1) ?? null,
+            updatedAt: Date.now(),
+        };
+    }
+
+    function applyRoundCountEntryToState(entry, paged) {
+        state.loadedRounds = paged.loadedRounds;
+        state.hasEarlierHistory = paged.hasEarlierHistory;
+        if (entry?.completed && Number.isFinite(entry.totalRounds)) {
+            state.totalRounds = entry.totalRounds;
+            state.keptRounds = config.enabled ? Math.min(config.keepRounds, entry.totalRounds) : entry.totalRounds;
+            state.roundCountStatus = 'complete';
+            armDomIncrementBaseline();
+        } else {
+            state.totalRounds = null;
+            state.keptRounds = config.enabled ? paged.requestedRounds : null;
+            state.roundCountStatus = paged.hasEarlierHistory === true ? 'counting' : 'idle';
+        }
+        renderUiState();
+    }
+
+    function prepareRoundCountFromInitialPage(conversationId, paged) {
+        const currentIds = paged.userMessageIds;
+        const currentLatestId = currentIds.at(-1) ?? null;
+        let entry = getRoundCountEntry(conversationId);
+
+        if (entry?.completed && Number.isFinite(entry.totalRounds)) {
+            if (entry.latestUserMessageId && currentLatestId === entry.latestUserMessageId) {
+                applyRoundCountEntryToState(entry, paged);
+                return entry;
+            }
+            const anchorIndex = entry.latestUserMessageId
+                ? currentIds.indexOf(entry.latestUserMessageId)
+                : -1;
+            if (anchorIndex >= 0) {
+                const appendedIds = currentIds.slice(anchorIndex + 1);
+                if (appendedIds.length > 0) {
+                    entry.totalRounds += appendedIds.length;
+                    entry.countedRounds = entry.totalRounds;
+                    entry.latestUserMessageId = currentLatestId;
+                    setRoundCountEntry(conversationId, entry);
+                }
+                applyRoundCountEntryToState(entry, paged);
+                return entry;
+            }
+            entry = null;
+        }
+
+        if (entry && !entry.completed) {
+            if (entry.latestUserMessageId && !currentIds.includes(entry.latestUserMessageId)) {
+                entry = null;
+            } else {
+                const seen = new Set(entry.seenUserMessageIds);
+                for (const id of currentIds) {
+                    seen.add(id);
+                }
+                entry.seenUserMessageIds = [...seen];
+                entry.countedRounds = seen.size;
+                entry.latestUserMessageId = currentLatestId ?? entry.latestUserMessageId;
+                if (!entry.nextBeforeCursor) {
+                    entry.nextBeforeCursor = paged.startCursor;
+                }
+                if (paged.hasEarlierHistory === false) {
+                    entry.completed = true;
+                    entry.totalRounds = seen.size;
+                    entry.countedRounds = seen.size;
+                    entry.nextBeforeCursor = null;
+                    entry.seenUserMessageIds = [];
+                }
+                setRoundCountEntry(conversationId, entry);
+                applyRoundCountEntryToState(entry, paged);
+                return entry;
+            }
+        }
+
+        entry = createFreshRoundCountEntry(paged);
+        setRoundCountEntry(conversationId, entry);
+        applyRoundCountEntryToState(entry, paged);
+        return entry;
+    }
+
+    function randomDelay(minimum, maximum) {
+        return Math.floor(minimum + Math.random() * (maximum - minimum + 1));
+    }
+
+    function cancelBackgroundRoundCount(resetStatus = false) {
+        state.roundCountToken += 1;
+        if (state.roundCountTimer !== null) {
+            window.clearTimeout(state.roundCountTimer);
+            state.roundCountTimer = null;
+        }
+        if (state.roundCountAbortController) {
+            state.roundCountAbortController.abort();
+            state.roundCountAbortController = null;
+        }
+        if (resetStatus) {
+            state.roundCountStatus = 'idle';
+        }
+    }
+
+    function captureRoundCountRequestTemplate(args, conversationId) {
+        try {
+            const request = new Request(args[0], args[1]);
+            state.roundCountRequestTemplate = {
+                conversationId,
+                headers: [...request.headers.entries()],
+                credentials: request.credentials || 'same-origin',
+            };
+        } catch {
+            state.roundCountRequestTemplate = null;
+        }
+    }
+
+    function buildBackgroundMessagesRequest(conversationId, beforeCursor, signal) {
+        const template = state.roundCountRequestTemplate;
+        if (!template || template.conversationId !== conversationId) {
+            return null;
+        }
+        const path = `/backend-api/conversations/${encodeURIComponent(conversationId)}/messages`;
+        const url = new URL(path, location.origin);
+        url.searchParams.set('before', beforeCursor);
+        url.searchParams.set('include_has_versions', 'true');
+        url.searchParams.set('num_turns', String(BACKGROUND_PAGE_TURNS));
+
+        const headers = new Headers(template.headers);
+        if (headers.has('x-openai-target-path')) {
+            headers.set('x-openai-target-path', path);
+        }
+        if (headers.has('x-openai-target-route')) {
+            headers.set('x-openai-target-route', '/backend-api/conversations/{conversation_id}/messages');
+        }
+        headers.delete('content-length');
+
+        return new Request(url.href, {
+            method: 'GET',
+            headers,
+            credentials: template.credentials,
+            signal,
+        });
+    }
+
+    function finishRoundCountEntry(conversationId, entry, totalRounds) {
+        entry.completed = true;
+        entry.totalRounds = totalRounds;
+        entry.countedRounds = totalRounds;
+        entry.nextBeforeCursor = null;
+        entry.seenUserMessageIds = [];
+        setRoundCountEntry(conversationId, entry);
+        if (state.currentConversationId === conversationId) {
+            state.totalRounds = totalRounds;
+            state.keptRounds = config.enabled ? Math.min(config.keepRounds, totalRounds) : totalRounds;
+            state.roundCountStatus = 'complete';
+            state.hasEarlierHistory = false;
+            renderUiState();
+            armDomIncrementBaseline();
+        }
+    }
+
+    function ingestRoundCountPage(conversationId, requestedBeforeCursor, data) {
+        const entry = getRoundCountEntry(conversationId);
+        if (!entry || entry.completed || entry.nextBeforeCursor !== requestedBeforeCursor) {
+            return false;
+        }
+        const messages = Array.isArray(data?.messages) ? data.messages : [];
+        const userIds = getUniqueUserMessageIds(messages);
+        const seen = new Set(entry.seenUserMessageIds);
+        for (const id of userIds) {
+            seen.add(id);
+        }
+        entry.seenUserMessageIds = [...seen];
+        entry.countedRounds = seen.size;
+
+        const pageInfo = data?.page_info;
+        const hasEarlierHistory = getHasEarlierHistory(pageInfo, null);
+        const nextCursor = typeof pageInfo?.start_cursor === 'string' && pageInfo.start_cursor
+            ? pageInfo.start_cursor
+            : null;
+
+        if (hasEarlierHistory === false) {
+            finishRoundCountEntry(conversationId, entry, seen.size);
+            return true;
+        }
+        if (!nextCursor || nextCursor === requestedBeforeCursor) {
+            setRoundCountEntry(conversationId, entry);
+            if (state.currentConversationId === conversationId) {
+                state.roundCountStatus = 'paused';
+                renderUiState();
+            }
+            return false;
+        }
+
+        entry.nextBeforeCursor = nextCursor;
+        setRoundCountEntry(conversationId, entry);
+        return true;
+    }
+
+    function scheduleBackgroundRoundCount(initial = false) {
+        if (!config.enabled || !nativePageFetch || document.hidden) {
+            return;
+        }
+        const conversationId = state.currentConversationId;
+        const entry = getRoundCountEntry(conversationId);
+        const template = state.roundCountRequestTemplate;
+        if (!conversationId || !entry || entry.completed || !entry.nextBeforeCursor ||
+            !template || template.conversationId !== conversationId) {
+            return;
+        }
+
+        if (state.roundCountTimer !== null) {
+            window.clearTimeout(state.roundCountTimer);
+        }
+        const token = state.roundCountToken;
+        state.roundCountStatus = 'counting';
+        renderUiState();
+        const delay = initial
+            ? randomDelay(BACKGROUND_INITIAL_DELAY_MIN_MS, BACKGROUND_INITIAL_DELAY_MAX_MS)
+            : randomDelay(BACKGROUND_PAGE_DELAY_MIN_MS, BACKGROUND_PAGE_DELAY_MAX_MS);
+        state.roundCountTimer = window.setTimeout(() => {
+            state.roundCountTimer = null;
+            runBackgroundRoundCountPage(conversationId, token);
+        }, delay);
+    }
+
+    async function runBackgroundRoundCountPage(conversationId, token) {
+        if (token !== state.roundCountToken || state.currentConversationId !== conversationId || document.hidden) {
+            return;
+        }
+        const entry = getRoundCountEntry(conversationId);
+        if (!entry || entry.completed || !entry.nextBeforeCursor) {
+            return;
+        }
+
+        const requestedBeforeCursor = entry.nextBeforeCursor;
+        const controller = new AbortController();
+        state.roundCountAbortController = controller;
+        const request = buildBackgroundMessagesRequest(conversationId, requestedBeforeCursor, controller.signal);
+        if (!request) {
+            state.roundCountStatus = 'paused';
+            renderUiState();
+            return;
+        }
+
+        try {
+            const response = await nativePageFetch(request);
+            if (token !== state.roundCountToken || state.currentConversationId !== conversationId) {
+                return;
+            }
+            if (!response.ok || !isJsonResponse(response)) {
+                state.roundCountStatus = 'paused';
+                renderUiState();
+                return;
+            }
+            const json = await response.json();
+            const advanced = ingestRoundCountPage(conversationId, requestedBeforeCursor, json);
+            const currentEntry = getRoundCountEntry(conversationId);
+            if (advanced && currentEntry && !currentEntry.completed) {
+                scheduleBackgroundRoundCount(false);
+            }
+        } catch (error) {
+            if (error?.name !== 'AbortError' && token === state.roundCountToken &&
+                state.currentConversationId === conversationId) {
+                state.roundCountStatus = 'paused';
+                renderUiState();
+            }
+        } finally {
+            if (state.roundCountAbortController === controller) {
+                state.roundCountAbortController = null;
+            }
+        }
+    }
+
+    function recordLiveUserMessagesInPersistentCache(messageIds) {
+        const conversationId = state.currentConversationId;
+        if (!conversationId || messageIds.length === 0) {
+            return;
+        }
+        const entry = getRoundCountEntry(conversationId);
+        if (!entry) {
+            return;
+        }
+        if (entry.completed && Number.isFinite(entry.totalRounds)) {
+            entry.totalRounds += messageIds.length;
+            entry.countedRounds = entry.totalRounds;
+            entry.latestUserMessageId = messageIds.at(-1) ?? entry.latestUserMessageId;
+            setRoundCountEntry(conversationId, entry);
+            return;
+        }
+        const seen = new Set(entry.seenUserMessageIds);
+        for (const id of messageIds) {
+            seen.add(id);
+        }
+        entry.seenUserMessageIds = [...seen];
+        entry.countedRounds = seen.size;
+        entry.latestUserMessageId = messageIds.at(-1) ?? entry.latestUserMessageId;
+        setRoundCountEntry(conversationId, entry);
     }
 
     async function handleConversationResponse(response, requestInfo, requestUrl) {
@@ -476,11 +933,10 @@
 
             if (requestInfo?.kind === 'conversations') {
                 const paged = analyzePagedConversation(json, requestUrl);
-                state.loadedRounds = paged.loadedRounds;
-                state.hasEarlierHistory = paged.hasEarlierHistory;
-                state.totalRounds = null;
-                state.keptRounds = config.enabled ? paged.requestedRounds : null;
-                renderUiState();
+                const entry = prepareRoundCountFromInitialPage(requestInfo.id, paged);
+                if (config.enabled && entry && !entry.completed && entry.nextBeforeCursor) {
+                    scheduleBackgroundRoundCount(true);
+                }
                 return response;
             }
 
@@ -512,6 +968,39 @@
             diagnosticError('conversation response handling failed', error);
             return response;
         }
+    }
+
+    function getConversationMessagesRequestInfo(method, url) {
+        if (method !== 'GET') {
+            return null;
+        }
+        const match = url.pathname.match(/^\/backend-api\/conversations\/([^/]+)\/messages\/?$/);
+        if (!match) {
+            return null;
+        }
+        return {
+            id: decodeURIComponent(match[1]),
+            beforeCursor: url.searchParams.get('before'),
+        };
+    }
+
+    async function handleObservedMessagesResponse(response, requestInfo) {
+        if (!requestInfo?.beforeCursor || !isJsonResponse(response)) {
+            return response;
+        }
+        try {
+            const json = await response.clone().json();
+            const entry = getRoundCountEntry(requestInfo.id);
+            if (entry && !entry.completed && entry.nextBeforeCursor === requestInfo.beforeCursor) {
+                const advanced = ingestRoundCountPage(requestInfo.id, requestInfo.beforeCursor, json);
+                if (advanced) {
+                    scheduleBackgroundRoundCount(false);
+                }
+            }
+        } catch {
+            // 页面自己的分页请求统计失败时保持原响应不变。
+        }
+        return response;
     }
 
     function rewritePagedConversationFetchArgs(args, meta, requestInfo) {
@@ -554,12 +1043,25 @@
         }
 
         const nativeFetch = window.fetch.bind(window);
+        nativePageFetch = nativeFetch;
         const wrappedFetch = async (...args) => {
             let meta;
             try {
                 meta = getRequestMeta(args[0], args[1]);
             } catch {
                 return nativeFetch(...args);
+            }
+
+            const messagesInfo = getConversationMessagesRequestInfo(meta.method, meta.url);
+            if (messagesInfo) {
+                const currentId = extractConversationPageId();
+                const isCurrent = Boolean(
+                    currentId &&
+                    state.currentConversationId === currentId &&
+                    messagesInfo.id === currentId
+                );
+                const response = await nativeFetch(...args);
+                return isCurrent ? handleObservedMessagesResponse(response, messagesInfo) : response;
             }
 
             if (!isConversationGet(meta.method, meta.url)) {
@@ -572,6 +1074,9 @@
             }
 
             const rewritten = rewritePagedConversationFetchArgs(args, meta, requestInfo);
+            if (requestInfo?.kind === 'conversations') {
+                captureRoundCountRequestTemplate(rewritten.args, requestInfo.id);
+            }
             const response = await nativeFetch(...rewritten.args);
             return handleConversationResponse(response, requestInfo, rewritten.url);
         };
@@ -581,35 +1086,44 @@
     }
 
     function getStatusText() {
-        if (!config.enabled) {
-            return 'LS Off';
-        }
-        if (state.loadedRounds !== null) {
-            const suffix = state.hasEarlierHistory === true ? ' / +' : '';
-            return `LS ${config.keepRounds}${suffix}`;
-        }
         const total = state.totalRounds;
-        if (total === null) {
-            return `LS ${config.keepRounds}`;
+        if (!config.enabled) {
+            return total === null ? 'LS Off' : `LS Off / ${total}`;
         }
-        const kept = state.keptRounds ?? Math.min(config.keepRounds, total);
-        return `LS ${kept} / ${total}`;
+        if (total !== null) {
+            const kept = state.keptRounds ?? Math.min(config.keepRounds, total);
+            return `LS ${kept} / ${total}`;
+        }
+        if (state.roundCountStatus === 'counting') {
+            return `LS ${config.keepRounds} / …`;
+        }
+        if (state.loadedRounds !== null && state.hasEarlierHistory === true) {
+            return `LS ${config.keepRounds} / +`;
+        }
+        return `LS ${config.keepRounds}`;
     }
 
     function getCurrentLineText() {
-        if (!config.enabled) {
-            return '当前  Off（不覆盖 ChatGPT 原生历史窗口）';
-        }
-        if (state.loadedRounds !== null) {
-            return state.hasEarlierHistory === true
-                ? `当前  最近 ${config.keepRounds} 轮 / 仍有更早历史`
-                : `当前  最近 ${config.keepRounds} 轮`;
-        }
         const total = state.totalRounds;
-        const kept = total === null
-            ? config.keepRounds
-            : (state.keptRounds ?? Math.min(config.keepRounds, total));
-        return `当前  ${kept}${total === null ? '' : ` / ${total}`} 轮`;
+        if (!config.enabled) {
+            return total === null
+                ? '当前  Off（不覆盖 ChatGPT 原生历史窗口）'
+                : `当前  Off / 已知总计 ${total} 轮`;
+        }
+        if (total !== null) {
+            const kept = state.keptRounds ?? Math.min(config.keepRounds, total);
+            return `当前  ${kept} / ${total} 轮`;
+        }
+        if (state.roundCountStatus === 'counting') {
+            return `当前  最近 ${config.keepRounds} 轮 / 后台统计总轮数中…`;
+        }
+        if (state.roundCountStatus === 'paused') {
+            return `当前  最近 ${config.keepRounds} 轮 / 总轮数统计已暂停`;
+        }
+        if (state.loadedRounds !== null && state.hasEarlierHistory === true) {
+            return `当前  最近 ${config.keepRounds} 轮 / 仍有更早历史`;
+        }
+        return `当前  最近 ${config.keepRounds} 轮`;
     }
 
     function renderUiState() {
@@ -936,7 +1450,7 @@
 
         const note = document.createElement('div');
         note.className = 'cyan-ls-note';
-        note.textContent = '开关会立即刷新；启用时覆盖 ChatGPT 的 num_turns，关闭时保持原生请求。';
+        note.textContent = '启用时覆盖 num_turns，并低速后台统计总轮数；统计进度保存在 Tampermonkey 中。';
 
         panel.append(title, currentStatusLine, switchRow, keepLabel, counter, applyButton, note);
 
@@ -1032,22 +1546,27 @@
             candidates.push(child);
         }
 
-        let added = 0;
+        const addedIds = [];
         for (const element of candidates) {
             const id = element.getAttribute('data-message-id');
             if (!id || state.seenUserMessageIds.has(id)) {
                 continue;
             }
             state.seenUserMessageIds.add(id);
-            added += 1;
+            addedIds.push(id);
         }
 
-        if (added === 0 || !state.domIncrementReady || state.totalRounds === null) {
+        if (addedIds.length === 0 || !state.domIncrementReady) {
+            return;
+        }
+
+        recordLiveUserMessagesInPersistentCache(addedIds);
+        if (state.totalRounds === null) {
             return;
         }
 
         const previousTotal = state.totalRounds;
-        state.totalRounds = previousTotal + added;
+        state.totalRounds = previousTotal + addedIds.length;
         if (config.enabled) {
             state.keptRounds = Math.min(config.keepRounds, state.totalRounds);
         } else {
@@ -1076,17 +1595,18 @@
     }
 
     function handleNavigation() {
+        cancelBackgroundRoundCount(true);
         state.totalRounds = null;
         state.keptRounds = null;
         state.loadedRounds = null;
         state.hasEarlierHistory = null;
+        state.roundCountRequestTemplate = null;
         state.currentConversationId = extractConversationPageId();
         state.seenUserMessageIds.clear();
         state.domIncrementReady = false;
         state.domBaselineToken += 1;
 
-
-        if (!restoreCachedConversationStats()) {
+        if (!restorePersistentRoundCountStats() && !restoreCachedConversationStats()) {
             renderUiState();
             queueMicrotask(seedVisibleUserMessageIds);
         }
@@ -1126,9 +1646,16 @@
     }
 
     function initializeDomFeatures() {
+        restorePersistentRoundCountStats();
         ensureUi();
         installLocalMessageObserver();
         patchHistoryForSpaNavigation();
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                scheduleBackgroundRoundCount(false);
+            }
+        });
+        window.addEventListener('pagehide', () => cancelBackgroundRoundCount(false));
     }
 
     patchFetch();
