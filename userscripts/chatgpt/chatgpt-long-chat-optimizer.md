@@ -12,6 +12,8 @@
 
 ## 新版核心机制
 
+> 当前 ChatGPT API 适配确认日期：**2026-08-22**。这一天发现旧版 `mapping` 主路径失效，并完成对新版 `conversations + num_turns` 分页接口的适配。
+
 脚本使用：
 
 ```text
@@ -136,6 +138,26 @@ context_truncation_continuation
 
 `/textdocs`、`/url_safe`、`/stream_status` 等子路径不是对话主体接口，不参与历史窗口处理。
 
+## 兼容性变更记录
+
+### 2026-08-09：旧 `mapping` 方案基线
+
+- 初版实现参考 LightSession `1.7.4`，基线 commit 为 `300aade18bff188749d062ac2fad7216c7bc36ca`。
+- 当时 ChatGPT 主要使用 `/backend-api/conversation/<id>`。
+- conversation response 提供完整 `mapping + current_node`。
+- 脚本在浏览器端沿当前活动分支统计轮数，再重建并裁剪 `mapping`，让 React 初始渲染时只看到最近 N 轮。
+
+### 2026-08-22：新版 `conversations + num_turns` 适配
+
+- 当天发现旧方案失效，典型表现为悬浮按钮持续显示 `LS 10 / --`。
+- 实测确认 ChatGPT 主接口改为 `/backend-api/conversations/<id>?...&num_turns=10`。
+- 新响应改为 `messages + current_node + page_info + context_truncation_continuation`，不再提供旧版完整 `mapping`。
+- 从 v0.2.0 起，主实现改为复用 ChatGPT 原生请求并覆盖 `num_turns`，让后端直接限制历史窗口。
+- 旧 `mapping` 裁剪逻辑继续保留，但仅作为兼容回退。
+- 为避免为了显示“完整总轮数”而重新拉取完整历史，新版 UI 不再强求精确总轮数；能够确认存在更早历史时使用 `LS N / +`。
+
+这两个日期分别代表“旧架构参考基线”和“当前 ChatGPT 接口适配节点”，不应混为同一个维护日期。
+
 ## SPA 与 Project 对话
 
 脚本从 pathname 中识别最后的 `/c/<conversation-id>`，因此同时支持：
@@ -183,6 +205,14 @@ Version:    1.7.4
 Commit:     300aade18bff188749d062ac2fad7216c7bc36ca
 Checked:    2026-08-09
 ```
+
+当前 ChatGPT API 适配确认日期：
+
+```text
+Current ChatGPT API adaptation checked: 2026-08-22
+```
+
+`Checked: 2026-08-09` 仅表示当时检查 LightSession 上游基线的日期，不应随着本脚本后续维护自动改成最新日期。
 
 当前 v0.2.x 已因 ChatGPT 内部接口从完整 `mapping` 转向 `messages + page_info + num_turns` 而采用不同的主路径。以后同步上游时，应把 LightSession 视为旧架构参考，而不是机械复制其 mapping 裁剪方式。
 
