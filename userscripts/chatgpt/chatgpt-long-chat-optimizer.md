@@ -201,8 +201,13 @@ context_truncation_continuation
 - v0.3.1 修复 v0.3.0 在声明 GM 权限后可能只运行在 userscript 隔离环境、未真正 patch ChatGPT 页面 `window.fetch` 的问题；改为通过 `unsafeWindow` 显式桥接页面主上下文，并使用页面 realm 的 `Request` / `URL` / `Headers` / `Response` 构造器。
 - v0.3.2 将“历史窗口覆盖”和“完整总轮数统计”解耦：Off 只停止改写 `num_turns`，后台统计仍继续；同时把首次与页间随机等待从 2.5–4.5 秒缩短为 1.0–2.0 秒。
 - v0.3.3 将后台总轮数统计的分页窗口从 `num_turns=10` 提高到 `num_turns=25`，减少较长对话需要的分页请求次数；首屏历史窗口仍保持独立配置。
+- v0.3.4 adds a fresh-conversation bootstrap: user message IDs observed before the first `/c/<id>` route are used to seed the exact local total as soon as the new conversation ID appears, avoiding the refresh previously needed for a brand-new chat.
 
 这两个日期分别代表“旧架构参考基线”和“当前 ChatGPT 接口适配节点”，不应混为同一个维护日期。
+
+### v0.3.4 fresh-conversation bootstrap
+
+When a brand-new chat starts before ChatGPT has assigned a stable `/c/<conversation-id>` route, the script now keeps any newly observed user message IDs in memory. If the SPA route then changes from no conversation ID to a real conversation ID, those IDs seed a completed local total immediately. This lets a new chat show `LS N / 1` or `LS Off / 1` without requiring a manual refresh; later user messages continue to increment the cached total locally. Existing conversations without this pre-route evidence still use the normal `conversations + page_info` and background pagination path, so opening an old chat is not treated as a fresh conversation.
 
 ## SPA 与 Project 对话
 
@@ -289,3 +294,4 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 13. 非 2xx / 非 JSON / cursor 不推进时停止本轮后台统计，不进行高频重试。
 14. 旧 `mapping + current_node` 接口如果仍出现，旧裁剪兼容路径不报错。
 15. switch 关闭后只停止 `num_turns` 覆盖，后台总轮数统计仍继续工作；数字输入与“应用并刷新”继续沿用旧配置并正常工作。
+16. Starting a brand-new chat should show an exact total after the first `/c/<id>` SPA transition (for example `LS Off / 1`) without requiring a manual refresh; opening an existing chat from another route must not be misclassified as fresh.

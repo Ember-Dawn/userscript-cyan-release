@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.3.3
+// @version      0.3.4
 // @description  适配 ChatGPT 分页会话接口，可独立控制历史窗口，并持续后台统计与持久缓存总轮数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -65,6 +65,7 @@
         currentConversationId: extractConversationPageId(),
         uiReady: false,
         seenUserMessageIds: new Set(),
+        pendingNewConversationUserIds: new Set(),
         domIncrementReady: false,
         domBaselineToken: 0,
         loadedRounds: null,
@@ -1559,6 +1560,37 @@
         }
     }
 
+    function initializeFreshConversationStats(conversationId, messageIds) {
+        const ids = [...new Set(messageIds.filter((id) => typeof id === 'string' && id))];
+        if (!conversationId || ids.length === 0) {
+            return false;
+        }
+
+        const totalRounds = ids.length;
+        setRoundCountEntry(conversationId, {
+            completed: true,
+            totalRounds,
+            countedRounds: totalRounds,
+            nextBeforeCursor: null,
+            seenUserMessageIds: [],
+            latestUserMessageId: ids.at(-1) ?? null,
+            updatedAt: Date.now(),
+        });
+        state.totalRounds = totalRounds;
+        state.keptRounds = config.enabled ? Math.min(config.keepRounds, totalRounds) : totalRounds;
+        state.loadedRounds = totalRounds;
+        state.hasEarlierHistory = false;
+        state.roundCountStatus = 'complete';
+        for (const id of ids) {
+            state.seenUserMessageIds.add(id);
+        }
+        state.domIncrementReady = true;
+        state.domBaselineToken += 1;
+        cacheCurrentConversationStats();
+        renderUiState();
+        return true;
+    }
+
     function processAddedNodeForUserMessages(node) {
         if (!(node instanceof Element)) {
             return;
@@ -1580,6 +1612,13 @@
             }
             state.seenUserMessageIds.add(id);
             addedIds.push(id);
+        }
+
+        if (addedIds.length > 0 && state.currentConversationId === null) {
+            for (const id of addedIds) {
+                state.pendingNewConversationUserIds.add(id);
+            }
+            return;
         }
 
         if (addedIds.length === 0 || !state.domIncrementReady) {
@@ -1621,17 +1660,27 @@
     }
 
     function handleNavigation() {
+        const previousConversationId = state.currentConversationId;
+        const nextConversationId = extractConversationPageId();
+        const freshConversationUserIds = previousConversationId === null && nextConversationId
+            ? [...state.pendingNewConversationUserIds]
+            : [];
+
         cancelBackgroundRoundCount(true);
         state.totalRounds = null;
         state.keptRounds = null;
         state.loadedRounds = null;
         state.hasEarlierHistory = null;
         state.roundCountRequestTemplate = null;
-        state.currentConversationId = extractConversationPageId();
+        state.currentConversationId = nextConversationId;
         state.seenUserMessageIds.clear();
+        state.pendingNewConversationUserIds.clear();
         state.domIncrementReady = false;
         state.domBaselineToken += 1;
 
+        if (initializeFreshConversationStats(nextConversationId, freshConversationUserIds)) {
+            return;
+        }
         if (!restorePersistentRoundCountStats() && !restoreCachedConversationStats()) {
             renderUiState();
             queueMicrotask(seedVisibleUserMessageIds);
