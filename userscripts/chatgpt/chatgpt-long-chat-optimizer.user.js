@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.3.2
+// @version      0.3.3
 // @description  适配 ChatGPT 分页会话接口，可独立控制历史窗口，并持续后台统计与持久缓存总轮数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -49,7 +49,7 @@
     const MAX_ROUNDS = 100;
     const MAX_STATS_CACHE_ENTRIES = 100;
     const MAX_ROUND_COUNT_CACHE_ENTRIES = 300;
-    const BACKGROUND_PAGE_TURNS = 10;
+    const BACKGROUND_PAGE_TURNS = 25;
     const BACKGROUND_INITIAL_DELAY_MIN_MS = 1000;
     const BACKGROUND_INITIAL_DELAY_MAX_MS = 2000;
     const BACKGROUND_PAGE_DELAY_MIN_MS = 1000;

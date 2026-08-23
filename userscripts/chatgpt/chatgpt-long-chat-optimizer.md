@@ -128,11 +128,14 @@ num_turns=<keepRounds>
 /backend-api/conversations/<id>/messages
 ?before=<start_cursor>
 &include_has_versions=true
-&num_turns=10
+&num_turns=25
 ```
+
+这里的 `25` 只用于后台总轮数统计分页；页面首屏的 `num_turns` 仍由“限制历史窗口”的用户设置独立控制。提高后台分页窗口可以减少长对话所需的分页请求次数。
 
 统计策略：
 
+- 后台统计每页请求 `num_turns=25`，以减少长对话需要的分页次数；这不会改变首屏历史窗口设置。
 - 首屏完成后随机等待约 1.0–2.0 秒，再开始第一笔后台分页请求。
 - 每取得一页后再随机等待约 1.0–2.0 秒，避免连续快速请求；同一时刻只处理当前会话的一条后台统计链。
 - 只统计 `author.role === "user"` 且 message id 未重复出现的消息；内部 tool / thinking / assistant 节点不计为新轮次。
@@ -197,6 +200,7 @@ context_truncation_continuation
 - 同日后续 v0.3.0 在实测确认 `/messages?before=<cursor>` 分页方式后，加入低速后台统计、Tampermonkey 持久缓存和断点续跑；统计完成后恢复 `LS N / 总轮数`。
 - v0.3.1 修复 v0.3.0 在声明 GM 权限后可能只运行在 userscript 隔离环境、未真正 patch ChatGPT 页面 `window.fetch` 的问题；改为通过 `unsafeWindow` 显式桥接页面主上下文，并使用页面 realm 的 `Request` / `URL` / `Headers` / `Response` 构造器。
 - v0.3.2 将“历史窗口覆盖”和“完整总轮数统计”解耦：Off 只停止改写 `num_turns`，后台统计仍继续；同时把首次与页间随机等待从 2.5–4.5 秒缩短为 1.0–2.0 秒。
+- v0.3.3 将后台总轮数统计的分页窗口从 `num_turns=10` 提高到 `num_turns=25`，减少较长对话需要的分页请求次数；首屏历史窗口仍保持独立配置。
 
 这两个日期分别代表“旧架构参考基线”和“当前 ChatGPT 接口适配节点”，不应混为同一个维护日期。
 
@@ -275,7 +279,7 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 3. Project `/g/g-p-.../c/<id>` 同样能正确匹配当前 conversation id。
 4. 启用且配置为 10 时，Network 中原生请求的 `num_turns` 为 10；改成 20 后刷新变为 20。
 5. 关闭后脚本不修改 ChatGPT 原生 `num_turns`。
-6. 首屏不会一次性拉取完整历史；存在更早历史时，后台分页 GET 串行且带 1.0–2.0 秒随机间隔。
+6. 首屏不会一次性拉取完整历史；存在更早历史时，后台分页 GET 使用 `num_turns=25`，串行且带 1.0–2.0 秒随机间隔。
 7. `/textdocs`、`/url_safe`、`/stream_status` 不被误当作主体请求。
 8. `messages/page_info/context_truncation_continuation` 响应能够正常交还 ChatGPT，不改写 response body。
 9. 如果分页信息确认有更早历史，启用覆盖时显示 `LS N / +`、`LS N / …`、`LS N / 总轮数`；Off 时对应显示 `LS Off / +`、`LS Off / …`、`LS Off / 总轮数`。
