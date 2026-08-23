@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.3.1
-// @description  适配 ChatGPT 分页会话接口，限制初始历史窗口，并低速后台统计与持久缓存总轮数。
+// @version      0.3.2
+// @description  适配 ChatGPT 分页会话接口，可独立控制历史窗口，并持续后台统计与持久缓存总轮数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
 // @match        *://chat.openai.com/*
@@ -50,10 +50,10 @@
     const MAX_STATS_CACHE_ENTRIES = 100;
     const MAX_ROUND_COUNT_CACHE_ENTRIES = 300;
     const BACKGROUND_PAGE_TURNS = 10;
-    const BACKGROUND_INITIAL_DELAY_MIN_MS = 2500;
-    const BACKGROUND_INITIAL_DELAY_MAX_MS = 4500;
-    const BACKGROUND_PAGE_DELAY_MIN_MS = 2500;
-    const BACKGROUND_PAGE_DELAY_MAX_MS = 4500;
+    const BACKGROUND_INITIAL_DELAY_MIN_MS = 1000;
+    const BACKGROUND_INITIAL_DELAY_MAX_MS = 2000;
+    const BACKGROUND_PAGE_DELAY_MIN_MS = 1000;
+    const BACKGROUND_PAGE_DELAY_MAX_MS = 2000;
     const HIDDEN_ROLES = new Set(['system', 'tool', 'thinking']);
     const DIAGNOSTIC_PREFIX = '[LS]';
     const conversationStatsCache = loadConversationStatsCache();
@@ -830,7 +830,7 @@
     }
 
     function scheduleBackgroundRoundCount(initial = false) {
-        if (!config.enabled || !nativePageFetch || document.hidden) {
+        if (!nativePageFetch || document.hidden) {
             return;
         }
         const conversationId = state.currentConversationId;
@@ -941,7 +941,7 @@
             if (requestInfo?.kind === 'conversations') {
                 const paged = analyzePagedConversation(json, requestUrl);
                 const entry = prepareRoundCountFromInitialPage(requestInfo.id, paged);
-                if (config.enabled && entry && !entry.completed && entry.nextBeforeCursor) {
+                if (entry && !entry.completed && entry.nextBeforeCursor) {
                     scheduleBackgroundRoundCount(true);
                 }
                 return response;
@@ -1095,7 +1095,16 @@
     function getStatusText() {
         const total = state.totalRounds;
         if (!config.enabled) {
-            return total === null ? 'LS Off' : `LS Off / ${total}`;
+            if (total !== null) {
+                return `LS Off / ${total}`;
+            }
+            if (state.roundCountStatus === 'counting') {
+                return 'LS Off / …';
+            }
+            if (state.loadedRounds !== null && state.hasEarlierHistory === true) {
+                return 'LS Off / +';
+            }
+            return 'LS Off';
         }
         if (total !== null) {
             const kept = state.keptRounds ?? Math.min(config.keepRounds, total);
@@ -1113,9 +1122,19 @@
     function getCurrentLineText() {
         const total = state.totalRounds;
         if (!config.enabled) {
-            return total === null
-                ? '当前  Off（不覆盖 ChatGPT 原生历史窗口）'
-                : `当前  Off / 已知总计 ${total} 轮`;
+            if (total !== null) {
+                return `当前  Off / 已知总计 ${total} 轮`;
+            }
+            if (state.roundCountStatus === 'counting') {
+                return '当前  Off（不覆盖历史窗口）/ 后台统计总轮数中…';
+            }
+            if (state.roundCountStatus === 'paused') {
+                return '当前  Off（不覆盖历史窗口）/ 总轮数统计已暂停';
+            }
+            if (state.loadedRounds !== null && state.hasEarlierHistory === true) {
+                return '当前  Off（不覆盖历史窗口）/ 仍有更早历史';
+            }
+            return '当前  Off（不覆盖 ChatGPT 原生历史窗口）';
         }
         if (total !== null) {
             const kept = state.keptRounds ?? Math.min(config.keepRounds, total);
@@ -1142,7 +1161,7 @@
         statusButton.dataset.enabled = config.enabled ? 'true' : 'false';
         statusButton.title = config.enabled
             ? `已启用：请求最近 ${config.keepRounds} 轮`
-            : '已关闭覆盖；使用 ChatGPT 原生历史窗口';
+            : '已关闭历史窗口覆盖；总轮数统计仍继续';
 
         if (currentStatusLine) {
             currentStatusLine.textContent = getCurrentLineText();
@@ -1413,13 +1432,13 @@
         const switchRow = document.createElement('div');
         switchRow.className = 'cyan-ls-row';
         const switchLabelText = document.createElement('span');
-        switchLabelText.textContent = '启用裁剪';
+        switchLabelText.textContent = '限制历史窗口';
         const switchLabel = document.createElement('label');
         switchLabel.className = 'cyan-ls-switch';
         enabledSwitch = document.createElement('input');
         enabledSwitch.type = 'checkbox';
         enabledSwitch.checked = config.enabled;
-        enabledSwitch.setAttribute('aria-label', '启用裁剪');
+        enabledSwitch.setAttribute('aria-label', '限制历史窗口');
         const switchSlider = document.createElement('span');
         switchSlider.className = 'cyan-ls-slider';
         switchLabel.append(enabledSwitch, switchSlider);
@@ -1457,7 +1476,7 @@
 
         const note = document.createElement('div');
         note.className = 'cyan-ls-note';
-        note.textContent = '启用时覆盖 num_turns，并低速后台统计总轮数；统计进度保存在 Tampermonkey 中。';
+        note.textContent = '开关只控制 num_turns 覆盖；总轮数始终低速后台统计并保存在 Tampermonkey 中。';
 
         panel.append(title, currentStatusLine, switchRow, keepLabel, counter, applyButton, note);
 

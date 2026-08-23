@@ -6,8 +6,8 @@
 
 - 缓解超长 ChatGPT 对话在浏览器中的网络、React 渲染、DOM 和滚动负担。
 - 不修改 OpenAI 服务端保存的完整对话。
-- 首屏不额外请求完整历史；需要完整总轮数时，仅在首屏完成后以低速分页方式后台统计，并支持断点续跑。
-- 通过页面右下角的轻量悬浮按钮设置最近 N 轮历史窗口，并在后台统计完成后显示完整总轮数。
+- 首屏不额外请求完整历史；完整总轮数统计与历史窗口开关相互独立，首屏完成后以低速分页方式后台统计，并支持断点续跑。
+- 通过页面右下角的轻量悬浮按钮设置最近 N 轮历史窗口；即使关闭历史窗口覆盖，也继续后台统计并显示完整总轮数。
 - 保留对旧 `/backend-api/conversation/<id>` / `shared_conversation` 响应的兼容逻辑，作为旧页面或接口回退路径。
 
 ## 新版核心机制
@@ -45,9 +45,9 @@ num_turns=10  ->  num_turns=20
 1. 在 `document-start` 阶段通过 `unsafeWindow` 取得页面主上下文，并代理页面真实的 `window.fetch`；GM storage 仍留在 Tampermonkey userscript 沙箱。
 2. 识别 `/backend-api/conversations/<id>`、旧 `/backend-api/conversation/<id>` 和 `shared_conversation` GET。
 3. 校验请求 conversation id 与当前 `/c/<id>` 路由；普通对话与 Project `/g/g-p-<project-id>/c/<id>` 都支持。
-4. 对新版 `conversations` 接口：启用时覆盖 `num_turns`，关闭时保持 ChatGPT 原始请求完全不变。
+4. 对新版 `conversations` 接口：启用时覆盖 `num_turns`，关闭时保持 ChatGPT 原始请求完全不变；总轮数统计不受这个开关影响。
 5. 读取返回 JSON 中的 `messages`、`page_info`、`context_truncation_continuation` 等分页信息，不改写新版 response body。
-6. 如果 `page_info.has_previous_page=true`，首屏仍立即交还给 ChatGPT；随后脚本延迟数秒，并以低速分页方式访问 `/backend-api/conversations/<id>/messages?before=<cursor>`，只统计唯一的 `user` message id。
+6. 如果 `page_info.has_previous_page=true`，首屏仍立即交还给 ChatGPT；随后无论历史窗口覆盖是启用还是 Off，脚本都会短暂延迟，并以低速分页方式访问 `/backend-api/conversations/<id>/messages?before=<cursor>`，只统计唯一的 `user` message id。
 7. 每一页统计完成后立即把 `countedRounds`、`nextBeforeCursor`、已见 user message id 等断点写入 Tampermonkey 持久存储；SPA 切换或页面隐藏时不继续发起新分页请求。
 8. 直到 `has_previous_page=false` 后得到完整总轮数，并把缓存压缩为最终 `totalRounds`；以后再次进入该会话优先直接恢复缓存。
 9. 对仍返回旧 `mapping + current_node` 的旧接口，继续保留原来的活动分支分析与本地 mapping 裁剪逻辑作为兼容路径。
@@ -64,12 +64,15 @@ num_turns=10  ->  num_turns=20
 
 ## 悬浮按钮
 
-启用新版分页模式时，按钮按统计状态显示：
+按钮将“历史窗口控制状态”和“总轮数统计状态”分开显示：
 
 ```text
 LS 10 / +
 LS 10 / …
 LS 10 / 86
+LS Off / +
+LS Off / …
+LS Off / 86
 ```
 
 含义：
@@ -77,13 +80,15 @@ LS 10 / 86
 - `LS 10 / +`：首屏确认仍有更早历史，但后台统计尚未开始或当前已暂停。
 - `LS 10 / …`：后台正在以低速分页方式统计完整总轮数。
 - `LS 10 / 86`：后台统计已经完成，当前配置保留最近 10 轮，完整总轮数为 86。
-- `LS Off`：脚本不覆盖 `num_turns`；如果已有可靠缓存，可显示 `LS Off / 86`。
+- `LS Off / +`：不覆盖 `num_turns`，但确认仍有更早历史，完整总轮数尚未得到。
+- `LS Off / …`：不覆盖 `num_turns`，后台仍在统计完整总轮数。
+- `LS Off / 86`：不覆盖 `num_turns`，完整总轮数已经统计并缓存为 86。
 
 后台分页响应只由脚本解析和计数，不交给 ChatGPT React，也不会因为统计而把全部历史消息强制渲染到当前页面。
 
 点击按钮打开设置面板：
 
-- switch：启用 / 关闭历史窗口覆盖。
+- switch“限制历史窗口”：启用 / 关闭 `num_turns` 覆盖；无论开关状态如何，总轮数统计都继续工作。
 - `−` / `+`：调整保留轮数。
 - 数字输入框：允许 `1–100`。
 - “应用并刷新”：保存新值并刷新当前页面。
@@ -109,7 +114,7 @@ num_turns=<keepRounds>
 
 关闭后刷新页面。脚本不再覆盖 `num_turns`，而是把 ChatGPT 自己生成的请求原样发出。
 
-因此新版中的“Off”含义是“关闭本脚本对历史窗口的覆盖”，**不保证 ChatGPT 会一次加载完整历史**；ChatGPT 自身仍可能采用分页或默认 `num_turns`。
+因此新版中的“Off”只表示“关闭本脚本对历史窗口的覆盖”，**不会关闭总轮数统计**。ChatGPT 自身仍可能采用分页或默认 `num_turns`，而脚本会继续利用分页接口统计总轮数，并显示 `LS Off / …` 或 `LS Off / 总轮数`。
 
 ### 修改保留轮数
 
@@ -128,8 +133,8 @@ num_turns=<keepRounds>
 
 统计策略：
 
-- 首屏完成后随机等待约 2.5–4.5 秒，再开始第一笔后台分页请求。
-- 每取得一页后再随机等待约 2.5–4.5 秒，避免连续快速请求；同一时刻只处理当前会话的一条后台统计链。
+- 首屏完成后随机等待约 1.0–2.0 秒，再开始第一笔后台分页请求。
+- 每取得一页后再随机等待约 1.0–2.0 秒，避免连续快速请求；同一时刻只处理当前会话的一条后台统计链。
 - 只统计 `author.role === "user"` 且 message id 未重复出现的消息；内部 tool / thinking / assistant 节点不计为新轮次。
 - 后台响应仅在脚本内部解析，不交还给 ChatGPT 的分页渲染逻辑，因此不会主动把旧历史插入 DOM。
 - 页面切换、SPA 导航或离开当前 document 时会中止当前请求；已完成的分页进度已经持久保存，下次进入同一 conversation 从 `nextBeforeCursor` 继续。
@@ -140,7 +145,7 @@ num_turns=<keepRounds>
 
 未完成条目保存 `countedRounds`、`nextBeforeCursor`、去重所需的 user message id、最近 user message id 和更新时间；完成后只保留最终总轮数等必要状态，减少存储体积。最多保存最近 300 个 conversation 的统计记录，超出后按最近更新时间淘汰较旧条目。
 
-如果已经完成统计后又继续在当前页面新增用户提问，DOM 增量观察器会同步把总轮数 `+1` 并更新 Tampermonkey 缓存；重新打开会话时也会用最新首屏 user message 检查缓存是否仍可直接沿用。
+如果已经完成统计后又继续在当前页面新增用户提问，DOM 增量观察器会同步把总轮数 `+1` 并更新 Tampermonkey 缓存，不会为了每个新问题重新拉取一页历史；重新打开会话时也会用最新首屏 user message 检查缓存是否仍可直接沿用。
 
 ## 新旧接口兼容
 
@@ -191,6 +196,7 @@ context_truncation_continuation
 - v0.2.0 首先停止强求精确总轮数，只在能够确认存在更早历史时使用 `LS N / +`。
 - 同日后续 v0.3.0 在实测确认 `/messages?before=<cursor>` 分页方式后，加入低速后台统计、Tampermonkey 持久缓存和断点续跑；统计完成后恢复 `LS N / 总轮数`。
 - v0.3.1 修复 v0.3.0 在声明 GM 权限后可能只运行在 userscript 隔离环境、未真正 patch ChatGPT 页面 `window.fetch` 的问题；改为通过 `unsafeWindow` 显式桥接页面主上下文，并使用页面 realm 的 `Request` / `URL` / `Headers` / `Response` 构造器。
+- v0.3.2 将“历史窗口覆盖”和“完整总轮数统计”解耦：Off 只停止改写 `num_turns`，后台统计仍继续；同时把首次与页间随机等待从 2.5–4.5 秒缩短为 1.0–2.0 秒。
 
 这两个日期分别代表“旧架构参考基线”和“当前 ChatGPT 接口适配节点”，不应混为同一个维护日期。
 
@@ -219,8 +225,8 @@ context_truncation_continuation
 - `/backend-api/conversations`、`num_turns`、`messages`、`page_info` 等都是 ChatGPT 内部实现，不是公开稳定 API。
 - 新版响应没有发现可直接读取的完整总轮数字段；精确总轮数依赖后台分页统计，因此首次进入很长的会话时需要一定时间才能完成。
 - 后台统计会产生额外的历史分页 GET，但采用延迟、串行、随机间隔、页面隐藏暂停和错误即暂停的保守策略；内部接口仍可能随 ChatGPT 更新或服务端策略变化而失效。
-- `LS N / +` 表示仍有更早历史但当前没有进行统计；`LS N / …` 表示统计进行中。
-- 关闭脚本覆盖后，ChatGPT 自己仍可能只加载默认数量的历史轮次；“Off”不等于强制完整加载。
+- `LS N / +` 或 `LS Off / +` 表示仍有更早历史但当前没有进行统计；`LS N / …` 或 `LS Off / …` 表示统计进行中。
+- 关闭脚本覆盖后，ChatGPT 自己仍可能只加载默认数量的历史轮次；“Off”不等于强制完整加载，但总轮数统计仍继续工作。
 - 当前页面继续产生新消息后，ChatGPT 自己如何维护分页窗口由网页原生逻辑决定；重新加载时脚本会再次把 `num_turns` 设为当前配置。
 - v0.3.1 通过 `unsafeWindow` 显式代理页面主上下文 `window.fetch`；如果未来 Tampermonkey、浏览器或 ChatGPT 改变跨上下文访问策略，首次会话请求仍可能需要重新适配。
 
@@ -269,13 +275,13 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 3. Project `/g/g-p-.../c/<id>` 同样能正确匹配当前 conversation id。
 4. 启用且配置为 10 时，Network 中原生请求的 `num_turns` 为 10；改成 20 后刷新变为 20。
 5. 关闭后脚本不修改 ChatGPT 原生 `num_turns`。
-6. 首屏不会一次性拉取完整历史；存在更早历史时，后台分页 GET 串行且带 2.5–4.5 秒随机间隔。
+6. 首屏不会一次性拉取完整历史；存在更早历史时，后台分页 GET 串行且带 1.0–2.0 秒随机间隔。
 7. `/textdocs`、`/url_safe`、`/stream_status` 不被误当作主体请求。
 8. `messages/page_info/context_truncation_continuation` 响应能够正常交还 ChatGPT，不改写 response body。
-9. 如果分页信息确认有更早历史，统计未启动/暂停时显示 `LS N / +`，统计中显示 `LS N / …`，完成后显示 `LS N / 总轮数`。
+9. 如果分页信息确认有更早历史，启用覆盖时显示 `LS N / +`、`LS N / …`、`LS N / 总轮数`；Off 时对应显示 `LS Off / +`、`LS Off / …`、`LS Off / 总轮数`。
 10. 统计到一半执行 SPA 切换后请求被中止；返回原会话后从 Tampermonkey 缓存的 `nextBeforeCursor` 继续，而不是从头开始。
 11. 手动清理 `chatgpt.com` 网站数据后，如果 Tampermonkey 脚本数据未被清理，已完成总轮数缓存仍能恢复。
 12. 后台分页响应不会被插入 DOM；向上滚动触发的 ChatGPT 原生 `/messages?before=` 请求如果恰好推进当前断点，可被脚本顺带用于计数。
 13. 非 2xx / 非 JSON / cursor 不推进时停止本轮后台统计，不进行高频重试。
 14. 旧 `mapping + current_node` 接口如果仍出现，旧裁剪兼容路径不报错。
-15. switch、数字输入与“应用并刷新”继续沿用旧配置并正常工作。
+15. switch 关闭后只停止 `num_turns` 覆盖，后台总轮数统计仍继续工作；数字输入与“应用并刷新”继续沿用旧配置并正常工作。
