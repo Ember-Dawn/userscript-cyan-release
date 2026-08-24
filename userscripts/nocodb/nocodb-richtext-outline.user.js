@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.5
+// @version      0.1.6
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -20,6 +20,7 @@
  * - 不读取 editor.editor / EditorState / EditorView，不注册 ProseMirror plugin，不建立 PM bridge；
  * - 不读取或修改 DOM / ProseMirror selection，不调用 focus()，不 dispatch transaction；
  * - 显式导航只修改正文滚动容器的 scrollTop，TOC 只负责视口位置，不负责 caret；
+ * - TOC 操作按钮保留浏览器正常 pointer/mouse 默认行为，只在 click 阶段隔离冒泡并执行动作；
  * - 不向 .ProseMirror 正文节点写入 data-*、class、child DOM；
  * - TOC 只读取最终 DOM 中的 h1~h6，并只写自己的面板、按钮与 scrollTop；
  * - MutationObserver / scroll 热路径只做轻量判定与调度，真正扫描和测量延后执行。
@@ -566,11 +567,8 @@
 
   function attachActionButton(button, handler) {
     if (!(button instanceof HTMLElement)) return;
-    button.addEventListener('pointerdown', stopAll, true);
-    button.addEventListener('mousedown', stopAll, true);
-    button.addEventListener('mouseup', stopAll, true);
     button.addEventListener('click', (event) => {
-      stopAll(event);
+      stopBubbleOnly(event);
       handler();
     }, true);
   }

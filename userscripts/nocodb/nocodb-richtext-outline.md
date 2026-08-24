@@ -34,6 +34,7 @@ v0.1 系列把 TOC 定义成一个“旁路 DOM UI 增强脚本”。
 - 不使用浏览器原生 `Selection + Range` 去替用户移动 caret；
 - 不主动 `focus()` 编辑器；
 - “点击标题 / 跳到顶部 / 跳到底部”只修改正文滚动容器的 `scrollTop`，只负责 viewport，不负责 caret；
+- TOC 普通按钮不得在 `pointerdown` / `mousedown` / `mouseup` 阶段调用 `preventDefault()`；应保留浏览器与 NocoDB / Tiptap 正常的 focus / selection 生命周期，只在 `click` 阶段做必要的冒泡隔离；
 - 不向 `.ProseMirror` 内的标题、段落、代码块写入 `data-*`、class 或额外 child DOM；
 - 不在 `input`、`scroll`、MutationObserver 回调中直接做全量重建。
 
@@ -305,7 +306,7 @@ manualTocBrowsing = true
 
 ## 13. 显式导航：只滚动 viewport，不同步 caret
 
-v0.1.5 起，TOC 的导航语义固定为：**只改变用户正在看的位置，不改变用户正在编辑的位置。**
+v0.1.5 起，TOC 的导航语义固定为：**只改变用户正在看的位置，不改变用户正在编辑的位置。** v0.1.6 又进一步修正按钮事件模型，使真实鼠标点击也尽量等价于纯 `scrollTop` 导航。
 
 最终规则非常简单：
 
@@ -392,6 +393,49 @@ TOC 主动同步 DOM / PM caret 或 selection
 → 重新计算 top
 → 只修改 scrollTop
 ```
+
+### 13.4 v0.1.5 的坑：导航逻辑虽然纯滚动，但按钮事件仍在破坏宿主状态
+
+v0.1.5 已经删除所有 DOM / PM caret 与 selection 干预，导航函数本身只剩 `scrollTop`。但实机仍复现同样的问题。继续检查当前源码后发现，旧的通用按钮绑定函数仍保留了：
+
+```text
+pointerdown → stopAll()
+mousedown   → stopAll()
+mouseup     → stopAll()
+click       → stopAll() → handler()
+```
+
+其中 `stopAll()` 会同时执行 `preventDefault()`、`stopPropagation()` 和 `stopImmediatePropagation()`。这意味着“导航函数是纯滚动”并不等于“真实鼠标交互是纯滚动”：在 `scrollTop` 被修改之前，TOC 已经先改变了浏览器正常的 pointer / focus 事件流程。
+
+前面的 A/B 现象也由此得到统一解释：
+
+```text
+程序化 topButton.click()
+→ 没有真实 pointerdown / mousedown / mouseup
+→ 正常
+
+真实鼠标点击
+→ 先经过被 preventDefault 的 pointer/mouse 链
+→ 后续编辑可能恢复到旧位置
+```
+
+最终做了一个决定性 bypass 测试：在捕获阶段只对 TOC 顶部按钮的 `pointerdown` / `mousedown` / `mouseup` 执行 `stopPropagation()`，**故意不调用 `preventDefault()`**，让事件无法到达旧 `stopAll()`，但保留浏览器默认行为。随后执行“刚打开长文档 → 真实鼠标点击跳到顶部 → 点击顶部正文 → 输入”，问题不再出现。
+
+因此 v0.1.6 的最终修复是：
+
+```text
+普通 TOC 操作按钮
+pointerdown / mousedown / mouseup
+→ 不再注册 stopAll，不 preventDefault
+
+click
+→ 只 stopPropagation
+→ 执行 handler
+```
+
+这里特指普通 TOC 操作按钮；拖拽 resizer 属于另一类手势，仍可在自己的拖拽生命周期中使用 `preventDefault()`。不要把两者混为一谈。
+
+最终经验是：**对于 contenteditable / ProseMirror 周边 UI，不仅要避免直接改 selection，也要谨慎对真实 pointer 事件调用 `preventDefault()`。一个看似与编辑器无关的外部按钮，也可能因为阻断默认 focus/selection 生命周期而改变宿主后续编辑行为。**
 
 ## 14. 扁平化视觉规范
 
@@ -517,7 +561,7 @@ bootstrap
 
 ## 21. 禁止重新引入的机制
 
-v0.1.5 已通过实机 A/B 测试确认，导航必须保持“纯 scrollTop”。后续维护不要重新引入：
+v0.1.6 已通过实机 A/B 与 pointer bypass 测试确认：导航不仅要保持“纯 scrollTop”，普通 TOC 按钮还必须保留浏览器默认 pointer/focus 行为。后续维护不要重新引入：
 
 ```text
 editor.editor
@@ -533,10 +577,11 @@ transaction.setSelection() / dispatch()
 浏览器 Selection + Range 主动移动 caret
 主动 focus() / view.focus()
 为压制 selection 回滚而持续或延迟重复写 scrollTop
+普通 TOC 按钮在 pointerdown / mousedown / mouseup 阶段调用 preventDefault() / stopAll()
 给 heading 写 data-* ID
 ```
 
-旧 v46.0.2、v0.1.3、v0.1.4 的经验都说明：TOC 一旦承担“替宿主管理 selection/caret”的职责，就很容易重新进入与 Tiptap / ProseMirror 状态机耦合的风险区。当前稳定边界是：**读 DOM、算几何、写 TOC 自己的 UI、写正文滚动容器的 `scrollTop`，除此之外不碰编辑状态。**
+旧 v46.0.2、v0.1.3、v0.1.4 的经验都说明：TOC 一旦承担“替宿主管理 selection/caret”的职责，就很容易重新进入与 Tiptap / ProseMirror 状态机耦合的风险区。当前稳定边界是：**读 DOM、算几何、写 TOC 自己的 UI、写正文滚动容器的 `scrollTop`；普通按钮保留默认 pointer 行为，只在 click 阶段做必要冒泡隔离；除此之外不碰编辑状态。**
 
 ## 22. 维护测试清单
 
@@ -552,12 +597,14 @@ transaction.setSelection() / dispatch()
 8. 手动滚动 TOC 时不会被强制拉回；
 9. 点击目录项只改变 viewport；不得改变 DOM / PM selection，不得 focus editor，不得 dispatch transaction；
 10. “跳到顶部 / 底部”只写正文滚动容器 `scrollTop`；
-11. 刚打开长记录后直接点击“跳到顶部”，页面应到顶部；随后点击顶部正文再输入，不能跳回底部；
-12. 点击 TOC 导航后，再用滚轮移动正文并点击新位置编辑，不能因为此前导航留下 selection 污染而跳回底部；
-13. 作为 A/B 基准，直接执行 `pm.scrollTop = 0` 后点击正文编辑应与 TOC 纯滚动导航表现一致；
-14. 若点击 TOC 后不点击正文而直接输入，允许宿主继续在原 caret 输入；TOC 不负责移动 caret；
-15. 拖动 TOC 宽度后布局和 active 位置仍正确；
-16. 双击 resizer 恢复默认宽度；
-17. Markdown 导出按钮仍显示在 TOC 右侧；
-18. Markdown 表格、普通代码块、彩虹标题、LongText 改色均不受影响；
-19. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
+11. 普通 TOC 按钮的 `pointerdown` / `mousedown` / `mouseup` 不得 `preventDefault()`，真实鼠标点击必须走浏览器默认 pointer/focus 生命周期；
+12. 刚打开长记录后直接用真实鼠标点击“跳到顶部”，页面应到顶部；随后点击顶部正文再输入，不能跳回底部；
+13. 点击 TOC 导航后，再用滚轮移动正文并点击新位置编辑，不能因为此前导航留下 selection / focus 污染而跳回底部；
+14. 作为 A/B 基准，直接执行 `pm.scrollTop = 0` 后点击正文编辑应与 TOC 纯滚动导航表现一致；
+15. 程序化 `.click()` 与真实鼠标点击在后续正文编辑行为上应一致；
+16. 若点击 TOC 后不点击正文而直接输入，允许宿主继续在原 caret 输入；TOC 不负责移动 caret；
+17. 拖动 TOC 宽度后布局和 active 位置仍正确；
+18. 双击 resizer 恢复默认宽度；
+19. Markdown 导出按钮仍显示在 TOC 右侧；
+20. Markdown 表格、普通代码块、彩虹标题、LongText 改色均不受影响；
+21. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
