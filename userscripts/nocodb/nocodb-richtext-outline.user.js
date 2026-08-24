@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.2
+// @version      0.1.3
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -19,7 +19,7 @@
  * 核心边界：
  * - 不读取 editor.editor / EditorState / ProseMirror view；
  * - 不注册 ProseMirror plugin；
- * - 不 dispatch transaction，不读写 selection，不主动 focus 编辑器；
+ * - 不 dispatch transaction，不读写 ProseMirror selection；仅在用户明确导航时同步原生 DOM caret；
  * - 不向 .ProseMirror 正文节点写入 data-*、class、child DOM；
  * - TOC 只读取最终 DOM 中的 h1~h6，并只写自己的面板、按钮与 scrollTop；
  * - MutationObserver / scroll 热路径只做轻量判定与调度，真正扫描和测量延后执行。
@@ -931,6 +931,45 @@
     return { heading: state.headings[index] || null, index: state.headings[index] ? index : -1 };
   }
 
+  function focusEditorWithoutScrolling(state) {
+    if (!state || !(state.editor instanceof HTMLElement) || !state.editor.isConnected) return false;
+    if (document.activeElement === state.editor) return true;
+    try {
+      state.editor.focus({ preventScroll: true });
+    } catch (_) {
+      state.editor.focus();
+    }
+    return document.activeElement === state.editor;
+  }
+
+  function setNativeCaret(state, target, atEnd = false) {
+    if (!state || state.destroyed || !(state.editor instanceof HTMLElement)) return false;
+    if (!(target instanceof HTMLElement) || !target.isConnected || !state.editor.contains(target)) return false;
+    if (target.closest('[contenteditable="false"]')) return false;
+    const selection = window.getSelection();
+    if (!selection) return false;
+    try {
+      focusEditorWithoutScrolling(state);
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      range.collapse(!atEnd);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function findBoundaryCaretTarget(editor, where) {
+    if (!(editor instanceof HTMLElement)) return null;
+    const children = Array.from(editor.children).filter((element) => {
+      return element instanceof HTMLElement && !element.closest('[contenteditable="false"]');
+    });
+    if (!children.length) return editor;
+    return where === 'bottom' ? children[children.length - 1] : children[0];
+  }
+
   function jumpToHeading(state, index, text, level) {
     if (!state || state.destroyed) return;
     exitManualTocBrowsing(state, false);
@@ -941,6 +980,7 @@
     }
     const top = getHeadingTopWithinScroller(resolved.heading.element, state.scrollContainer);
     state.scrollContainer.scrollTop = Math.max(0, Math.round(top - CONFIG.anchorTop));
+    setNativeCaret(state, resolved.heading.element, false);
     setActiveItem(state, resolved.index);
     scheduleEnsureActiveItemVisible(state, true, 80);
     clearStatus(state);
@@ -950,8 +990,11 @@
   function scrollContainerTo(state, where) {
     if (!state || state.destroyed || !(state.scrollContainer instanceof HTMLElement)) return;
     exitManualTocBrowsing(state, false);
-    if (where === 'top') state.scrollContainer.scrollTop = 0;
+    const normalizedWhere = where === 'bottom' ? 'bottom' : 'top';
+    if (normalizedWhere === 'top') state.scrollContainer.scrollTop = 0;
     else state.scrollContainer.scrollTop = Math.max(0, state.scrollContainer.scrollHeight - state.scrollContainer.clientHeight);
+    const target = findBoundaryCaretTarget(state.editor, normalizedWhere);
+    if (target instanceof HTMLElement) setNativeCaret(state, target, normalizedWhere === 'bottom');
     scheduleScrollStopCheck(state);
   }
 

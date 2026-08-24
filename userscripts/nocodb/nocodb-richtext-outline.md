@@ -32,8 +32,8 @@ v0.1 系列把 TOC 定义成一个“旁路 DOM UI 增强脚本”。
 - 不调用 `registerPlugin()`；
 - 不创建 ProseMirror Plugin；
 - 不 dispatch transaction；
-- 不读写 `TextSelection` / `NodeSelection`；
-- 不主动 `focus()` 编辑器；
+- 不读写 ProseMirror 的 `TextSelection` / `NodeSelection`；显式导航只允许使用浏览器原生 `Selection + Range` 同步 caret；
+- 除用户明确触发“跳到顶部 / 底部 / 某个标题”的导航动作外，不主动 `focus()` 编辑器；
 - 不向 `.ProseMirror` 内的标题、段落、代码块写入 `data-*`、class 或额外 child DOM；
 - 不在 `input`、`scroll`、MutationObserver 回调中直接做全量重建。
 
@@ -303,29 +303,39 @@ manualTocBrowsing = true
 - 用户点击某个 TOC 项；
 - 正文发生新一轮滚动并真正停止。
 
-## 13. 点击目录跳转
+## 13. 显式导航与 caret 同步
 
-点击目录项只做 DOM 与滚动操作：
+v0.1.3 起，“点击目录标题 / 跳到顶部 / 跳到底部”被定义为显式导航动作。排查发现，NocoDB 某些长文档刚打开时，浏览器真实 caret 可能仍停在文档后部的 codeBlock 中；如果 TOC 只修改 `scrollTop`，就会出现“视图已回到顶部，但 caret 仍在底部”的分离状态，下一次键盘输入会让浏览器重新滚回真实 caret，看起来像光标突然跳到末尾。
+
+因此显式导航现在同时做两件事：
 
 ```text
-读取 snapshot[index].element
-→ 检查仍属于当前 editor
-→ 实时计算该 heading 的 top
-→ 修改正文 scrollContainer.scrollTop
+导航到目标位置
+→ 必要时用 focus({ preventScroll: true }) 保证 editor 接收输入
+→ 使用浏览器原生 Selection + Range
+→ 把 caret 同步到导航目标
 ```
 
-不会：
+具体规则：
 
-- focus editor；
-- 创建 Selection / Range；
-- dispatch ProseMirror transaction。
+- 点击某个 TOC heading：caret 放到该 heading 内容开头；
+- 跳到顶部：caret 放到 editor 第一个可编辑顶层块的开头；
+- 跳到底部：caret 放到 editor 最后一个可编辑顶层块的末尾；
+- `[contenteditable="false"]` 的 NodeView 不作为顶部 / 底部 caret 目标。
 
-如果 heading element 已被 Tiptap 替换，脚本只允许做一次轻量恢复：
+这里仍然不会：
+
+- 读取 `editor.editor` / EditorState；
+- 创建或 dispatch ProseMirror transaction；
+- 使用 `TextSelection` / `NodeSelection`；
+- 在刷新、开关 TOC、拖拽宽度等非导航操作中改变 caret。
+
+如果 heading element 已被 Tiptap 替换，脚本仍只允许做一次轻量恢复：
 
 ```text
 重新 buildSnapshot()
 → 按原 index / text / level 匹配
-→ 再跳转
+→ 再跳转并同步原生 caret
 ```
 
 ## 14. 扁平化视觉规范
@@ -463,7 +473,7 @@ coordsAtPos()
 nodeDOM()
 transaction / dispatch
 TextSelection / NodeSelection
-主动 focusEditor()
+通过 ProseMirror 内部 API 主动 focusEditor()
 给 heading 写 data-* ID
 ```
 
@@ -481,9 +491,11 @@ TextSelection / NodeSelection
 6. 中文输入标题时 composition 不被打断；
 7. 正文滚动停止后 active 更新；
 8. 手动滚动 TOC 时不会被强制拉回；
-9. 点击目录项可跳转且不会改动正文 selection；
+9. 点击目录项后 viewport 与 caret 同步到目标 heading，且不使用 ProseMirror selection API；
 10. 拖动 TOC 宽度后布局和 active 位置仍正确；
 11. 双击 resizer 恢复默认宽度；
 12. Markdown 导出按钮仍显示在 TOC 右侧；
 13. Markdown 表格、普通代码块、彩虹标题、LongText 改色均不受影响；
-14. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
+14. 刚打开含长 codeBlock 的记录时，直接点击“跳到顶部”再输入，caret 不得回到原 codeBlock；
+15. 点击“跳到底部”后输入应发生在底部目标位置；
+16. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
