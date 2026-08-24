@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      3.1.3
+// @version      3.2.0
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -41,7 +41,8 @@
  * 二、界面原则
  * -----------------------------------------------------------------------------
  * - 浏览状态只显示表格本身；
- * - 鼠标移入时，右上角才显示铅笔编辑按钮；
+ * - 鼠标移入时，右上角显示删除与铅笔编辑按钮；
+ * - 删除按钮使用贴近按钮的小型二次确认浮层，确认后才删除整个表格代码块；
  * - 双击任意单元格也可以进入编辑状态；
  * - 编辑状态顶部仅保留“新增行 / 新增列 / 取消 / 保存”；
  * - 列操作收进对应表头的三点菜单；
@@ -224,10 +225,10 @@ function nocodbMarkdownTablePageMain() {
         color: var(--nc-content-gray-subtle, #777);
       }
 
-      .tm-nmt-edit-trigger-v31 {
+      .tm-nmt-edit-trigger-v31,
+      .tm-nmt-delete-trigger-v31 {
         position: absolute;
         top: 7px;
-        right: 7px;
         z-index: 4;
         width: 30px;
         height: 30px;
@@ -247,21 +248,93 @@ function nocodbMarkdownTablePageMain() {
         transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
       }
 
+      .tm-nmt-edit-trigger-v31 {
+        right: 7px;
+      }
+
+      .tm-nmt-delete-trigger-v31 {
+        right: 43px;
+        color: #b91c1c;
+      }
+
       .${NODEVIEW_CLASS}:hover .tm-nmt-edit-trigger-v31,
-      .${NODEVIEW_CLASS}:focus-within .tm-nmt-edit-trigger-v31 {
+      .${NODEVIEW_CLASS}:hover .tm-nmt-delete-trigger-v31,
+      .${NODEVIEW_CLASS}:focus-within .tm-nmt-edit-trigger-v31,
+      .${NODEVIEW_CLASS}:focus-within .tm-nmt-delete-trigger-v31 {
         opacity: 1;
         visibility: visible;
         transform: translateY(0);
       }
 
-      .tm-nmt-edit-trigger-v31:hover {
+      .tm-nmt-edit-trigger-v31:hover,
+      .tm-nmt-delete-trigger-v31:hover {
         background: #f3f4f6;
       }
 
-      .tm-nmt-edit-trigger-v31 svg {
+      .tm-nmt-delete-trigger-v31:hover {
+        background: #fef2f2;
+      }
+
+      .tm-nmt-edit-trigger-v31 svg,
+      .tm-nmt-delete-trigger-v31 svg {
         width: 15px;
         height: 15px;
         pointer-events: none;
+      }
+
+      .tm-nmt-delete-confirm-v31 {
+        position: absolute;
+        top: 37px;
+        right: 73px;
+        z-index: 6;
+        width: 190px;
+        max-width: calc(100% - 16px);
+        padding: 12px;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.99);
+        color: #222;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+        user-select: none;
+      }
+
+      .tm-nmt-delete-confirm-title-v31 {
+        margin: 0 0 10px;
+        font-size: 13px;
+        line-height: 1.45;
+        font-weight: 600;
+      }
+
+      .tm-nmt-delete-confirm-actions-v31 {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .tm-nmt-delete-confirm-v31 button {
+        min-width: 58px;
+        height: 30px;
+        padding: 0 10px;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        border-radius: 7px;
+        background: #fff;
+        color: #333;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .tm-nmt-delete-confirm-v31 button:hover {
+        background: #f5f5f5;
+      }
+
+      .tm-nmt-delete-confirm-v31 .tm-nmt-delete-confirm-submit-v31 {
+        border-color: #dc2626;
+        background: #dc2626;
+        color: #fff;
+      }
+
+      .tm-nmt-delete-confirm-v31 .tm-nmt-delete-confirm-submit-v31:hover {
+        background: #b91c1c;
       }
 
       .tm-nmt-toolbar-v31 {
@@ -853,6 +926,25 @@ function nocodbMarkdownTablePageMain() {
     return button;
   }
 
+  function makeDeleteTrigger(onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tm-nmt-delete-trigger-v31';
+    button.title = '删除表格';
+    button.setAttribute('aria-label', '删除表格');
+    button.innerHTML = `
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path fill="currentColor" d="M11 1.5v1h3.5a.5.5 0 0 1 0 1h-.538l-.853 10.66A2 2 0 0 1 11.115 16h-6.23a2 2 0 0 1-1.994-1.84L2.038 3.5H1.5a.5.5 0 0 1 0-1H5v-1A1.5 1.5 0 0 1 6.5 0h3A1.5 1.5 0 0 1 11 1.5m-5 0v1h4v-1a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5M4.5 5.029l.5 8.5a.5.5 0 1 0 .998-.058l-.5-8.5a.5.5 0 1 0-.998.058m6.53-.528a.5.5 0 0 0-.528.47l-.5 8.5a.5.5 0 0 0 .998.058l.5-8.5a.5.5 0 0 0-.47-.528M8 4.5a.5.5 0 0 0-.5.5v8.5a.5.5 0 0 0 1 0V5a.5.5 0 0 0-.5-.5"></path>
+      </svg>`;
+
+    button.addEventListener('pointerdown', (event) => stopPointerEvent(event));
+    button.addEventListener('click', (event) => {
+      stopPointerEvent(event);
+      onClick();
+    });
+    return button;
+  }
+
   function makeMenuButton(title, onClick, extraClass = '') {
     const button = document.createElement('button');
     button.type = 'button';
@@ -990,7 +1082,9 @@ function nocodbMarkdownTablePageMain() {
     let draft = null;
     let openColumnMenu = null;
     let openRowMenu = null;
+    let confirmingDelete = false;
     let outsidePointerDownHandler = null;
+    let outsideDeleteConfirmHandler = null;
     let destroyed = false;
 
     const dom = document.createElement('div');
@@ -1032,8 +1126,128 @@ function nocodbMarkdownTablePageMain() {
       document.addEventListener('pointerdown', outsidePointerDownHandler, true);
     }
 
+    function stopOutsideDeleteConfirm() {
+      if (!outsideDeleteConfirmHandler) return;
+      document.removeEventListener('pointerdown', outsideDeleteConfirmHandler, true);
+      outsideDeleteConfirmHandler = null;
+    }
+
+    function hideDeleteConfirm() {
+      stopOutsideDeleteConfirm();
+      if (!confirmingDelete) return;
+      confirmingDelete = false;
+      rerender();
+    }
+
+    function startOutsideDeleteConfirm() {
+      if (outsideDeleteConfirmHandler || destroyed) return;
+
+      outsideDeleteConfirmHandler = (event) => {
+        if (!confirmingDelete || destroyed) return;
+        const target = event.target;
+        if (target instanceof Node && dom.contains(target)) return;
+        hideDeleteConfirm();
+      };
+
+      document.addEventListener('pointerdown', outsideDeleteConfirmHandler, true);
+    }
+
+    function showDeleteConfirm() {
+      if (!isEditable() || editing || destroyed) return;
+      confirmingDelete = true;
+      rerender();
+      startOutsideDeleteConfirm();
+    }
+
+    function deleteTable() {
+      let position;
+      try {
+        position = getPos();
+      } catch (_) {
+        position = null;
+      }
+
+      if (!Number.isInteger(position)) {
+        hideDeleteConfirm();
+        showToast('删除失败：无法定位原表格代码块。', 'error', 3600);
+        return false;
+      }
+
+      const state = editorView.state;
+      const liveNode = state.doc.nodeAt(position);
+      const liveStored = liveNode ? parseStoredText(liveNode.textContent || '') : null;
+      const sameTable =
+        liveNode &&
+        liveNode.type === currentNode.type &&
+        liveStored &&
+        liveStored.id === stored.id &&
+        liveStored.sourceHash === stored.sourceHash;
+
+      if (!sameTable) {
+        hideDeleteConfirm();
+        showToast('删除失败：原表格代码块已发生变化。', 'error', 3600);
+        return false;
+      }
+
+      stopOutsideDeleteConfirm();
+      confirmingDelete = false;
+
+      try {
+        editorView.dispatch(
+          state.tr.delete(position, position + liveNode.nodeSize).scrollIntoView(),
+        );
+        showToast('已删除表格', 'success', 1600);
+        return true;
+      } catch (_) {
+        confirmingDelete = true;
+        rerender();
+        startOutsideDeleteConfirm();
+        showToast('删除失败：NocoDB 拒绝了本次表格删除。', 'error', 3600);
+        return false;
+      }
+    }
+
+    function renderDeleteConfirm() {
+      const panel = document.createElement('div');
+      panel.className = 'tm-nmt-delete-confirm-v31';
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-label', '确认删除表格');
+
+      const title = document.createElement('div');
+      title.className = 'tm-nmt-delete-confirm-title-v31';
+      title.textContent = '确认删除这个 Markdown 表格？';
+
+      const actions = document.createElement('div');
+      actions.className = 'tm-nmt-delete-confirm-actions-v31';
+
+      const cancelButton = document.createElement('button');
+      cancelButton.type = 'button';
+      cancelButton.textContent = '取消';
+      cancelButton.addEventListener('pointerdown', (event) => stopPointerEvent(event));
+      cancelButton.addEventListener('click', (event) => {
+        stopPointerEvent(event);
+        hideDeleteConfirm();
+      });
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'tm-nmt-delete-confirm-submit-v31';
+      deleteButton.textContent = '确认删除';
+      deleteButton.addEventListener('pointerdown', (event) => stopPointerEvent(event));
+      deleteButton.addEventListener('click', (event) => {
+        stopPointerEvent(event);
+        deleteTable();
+      });
+
+      actions.append(cancelButton, deleteButton);
+      panel.append(title, actions);
+      dom.appendChild(panel);
+    }
+
     function enterEditing() {
       if (!isEditable()) return;
+      stopOutsideDeleteConfirm();
+      confirmingDelete = false;
       editing = true;
       draft = cloneModel(stored.model);
       openColumnMenu = null;
@@ -1250,7 +1464,11 @@ function nocodbMarkdownTablePageMain() {
       dom.classList.toggle('is-editing', editing);
 
       if (!editing) {
-        if (isEditable()) dom.appendChild(makeEditTrigger(enterEditing));
+        if (isEditable()) {
+          dom.appendChild(makeDeleteTrigger(showDeleteConfirm));
+          dom.appendChild(makeEditTrigger(enterEditing));
+          if (confirmingDelete) renderDeleteConfirm();
+        }
         const scroll = document.createElement('div');
         scroll.className = 'tm-nmt-scroll-v31';
         renderReadOnlyTable(stored.model, scroll, enterEditing, isEditable());
@@ -1319,6 +1537,10 @@ function nocodbMarkdownTablePageMain() {
           openRowMenu = null;
           showToast('表格已在其他位置更新，未保存的编辑已取消。', 'error', 3600);
         }
+        if (changed && confirmingDelete) {
+          stopOutsideDeleteConfirm();
+          confirmingDelete = false;
+        }
 
         rerender();
         return true;
@@ -1338,6 +1560,7 @@ function nocodbMarkdownTablePageMain() {
       destroy() {
         if (destroyed) return;
         stopOutsideAutoSave();
+        stopOutsideDeleteConfirm();
         destroyed = true;
         session.tableNodeViewCount = Math.max(0, session.tableNodeViewCount - 1);
       },
