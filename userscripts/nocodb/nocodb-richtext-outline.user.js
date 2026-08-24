@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.0
+// @version      0.1.1
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -49,6 +49,7 @@
     panelMinWidth: 132,
     panelMaxWidth: 360,
     panelResizeHandleWidth: 8,
+    panelLeftInset: 2,
     contentInsetExtra: -2,
     panelInsetY: 1,
     panelBottomGap: 2,
@@ -138,11 +139,11 @@
       .${CLASS.panel} {
         position: absolute;
         z-index: 25;
-        left: 0;
+        left: ${CONFIG.panelLeftInset}px;
         display: none;
-        width: var(--tm-rtoc-panel-width);
-        min-width: var(--tm-rtoc-panel-width);
-        max-width: var(--tm-rtoc-panel-width);
+        width: calc(var(--tm-rtoc-panel-width) - ${CONFIG.panelLeftInset}px);
+        min-width: calc(var(--tm-rtoc-panel-width) - ${CONFIG.panelLeftInset}px);
+        max-width: calc(var(--tm-rtoc-panel-width) - ${CONFIG.panelLeftInset}px);
         box-sizing: border-box;
         border: 0;
         border-right: 1px solid rgba(15, 23, 42, 0.10);
@@ -654,7 +655,7 @@
       commitActiveFromScroll(state, true);
       positionPanel(state);
     });
-    actions.append(topButton, bottomButton, refreshButton);
+    actions.append(refreshButton, bottomButton, topButton);
 
     if (state.resizer instanceof HTMLElement) {
       state.resizer.addEventListener('pointerdown', (event) => startPanelResize(state, event), true);
