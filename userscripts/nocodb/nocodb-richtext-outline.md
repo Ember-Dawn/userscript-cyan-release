@@ -1,21 +1,21 @@
-# NocoDB Rich Text 大纲：v47 纯 DOM 实现说明
+# NocoDB Rich Text 大纲：v0.1 纯 DOM 实现说明
 
 ## 1. 文档目的
 
-本文件说明 `nocodb-richtext-outline.user.js` v47 的技术路线、交互边界、性能策略和维护约定。
+本文件说明 `nocodb-richtext-outline.user.js` v0.1.x 的技术路线、交互边界、性能策略、视觉规范和维护约定。
 
-v47 是一次从零重写，不是在归档版 v46.0.2 上继续打补丁。旧版完整代码和历史技术说明继续保存在：
+v0.1 系列沿用此前从零重写的纯 DOM 架构，不是在归档版 v46.0.2 上继续打补丁。旧版完整代码和历史技术说明继续保存在：
 
 ```text
 archive/userscripts/nocodb-richtext-outline-v46.0.2.user.js
 archive/userscripts/nocodb-richtext-outline-v46.0.2.md
 ```
 
-旧版的主要问题不是 TOC 产品设计，而是 v44 以后为了追踪标题变化，深入接入了 Tiptap / ProseMirror 内部状态，并通过 `registerPlugin()` 动态注册 bridge。实际排查确认：开启旧 TOC 时，Rich Text 第一次输入可能把浏览器 DOM Selection 和 ProseMirror selection 一起跳到文档后部；关闭 TOC 后问题消失。因此 v47 的首要目标是保留成熟交互，同时彻底取消这类内部耦合。
+旧版的主要问题不是 TOC 产品设计，而是 v44 以后为了追踪标题变化，深入接入了 Tiptap / ProseMirror 内部状态，并通过 `registerPlugin()` 动态注册 bridge。实际排查确认：开启旧 TOC 时，Rich Text 第一次输入可能把浏览器 DOM Selection 和 ProseMirror selection 一起跳到文档后部；关闭 TOC 后问题消失。因此 v0.1 系列的首要目标是保留成熟交互，同时彻底取消这类内部耦合。
 
-## 2. v47 的核心原则
+## 2. v0.1 系列的核心原则
 
-v47 把 TOC 定义成一个“旁路 DOM UI 增强脚本”。
+v0.1 系列把 TOC 定义成一个“旁路 DOM UI 增强脚本”。
 
 脚本可以：
 
@@ -78,7 +78,7 @@ expanded-cell-input
 
 ## 4. 保留的旧版功能
 
-v47 保留旧版已经证明有价值的交互：
+v0.1 系列保留旧版已经证明有价值的交互：
 
 1. Rich Text 左侧 TOC 面板；
 2. 默认打开；
@@ -98,7 +98,7 @@ v47 保留旧版已经证明有价值的交互：
 
 ## 5. 标题数据模型
 
-v47 唯一标题来源是 DOM：
+v0.1 系列唯一标题来源是 DOM：
 
 ```js
 editor.querySelectorAll('h1, h2, h3, h4, h5, h6')
@@ -126,7 +126,7 @@ PM node
 
 ## 6. 标题 signature
 
-为了避免 MutationObserver 一有变化就重渲染 TOC，v47 保留轻量 signature：
+为了避免 MutationObserver 一有变化就重渲染 TOC，v0.1 系列保留轻量 signature：
 
 ```text
 level:textLength:text
@@ -146,11 +146,11 @@ signature 不同
 
 ## 7. 为什么把“标题内容”和“标题位置”分开
 
-这是 v47 相比旧版的重要改进。
+这是纯 DOM 新架构相比旧版的重要改进。
 
 普通正文编辑虽然不会改变标题文字，但会改变后面标题的纵向位置。例如在第一个 H1 前增加十行段落，后面所有 heading 的 `top` 都会移动。如果只在标题文字变化时重建 snapshot，滚动 active 判断会逐渐使用过期位置。
 
-因此 v47 有两条低频路径：
+因此脚本有两条低频路径：
 
 ### 7.1 标题内容刷新
 
@@ -183,7 +183,7 @@ MutationObserver
 
 ## 8. MutationObserver 设计
 
-v47 使用两个职责完全不同的 observer。
+脚本使用两个职责完全不同的 observer。
 
 ### 8.1 全局生命周期 Observer
 
@@ -256,7 +256,7 @@ compositionend
 
 ## 10. 正文滚动与 active 高亮
 
-v47 不在每个 `scroll` 事件里计算 active。
+脚本不在每个 `scroll` 事件里计算 active。
 
 仍采用旧版成熟的“双阶段静默判停”：
 
@@ -328,7 +328,23 @@ manualTocBrowsing = true
 → 再跳转
 ```
 
-## 14. TOC 宽度拖拽
+## 14. 扁平化视觉规范
+
+v0.1.0 将 TOC 从“悬浮卡片”改成与正文同一编辑器中的扁平侧栏：
+
+- 面板不再使用外围圆角、阴影或四周边框；
+- TOC 与正文共享相同背景，仅在面板右侧保留一条细竖向分隔线；
+- resizer 覆盖在这条竖线上，平时不可见，hover / 拖拽时显示细蓝色提示；
+- 顶部标题显示为 `TOC N`，不再使用单独数字胶囊；
+- 顶部仅使用一条非常浅的横向分隔线；
+- “跳到顶部 / 跳到底部 / 刷新目录”使用独立的 26px 圆角按钮，采用统一线性图标和轻量 hover 状态；
+- 三个按钮顺序为“顶部 → 底部 → 刷新”，让导航操作成组、刷新作为维护操作放在末尾；
+- TOC item 的 active 状态继续保持蓝色圆角背景，不改成左侧 indicator；
+- H1 ~ H6 的层级缩进与字体权重保持原逻辑。
+
+该视觉方案的目标是让 TOC 看起来像 NocoDB 编辑器原生的左侧 pane，而不是覆盖在正文旁边的第三方卡片。
+
+## 15. TOC 宽度拖拽
 
 面板默认：
 
@@ -350,7 +366,7 @@ manualTocBrowsing = true
 - 拖动完成后低频刷新 heading 几何位置；
 - 双击 resizer 恢复默认宽度。
 
-## 15. TOC 与正文布局
+## 16. TOC 与正文布局
 
 TOC panel 挂在 `expanded-cell-input` 外层 root，不插入 ProseMirror 正文。
 
@@ -358,7 +374,7 @@ TOC panel 挂在 `expanded-cell-input` 外层 root，不插入 ProseMirror 正�
 
 如果未来发现宿主对 `.ProseMirror` padding 行为发生变化，应优先改成调整 `.nc-rich-text-content` 外层布局，而不是向 ProseMirror child DOM 写入结构。
 
-## 16. 与 Markdown 导出脚本的接口
+## 17. 与 Markdown 导出脚本的接口
 
 `nocodb-richtext-markdown-export.user.js` 当前通过：
 
@@ -369,18 +385,18 @@ button[title="切换 TOC"]
 
 查找 TOC 按钮，并把“复制 Markdown / 下载 Markdown”按钮定位在右侧。
 
-v47 明确保留：
+v0.1 明确保留：
 
 ```html
 aria-label="切换 TOC"
 title="切换 TOC"
 ```
 
-因此现有 Markdown 导出脚本不需要为 v47 改动。
+因此现有 Markdown 导出脚本不需要为 v0.1.x 改动。
 
-## 17. 与 Markdown 表格 / 代码块工具的边界
+## 18. 与 Markdown 表格 / 代码块工具的边界
 
-v47 TOC：
+v0.1 TOC：
 
 - 不识别普通代码块内部文本为 heading；
 - Markdown 表格 NodeView 不是 H1 ~ H6，因此自然被忽略；
@@ -390,7 +406,7 @@ v47 TOC：
 
 因此 TOC 与这些脚本只共享同一个 Rich Text 页面，不共享内部状态。
 
-## 18. 生命周期
+## 19. 生命周期
 
 初始化：
 
@@ -418,7 +434,7 @@ bootstrap
 → 清理 root class / CSS variables
 ```
 
-## 19. 性能约定
+## 20. 性能约定
 
 后续维护必须继续遵守：
 
@@ -430,7 +446,7 @@ bootstrap
 - 标题列表真正变化时才重建 TOC DOM；
 - 普通正文变化只在安静后更新 heading 几何位置。
 
-## 20. 禁止重新引入的机制
+## 21. 禁止重新引入的机制
 
 除非有新的、非常明确且无法通过 DOM 方案解决的需求，否则不要重新引入：
 
@@ -447,9 +463,9 @@ TextSelection / NodeSelection
 给 heading 写 data-* ID
 ```
 
-旧 v46.0.2 已经保留在 archive 中，可用于历史比较，不应把其中的 PM bridge 恢复到 v47。
+旧 v46.0.2 已经保留在 archive 中，可用于历史比较，不应把其中的 PM bridge 恢复到现役 v0.1.x。
 
-## 21. 维护测试清单
+## 22. 维护测试清单
 
 每次修改后至少手工验证：
 

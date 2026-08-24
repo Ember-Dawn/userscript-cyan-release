@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      47.0.0
+// @version      0.1.0
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -13,7 +13,7 @@
 
 /*
  * =============================================================================
- * NocoDB Rich Text 大纲 v47：纯 DOM 旁路实现
+ * NocoDB Rich Text 大纲 v0.1：纯 DOM 旁路实现
  * =============================================================================
  *
  * 核心边界：
@@ -49,7 +49,6 @@
     panelMinWidth: 132,
     panelMaxWidth: 360,
     panelResizeHandleWidth: 8,
-    panelGap: 8,
     contentInsetExtra: -2,
     panelInsetY: 1,
     panelBottomGap: 2,
@@ -69,22 +68,22 @@
   };
 
   const CLASS = {
-    rootReady: 'tm-rtoc-root-v47',
-    rootOpen: 'tm-rtoc-open-v47',
-    resizing: 'tm-rtoc-resizing-v47',
-    button: 'tm-rtoc-button-v47',
+    rootReady: 'tm-rtoc-root-v1',
+    rootOpen: 'tm-rtoc-open-v1',
+    resizing: 'tm-rtoc-resizing-v1',
+    button: 'tm-rtoc-button-v1',
     buttonReady: 'is-ready',
     buttonActive: 'is-active',
-    panel: 'tm-rtoc-panel-v47',
+    panel: 'tm-rtoc-panel-v1',
     panelVisible: 'is-visible',
-    resizer: 'tm-rtoc-resizer-v47',
-    list: 'tm-rtoc-list-v47',
-    item: 'tm-rtoc-item-v47',
+    resizer: 'tm-rtoc-resizer-v1',
+    list: 'tm-rtoc-list-v1',
+    item: 'tm-rtoc-item-v1',
     itemActive: 'is-active',
-    status: 'tm-rtoc-status-v47',
+    status: 'tm-rtoc-status-v1',
   };
 
-  const STYLE_ID = 'tm-rtoc-style-v47';
+  const STYLE_ID = 'tm-rtoc-style-v1';
   const states = new Map();
   let activeState = null;
   let globalObserver = null;
@@ -145,10 +144,11 @@
         min-width: var(--tm-rtoc-panel-width);
         max-width: var(--tm-rtoc-panel-width);
         box-sizing: border-box;
-        border: 1px solid rgba(15, 23, 42, 0.10);
-        border-radius: 10px;
+        border: 0;
+        border-right: 1px solid rgba(15, 23, 42, 0.10);
+        border-radius: 0;
         background: var(--nc-bg-default, #fff);
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 18px rgba(15, 23, 42, 0.06);
+        box-shadow: none;
         overflow: hidden;
       }
 
@@ -156,68 +156,89 @@
         display: block;
       }
 
-      .tm-rtoc-panel-inner-v47 {
+      .tm-rtoc-panel-inner-v1 {
         display: flex;
         flex-direction: column;
         height: 100%;
         min-height: 0;
       }
 
-      .tm-rtoc-title-v47 {
+      .tm-rtoc-title-v1 {
         flex: 0 0 auto;
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        padding: 10px 10px 9px;
-        color: #222;
-        background: rgba(15, 23, 42, 0.04);
-        border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+        min-height: 42px;
+        padding: 7px 8px 7px 10px;
+        color: #374151;
+        background: transparent;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.055);
       }
 
-      .tm-rtoc-title-count-v47 {
+      .tm-rtoc-title-count-v1 {
         display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 28px;
-        height: 20px;
-        padding: 0 7px;
-        border-radius: 999px;
-        background: rgba(59, 130, 246, 0.12);
-        color: #3559b5;
-        font-size: 12px;
-        font-weight: 700;
-        line-height: 1;
-      }
-
-      .tm-rtoc-title-actions-v47 {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-      }
-
-      .tm-rtoc-icon-btn-v47 {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 24px;
-        height: 24px;
+        align-items: baseline;
+        gap: 5px;
+        min-width: 0;
         padding: 0;
         border: 0;
-        border-radius: 7px;
+        border-radius: 0;
         background: transparent;
         color: #4b5563;
+        font-size: 12px;
+        font-weight: 650;
+        line-height: 1;
+        white-space: nowrap;
+      }
+
+      .tm-rtoc-title-label-v1 {
+        color: #374151;
+        letter-spacing: .15px;
+      }
+
+      .tm-rtoc-title-number-v1 {
+        color: #6b7280;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .tm-rtoc-title-actions-v1 {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+
+      .tm-rtoc-icon-btn-v1 {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        border: 1px solid rgba(15, 23, 42, 0.10);
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.72);
+        color: #4b5563;
+        box-shadow: 0 1px 1px rgba(15, 23, 42, 0.025);
         cursor: pointer;
+        transition: background 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
       }
 
-      .tm-rtoc-icon-btn-v47:hover {
-        background: rgba(0, 0, 0, 0.05);
-        color: #111827;
+      .tm-rtoc-icon-btn-v1:hover {
+        background: rgba(59, 130, 246, 0.075);
+        border-color: rgba(59, 130, 246, 0.24);
+        color: #3158a8;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
       }
 
-      .tm-rtoc-icon-btn-v47 svg {
-        width: 14px;
-        height: 14px;
+      .tm-rtoc-icon-btn-v1:active {
+        background: rgba(59, 130, 246, 0.12);
+        transform: translateY(1px);
+      }
+
+      .tm-rtoc-icon-btn-v1 svg {
+        width: 15px;
+        height: 15px;
         display: block;
         pointer-events: none;
       }
@@ -241,7 +262,7 @@
         padding: 6px;
       }
 
-      .tm-rtoc-empty-v47 {
+      .tm-rtoc-empty-v1 {
         padding: 6px;
         color: #666;
         font-size: 12px;
@@ -274,12 +295,12 @@
         color: #1d4ed8;
       }
 
-      .tm-rtoc-l1-v47 { padding: 6px 8px;  font-weight: 700; }
-      .tm-rtoc-l2-v47 { padding: 6px 8px 6px 16px; font-weight: 600; }
-      .tm-rtoc-l3-v47 { padding: 6px 8px 6px 24px; }
-      .tm-rtoc-l4-v47 { padding: 6px 8px 6px 32px; }
-      .tm-rtoc-l5-v47 { padding: 6px 8px 6px 40px; }
-      .tm-rtoc-l6-v47 { padding: 6px 8px 6px 48px; }
+      .tm-rtoc-l1-v1 { padding: 6px 8px;  font-weight: 700; }
+      .tm-rtoc-l2-v1 { padding: 6px 8px 6px 16px; font-weight: 600; }
+      .tm-rtoc-l3-v1 { padding: 6px 8px 6px 24px; }
+      .tm-rtoc-l4-v1 { padding: 6px 8px 6px 32px; }
+      .tm-rtoc-l5-v1 { padding: 6px 8px 6px 40px; }
+      .tm-rtoc-l6-v1 { padding: 6px 8px 6px 48px; }
 
       .${CLASS.resizer} {
         position: absolute;
@@ -293,9 +314,21 @@
         background: transparent;
       }
 
-      .${CLASS.resizer}:hover,
-      .${CLASS.rootReady}.${CLASS.resizing} .${CLASS.resizer} {
-        background: rgba(59, 130, 246, 0.12);
+      .${CLASS.resizer}::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 1px;
+        background: transparent;
+        transition: width 120ms ease, background 120ms ease;
+      }
+
+      .${CLASS.resizer}:hover::after,
+      .${CLASS.rootReady}.${CLASS.resizing} .${CLASS.resizer}::after {
+        width: 2px;
+        background: rgba(59, 130, 246, 0.42);
       }
 
       .${CLASS.rootReady}.${CLASS.resizing},
@@ -492,7 +525,7 @@
     state.list.textContent = '';
     if (!state.headings.length) {
       const empty = document.createElement('div');
-      empty.className = 'tm-rtoc-empty-v47';
+      empty.className = 'tm-rtoc-empty-v1';
       empty.textContent = 'No headings';
       state.list.appendChild(empty);
       updateCount(state);
@@ -502,7 +535,7 @@
     state.headings.forEach((heading, index) => {
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = `${CLASS.item} tm-rtoc-l${heading.level}-v47`;
+      button.className = `${CLASS.item} tm-rtoc-l${heading.level}-v1`;
       button.textContent = heading.text;
       button.title = heading.text;
       button.dataset.index = String(index);
@@ -515,7 +548,8 @@
 
   function updateCount(state) {
     if (state && state.count instanceof HTMLElement) {
-      state.count.textContent = String(state.headings.length || 0);
+      const number = state.count.querySelector('.tm-rtoc-title-number-v1');
+      if (number instanceof HTMLElement) number.textContent = String(state.headings.length || 0);
     }
   }
 
@@ -543,7 +577,7 @@
   function makeIconButton(action, title, svg) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'tm-rtoc-icon-btn-v47';
+    button.className = 'tm-rtoc-icon-btn-v1';
     button.dataset.action = action;
     button.setAttribute('aria-label', title);
     button.setAttribute('title', title);
@@ -572,10 +606,10 @@
     const panel = document.createElement('div');
     panel.className = CLASS.panel;
     panel.innerHTML = `
-      <div class="tm-rtoc-panel-inner-v47">
-        <div class="tm-rtoc-title-v47">
-          <span class="tm-rtoc-title-count-v47">0</span>
-          <div class="tm-rtoc-title-actions-v47"></div>
+      <div class="tm-rtoc-panel-inner-v1">
+        <div class="tm-rtoc-title-v1">
+          <span class="tm-rtoc-title-count-v1"><span class="tm-rtoc-title-label-v1">TOC</span><span class="tm-rtoc-title-number-v1">0</span></span>
+          <div class="tm-rtoc-title-actions-v1"></div>
         </div>
         <div class="${CLASS.status}"></div>
         <div class="${CLASS.list}"></div>
@@ -589,34 +623,38 @@
 
     state.root.appendChild(panel);
     state.panel = panel;
-    state.count = panel.querySelector('.tm-rtoc-title-count-v47');
+    state.count = panel.querySelector('.tm-rtoc-title-count-v1');
     state.status = panel.querySelector(`.${CLASS.status}`);
     state.list = panel.querySelector(`.${CLASS.list}`);
     state.resizer = panel.querySelector(`.${CLASS.resizer}`);
 
-    const actions = panel.querySelector('.tm-rtoc-title-actions-v47');
-    const refreshButton = makeIconButton('refresh', '刷新目录', `
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M13.333 8A5.333 5.333 0 1 1 11.77 4.23" stroke="currentColor" stroke-width="1.33" stroke-linecap="round" stroke-linejoin="round"></path>
-        <path d="M13.333 2.667V5.333H10.667" stroke="currentColor" stroke-width="1.33" stroke-linecap="round" stroke-linejoin="round"></path>
-      </svg>`);
+    const actions = panel.querySelector('.tm-rtoc-title-actions-v1');
     const topButton = makeIconButton('top', '跳到顶部', `
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M3 3H13M8 12V4M5.5 6.5 8 4l2.5 2.5" stroke="currentColor" stroke-width="1.33" stroke-linecap="round" stroke-linejoin="round"></path>
+      <svg viewBox="0 0 18 18" fill="none" aria-hidden="true">
+        <path d="M4 3.25h10" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"></path>
+        <path d="M9 14V6.1" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"></path>
+        <path d="m5.9 9.15 3.1-3.1 3.1 3.1" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>`);
     const bottomButton = makeIconButton('bottom', '跳到底部', `
-      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M3 13H13M8 4v8M5.5 9.5 8 12l2.5-2.5" stroke="currentColor" stroke-width="1.33" stroke-linecap="round" stroke-linejoin="round"></path>
+      <svg viewBox="0 0 18 18" fill="none" aria-hidden="true">
+        <path d="M4 14.75h10" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"></path>
+        <path d="M9 4v7.9" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"></path>
+        <path d="m5.9 8.85 3.1 3.1 3.1-3.1" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>`);
+    const refreshButton = makeIconButton('refresh', '刷新目录', `
+      <svg viewBox="0 0 18 18" fill="none" aria-hidden="true">
+        <path d="M14.55 6.6A6 6 0 1 0 14.6 11" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"></path>
+        <path d="M14.55 3.8v2.95H11.6" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"></path>
       </svg>`);
 
+    attachActionButton(topButton, () => scrollContainerTo(state, 'top'));
+    attachActionButton(bottomButton, () => scrollContainerTo(state, 'bottom'));
     attachActionButton(refreshButton, () => {
       buildSnapshot(state);
       commitActiveFromScroll(state, true);
       positionPanel(state);
     });
-    attachActionButton(topButton, () => scrollContainerTo(state, 'top'));
-    attachActionButton(bottomButton, () => scrollContainerTo(state, 'bottom'));
-    actions.append(refreshButton, topButton, bottomButton);
+    actions.append(topButton, bottomButton, refreshButton);
 
     if (state.resizer instanceof HTMLElement) {
       state.resizer.addEventListener('pointerdown', (event) => startPanelResize(state, event), true);

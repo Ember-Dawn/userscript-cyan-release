@@ -15,7 +15,7 @@
 
 `nocodb-folders.user.js` 已归档并停止公开发布。该脚本曾长期配合 NocoDB v2026.05.1 使用；NocoDB v2026.08.1 原生加入 Data 侧边栏文件夹（Base Sections）后，不再作为现役脚本维护。
 
-旧版 `nocodb-richtext-outline.user.js` v46.0.2 已归档。归档版本采用 ProseMirror bridge + 标题快照 + DOM TOC 的混合路线，并已确认会触发“第一次按键后 selection 跳到文档后部”的编辑器异常。现役 v47 已从零重写为纯 DOM 旁路方案，不注册 ProseMirror plugin、不读写 selection；归档脚本仍保留在 `archive/userscripts/nocodb-richtext-outline-v46.0.2.user.js`，新架构详见 [`nocodb-richtext-outline.md`](./nocodb-richtext-outline.md)。
+旧版 `nocodb-richtext-outline.user.js` v46.0.2 已归档。归档版本采用 ProseMirror bridge + 标题快照 + DOM TOC 的混合路线，并已确认会触发“第一次按键后 selection 跳到文档后部”的编辑器异常。现役脚本已从零重写为纯 DOM 旁路方案，并从 v0.1.x 重新编号；不注册 ProseMirror plugin、不读写 selection；归档脚本仍保留在 `archive/userscripts/nocodb-richtext-outline-v46.0.2.user.js`，新架构详见 [`nocodb-richtext-outline.md`](./nocodb-richtext-outline.md)。
 
 ## Markdown 表格的实际保存与渲染结果
 
@@ -93,7 +93,7 @@ NocoDB CE 当前使用的 LongText Rich Text 编辑器没有原生 `table`、`ta
 
 ## 导出按钮位置
 
-Markdown 导出脚本依赖“切换 TOC”按钮作为定位锚点，通过按钮的 `aria-label` 或 `title` 查找 TOC，不依赖具体版本类名。现役 v47 继续保留 `aria-label="切换 TOC"` / `title="切换 TOC"`，因此现有导出脚本可以保持兼容。
+Markdown 导出脚本依赖“切换 TOC”按钮作为定位锚点，通过按钮的 `aria-label` 或 `title` 查找 TOC，不依赖具体版本类名。现役 v0.1.x 继续保留 `aria-label="切换 TOC"` / `title="切换 TOC"`，因此现有导出脚本可以保持兼容。
 
 按钮顺序为：
 
