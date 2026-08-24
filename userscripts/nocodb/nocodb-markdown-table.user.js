@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      3.1.2
+// @version      3.1.3
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -1395,8 +1395,26 @@ function nocodbMarkdownTablePageMain() {
         } catch (_) {}
       }
 
-      return createFallbackCodeBlockNodeView(node);
+      // 普通 codeBlock 交回 ProseMirror 默认渲染，不再创建自定义 fallback NodeView。
+      // 这能避免脚本安装时重建所有普通代码块 DOM，从而降低 Selection 映射被扰动的风险。
+      return null;
     };
+  }
+
+  function restoreSelectionAfterNodeViewInstall(view, editorDom, selection, hadFocus) {
+    if (!hadFocus || !view || !editorDom?.isConnected || !selection) return;
+
+    window.requestAnimationFrame(() => {
+      if (!editorDom.isConnected || !view.state) return;
+
+      try {
+        const currentSelection = view.state.selection;
+        if (!currentSelection?.eq?.(selection)) {
+          view.dispatch(view.state.tr.setSelection(selection));
+        }
+        view.focus();
+      } catch (_) {}
+    });
   }
 
   function installSession(editorDom, tiptap) {
@@ -1406,6 +1424,8 @@ function nocodbMarkdownTablePageMain() {
 
     const view = tiptap.view;
     const originalNodeViews = { ...(view.props.nodeViews || {}) };
+    const selectionBeforeInstall = view.state?.selection || null;
+    const hadFocusBeforeInstall = typeof view.hasFocus === 'function' ? view.hasFocus() : editorDom.contains(document.activeElement);
     const session = {
       editorDom,
       tiptap,
@@ -1426,6 +1446,7 @@ function nocodbMarkdownTablePageMain() {
           codeBlock: session.nodeViewFactory,
         },
       });
+      restoreSelectionAfterNodeViewInstall(view, editorDom, selectionBeforeInstall, hadFocusBeforeInstall);
     } catch (_) {
       return null;
     }
