@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.4
+// @version      0.1.5
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -17,9 +17,9 @@
  * =============================================================================
  *
  * 核心边界：
- * - 不读取 editor.editor，不注册 ProseMirror plugin，不建立长期 PM bridge；
- * - 普通 TOC 运行仍保持纯 DOM；仅在用户明确导航时一次性取得当前 EditorView 并同步 PM selection；
- * - 导航 transaction 只改变 selection，不改正文内容，也不加入 undo history；
+ * - 不读取 editor.editor / EditorState / EditorView，不注册 ProseMirror plugin，不建立 PM bridge；
+ * - 不读取或修改 DOM / ProseMirror selection，不调用 focus()，不 dispatch transaction；
+ * - 显式导航只修改正文滚动容器的 scrollTop，TOC 只负责视口位置，不负责 caret；
  * - 不向 .ProseMirror 正文节点写入 data-*、class、child DOM；
  * - TOC 只读取最终 DOM 中的 h1~h6，并只写自己的面板、按钮与 scrollTop；
  * - MutationObserver / scroll 热路径只做轻量判定与调度，真正扫描和测量延后执行。
@@ -931,74 +931,6 @@
     return { heading: state.headings[index] || null, index: state.headings[index] ? index : -1 };
   }
 
-  function getProseMirrorView(state) {
-    if (!state || state.destroyed || !(state.editor instanceof HTMLElement) || !state.editor.isConnected) return null;
-    const view = state.editor.pmViewDesc?.view;
-    if (!view || view.dom !== state.editor || !view.state?.doc) return null;
-    if (typeof view.dispatch !== 'function' || typeof view.posAtDOM !== 'function') return null;
-    return view;
-  }
-
-  function syncProseMirrorCaret(state, target, atEnd = false) {
-    if (!state || state.destroyed || !(target instanceof HTMLElement)) return false;
-    if (!target.isConnected || !state.editor.contains(target)) return false;
-    if (target.closest('[contenteditable="false"]')) return false;
-    const view = getProseMirrorView(state);
-    if (!view) return false;
-    try {
-      const bias = atEnd ? -1 : 1;
-      const domOffset = atEnd ? target.childNodes.length : 0;
-      const rawPos = view.posAtDOM(target, domOffset, bias);
-      const maxPos = view.state.doc.content.size;
-      const pos = Math.max(0, Math.min(maxPos, Number(rawPos) || 0));
-      const SelectionType = view.state.selection?.constructor;
-      if (!SelectionType || typeof SelectionType.near !== 'function') return false;
-      const selection = SelectionType.near(view.state.doc.resolve(pos), bias);
-      if (!selection) return false;
-      if (!selection.eq(view.state.selection)) {
-        const transaction = view.state.tr.setSelection(selection).setMeta('addToHistory', false);
-        view.dispatch(transaction);
-      }
-      if (typeof view.hasFocus === 'function' && !view.hasFocus() && typeof view.focus === 'function') view.focus();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function findBoundaryCaretTarget(editor, where) {
-    if (!(editor instanceof HTMLElement)) return null;
-    const children = Array.from(editor.children).filter((element) => {
-      return element instanceof HTMLElement && !element.closest('[contenteditable="false"]');
-    });
-    if (!children.length) return null;
-    return where === 'bottom' ? children[children.length - 1] : children[0];
-  }
-
-  function settleNavigationScroll(state, resolveTop) {
-    if (!state || state.destroyed || !(state.scrollContainer instanceof HTMLElement)) return;
-    if (state.navigationFrame) cancelAnimationFrame(state.navigationFrame);
-    if (state.navigationTimer) window.clearTimeout(state.navigationTimer);
-    const token = ++state.navigationToken;
-    const commit = () => {
-      if (!state || state.destroyed || token !== state.navigationToken) return;
-      const rawTop = typeof resolveTop === 'function' ? resolveTop() : resolveTop;
-      const maxTop = Math.max(0, state.scrollContainer.scrollHeight - state.scrollContainer.clientHeight);
-      state.scrollContainer.scrollTop = Math.max(0, Math.min(maxTop, Math.round(Number(rawTop) || 0)));
-    };
-    clearScrollTimers(state);
-    commit();
-    state.navigationFrame = requestAnimationFrame(() => {
-      state.navigationFrame = 0;
-      commit();
-      state.navigationTimer = window.setTimeout(() => {
-        state.navigationTimer = 0;
-        commit();
-        scheduleScrollStopCheck(state);
-      }, 40);
-    });
-  }
-
   function jumpToHeading(state, index, text, level) {
     if (!state || state.destroyed) return;
     exitManualTocBrowsing(state, false);
@@ -1007,26 +939,25 @@
       setStatus(state, '目录已变化，请刷新后重试。');
       return;
     }
-    syncProseMirrorCaret(state, resolved.heading.element, false);
-    settleNavigationScroll(state, () => {
-      const top = getHeadingTopWithinScroller(resolved.heading.element, state.scrollContainer);
-      return Math.max(0, top - CONFIG.anchorTop);
-    });
+    const top = getHeadingTopWithinScroller(resolved.heading.element, state.scrollContainer);
+    state.scrollContainer.scrollTop = Math.max(0, Math.round(top - CONFIG.anchorTop));
     setActiveItem(state, resolved.index);
     scheduleEnsureActiveItemVisible(state, true, 80);
     clearStatus(state);
+    clearScrollTimers(state);
+    scheduleScrollStopCheck(state);
   }
 
   function scrollContainerTo(state, where) {
     if (!state || state.destroyed || !(state.scrollContainer instanceof HTMLElement)) return;
     exitManualTocBrowsing(state, false);
-    const normalizedWhere = where === 'bottom' ? 'bottom' : 'top';
-    const target = findBoundaryCaretTarget(state.editor, normalizedWhere);
-    if (target instanceof HTMLElement) syncProseMirrorCaret(state, target, normalizedWhere === 'bottom');
-    settleNavigationScroll(state, () => {
-      if (normalizedWhere === 'top') return 0;
-      return Math.max(0, state.scrollContainer.scrollHeight - state.scrollContainer.clientHeight);
-    });
+    if (where === 'bottom') {
+      state.scrollContainer.scrollTop = Math.max(0, state.scrollContainer.scrollHeight - state.scrollContainer.clientHeight);
+    } else {
+      state.scrollContainer.scrollTop = 0;
+    }
+    clearScrollTimers(state);
+    scheduleScrollStopCheck(state);
   }
 
   function nodeOrAncestorHeading(node, editor) {
@@ -1223,9 +1154,6 @@
       scrollTimer2: 0,
       ensureVisibleTimer: 0,
       manualBrowseTimer: 0,
-      navigationFrame: 0,
-      navigationTimer: 0,
-      navigationToken: 0,
       pendingScrollTop: 0,
       manualTocBrowsing: false,
       listProgrammaticScrollUntil: 0,
@@ -1255,11 +1183,6 @@
     unbindEditorRuntime(state);
     stopPanelResize(state, false);
     clearScrollTimers(state);
-    state.navigationToken += 1;
-    if (state.navigationFrame) cancelAnimationFrame(state.navigationFrame);
-    if (state.navigationTimer) window.clearTimeout(state.navigationTimer);
-    state.navigationFrame = 0;
-    state.navigationTimer = 0;
     for (const timerName of ['headingCheckTimer', 'geometryTimer', 'ensureVisibleTimer', 'manualBrowseTimer']) {
       if (state[timerName]) window.clearTimeout(state[timerName]);
       state[timerName] = 0;

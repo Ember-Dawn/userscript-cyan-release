@@ -28,13 +28,12 @@ v0.1 系列把 TOC 定义成一个“旁路 DOM UI 增强脚本”。
 
 脚本明确不做：
 
-- 不读取 `editor.editor`；
-- 不调用 `registerPlugin()`；
-- 不创建 ProseMirror Plugin，也不建立长期 EditorView / selection bridge；
-- 普通 TOC 扫描、刷新、滚动 active、宽度拖拽等路径不读取 ProseMirror state；
-- 仅在用户明确触发“跳到顶部 / 底部 / 某个标题”时，一次性从当前 `.ProseMirror` 的 `pmViewDesc.view` 取得 EditorView，用 `posAtDOM()` 映射目标位置并 dispatch 一次仅 selection 的 transaction；
-- 导航 transaction 设置 `addToHistory=false`，不改正文内容；
-- 除上述显式导航外，不主动 `focus()` 编辑器；
+- 不读取 `editor.editor`、`EditorState`、`EditorView` 或 `.pmViewDesc.view`；
+- 不调用 `registerPlugin()`，不创建 ProseMirror Plugin，不建立任何 PM bridge；
+- 不读取或修改 ProseMirror selection，不调用 `posAtDOM()` / `setSelection()` / `dispatch()`；
+- 不使用浏览器原生 `Selection + Range` 去替用户移动 caret；
+- 不主动 `focus()` 编辑器；
+- “点击标题 / 跳到顶部 / 跳到底部”只修改正文滚动容器的 `scrollTop`，只负责 viewport，不负责 caret；
 - 不向 `.ProseMirror` 内的标题、段落、代码块写入 `data-*`、class 或额外 child DOM；
 - 不在 `input`、`scroll`、MutationObserver 回调中直接做全量重建。
 
@@ -304,45 +303,94 @@ manualTocBrowsing = true
 - 用户点击某个 TOC 项；
 - 正文发生新一轮滚动并真正停止。
 
-## 13. 显式导航与 caret 同步
+## 13. 显式导航：只滚动 viewport，不同步 caret
 
-v0.1.3 曾尝试只使用浏览器原生 `Selection + Range` 同步 caret。后续实测抓到明确时序：真实点击“跳到顶部”后，正文 `scrollTop` 在 `requestAnimationFrame` / `setTimeout(0)` 时已经到 `0`，但约 20ms 后又被 NocoDB / ProseMirror 拉回文档末尾。这说明只改 DOM selection 并没有同步 ProseMirror 内部 selection，宿主后续仍会按旧 PM selection 执行 scroll-to-selection。
+v0.1.5 起，TOC 的导航语义固定为：**只改变用户正在看的位置，不改变用户正在编辑的位置。**
 
-v0.1.4 因此撤销原生 Range 方案。显式导航改为一次性的最小 PM selection 同步：
+最终规则非常简单：
 
 ```text
-用户点击导航
-→ 从当前 .ProseMirror.pmViewDesc.view 一次性取得 EditorView
-→ view.posAtDOM() 把目标 DOM 换算为 PM position
-→ 使用当前 selection 类型继承的 Selection.near() 得到合法 selection
-→ dispatch 仅 selection 的 transaction（addToHistory=false）
-→ 最后校正正文 scrollTop
+点击某个 TOC heading
+→ 计算 heading.top
+→ 修改正文滚动容器 scrollTop
+
+跳到顶部
+→ scrollTop = 0
+
+跳到底部
+→ scrollTop = scrollHeight - clientHeight
 ```
 
-具体规则：
+导航过程中明确禁止：
 
-- 点击某个 TOC heading：PM caret 放到该 heading 内容开头；
-- 跳到顶部：PM caret 放到 editor 第一个可编辑顶层块的开头；
-- 跳到底部：PM caret 放到 editor 最后一个可编辑顶层块的末尾；
-- `[contenteditable="false"]` 的 NodeView 不作为顶部 / 底部 caret 目标；
-- navigation scroll 在立即、下一帧和约 40ms 后做有限次数校正，用于覆盖同一次导航中宿主晚到的 scroll-to-selection；不会建立持续滚动锁。
+- 浏览器原生 `Selection + Range`；
+- `focus()` / `view.focus()`；
+- `.pmViewDesc.view` / EditorView；
+- `posAtDOM()`；
+- `TextSelection` / `NodeSelection` / `Selection.near()`；
+- `transaction.setSelection()` / `dispatch()`；
+- 为了压制 selection 回滚而设置 RAF / timer 连续重写 `scrollTop`。
 
-这是一条严格限定的例外路径，不恢复旧版 PM bridge：
+这意味着 TOC 是“视口导航器”，不是“编辑光标导航器”。用户通过 TOC 看到了目标位置后，如果要在那里编辑，应再由用户点击正文目标位置，让 NocoDB / Tiptap 自己建立 caret。若用户不点击正文而直接输入，键盘仍可能作用于此前已有的 caret；这是宿主编辑器的正常语义，TOC 不再替用户猜测或修改 caret。
 
-- 不调用 `registerPlugin()`；
-- 不创建 ProseMirror Plugin；
-- 不缓存长期 EditorView；
-- 不监听 PM transaction / selection；
-- 不在普通输入、MutationObserver、scroll 热路径中访问 PM state；
-- 不修改文档内容；
-- 刷新、开关 TOC、拖拽宽度等非导航操作仍完全不碰 PM selection。
+### 13.1 v0.1.3 的坑：原生 DOM Selection 不能代替 PM selection
 
-如果 heading element 已被 Tiptap 替换，脚本仍只允许做一次轻量恢复：
+v0.1.3 曾尝试在显式导航时调用 `focus({ preventScroll: true })`，再用浏览器原生 `Selection + Range` 把 caret 放到目标 DOM。实测证明这条路线不可靠：真实点击“跳到顶部”后，正文 `scrollTop` 可以短暂到达 `0`，但约 20ms 后又会被 NocoDB / ProseMirror 拉回文档后部。
+
+原因是 DOM Selection 与 ProseMirror 内部 selection 不是同一层状态。仅移动浏览器 caret，并不能保证宿主下一轮 selection / view 同步接受这个位置。
+
+结论：**不要再用原生 Range 去“补同步” ProseMirror caret。**
+
+### 13.2 v0.1.4 的坑：一次性 PM transaction 仍会污染宿主编辑状态
+
+v0.1.4 又尝试缩小范围，只在导航瞬间执行一次：
+
+```text
+.pmViewDesc.view
+→ posAtDOM()
+→ Selection.near()
+→ transaction.setSelection()
+→ dispatch(addToHistory=false)
+```
+
+同时对 `scrollTop` 做立即 / 下一帧 / 约 40ms 的有限校正。虽然它不注册 plugin、不建立长期 bridge，但实机结果仍然失败：
+
+- 刚打开长文档后点击“跳到顶部”，随后编辑仍会跳到底部；
+- 更关键的是，一旦执行过 TOC 导航，之后即使用户用滚轮上翻再编辑，仍可能继续跳到底部；
+- 与此同时，若打开编辑器后完全不点 TOC，只用滚轮上翻再编辑，则没有问题。
+
+这说明问题不只是“selection 有没有同步成功”，而是 TOC 主动插手宿主 PM selection 可能改变了 NocoDB / Tiptap 自己维护的编辑状态。一次性 transaction 仍然不是安全边界。
+
+### 13.3 决定性的 A/B 测试
+
+最终又做了一个更干净的对照：绕过 TOC handler，直接在 Console 执行：
+
+```js
+const pm = document.querySelector('.nc-rich-text-content .tiptap.ProseMirror');
+pm.scrollTop = 0;
+```
+
+然后用户点击顶部普通正文再编辑，行为完全正常。
+
+这个结果把问题边界明确下来：
+
+```text
+纯 scrollTop
+→ 安全
+
+TOC 主动同步 DOM / PM caret 或 selection
+→ 有污染宿主编辑状态的风险
+```
+
+因此 v0.1.5 不再试图“修复”宿主初始 caret，也不再用延迟滚动去和宿主 selection 竞争，而是回到最小、可验证的纯滚动模型。
+
+如果 heading element 已被 Tiptap 替换，脚本仍允许做一次 DOM 层的轻量恢复：
 
 ```text
 重新 buildSnapshot()
-→ 按原 index / text / level 匹配
-→ 再执行一次性 PM selection 同步与滚动
+→ 按原 index / text / level 匹配 heading
+→ 重新计算 top
+→ 只修改 scrollTop
 ```
 
 ## 14. 扁平化视觉规范
@@ -469,40 +517,47 @@ bootstrap
 
 ## 21. 禁止重新引入的机制
 
-v0.1.4 只为显式导航保留“一次性 EditorView + selection transaction”这一条窄例外。除此之外，不要重新引入：
+v0.1.5 已通过实机 A/B 测试确认，导航必须保持“纯 scrollTop”。后续维护不要重新引入：
 
 ```text
 editor.editor
-长期缓存 EditorView / EditorState
+EditorView / EditorState
+.pmViewDesc.view
 registerPlugin()
 ProseMirror Plugin
-持续 transaction / selection bridge
+posAtDOM()
 coordsAtPos()
 nodeDOM()
-在 input / scroll / MutationObserver 热路径读取 PM state
+TextSelection / NodeSelection / Selection.near()
+transaction.setSelection() / dispatch()
+浏览器 Selection + Range 主动移动 caret
+主动 focus() / view.focus()
+为压制 selection 回滚而持续或延迟重复写 scrollTop
 给 heading 写 data-* ID
 ```
 
-旧 v46.0.2 已经保留在 archive 中，可用于历史比较，不应把其中的 PM bridge 恢复到现役 v0.1.x。
+旧 v46.0.2、v0.1.3、v0.1.4 的经验都说明：TOC 一旦承担“替宿主管理 selection/caret”的职责，就很容易重新进入与 Tiptap / ProseMirror 状态机耦合的风险区。当前稳定边界是：**读 DOM、算几何、写 TOC 自己的 UI、写正文滚动容器的 `scrollTop`，除此之外不碰编辑状态。**
 
 ## 22. 维护测试清单
 
 每次修改后至少手工验证：
 
 1. 打开含 H1 ~ H6 的长 Rich Text，TOC 正常出现；
-2. 在普通段落中第一次输入字符，光标不能跳到文档末尾或代码块；
+2. 在普通段落中第一次输入字符，光标不能因为 TOC 自身初始化而跳到文档末尾或代码块；
 3. 连续普通输入，TOC 不应每键重建；
 4. 修改 heading 文本，停顿后目录更新；
 5. 新建 / 删除 / 改变 heading level，目录更新；
 6. 中文输入标题时 composition 不被打断；
 7. 正文滚动停止后 active 更新；
 8. 手动滚动 TOC 时不会被强制拉回；
-9. 点击目录项后 viewport 与 PM caret 同步到目标 heading，且只发生一次 selection transaction；
-10. 拖动 TOC 宽度后布局和 active 位置仍正确；
-11. 双击 resizer 恢复默认宽度；
-12. Markdown 导出按钮仍显示在 TOC 右侧；
-13. Markdown 表格、普通代码块、彩虹标题、LongText 改色均不受影响；
-14. 刚打开 caret 位于文档后部的长记录时，直接点击“跳到顶部”，约 50ms 后正文仍保持在顶部；
-15. 紧接着直接输入字符，输入必须发生在顶部目标块，不能跳回文档末尾；
-16. 点击“跳到底部”后输入应发生在底部目标位置；
-17. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
+9. 点击目录项只改变 viewport；不得改变 DOM / PM selection，不得 focus editor，不得 dispatch transaction；
+10. “跳到顶部 / 底部”只写正文滚动容器 `scrollTop`；
+11. 刚打开长记录后直接点击“跳到顶部”，页面应到顶部；随后点击顶部正文再输入，不能跳回底部；
+12. 点击 TOC 导航后，再用滚轮移动正文并点击新位置编辑，不能因为此前导航留下 selection 污染而跳回底部；
+13. 作为 A/B 基准，直接执行 `pm.scrollTop = 0` 后点击正文编辑应与 TOC 纯滚动导航表现一致；
+14. 若点击 TOC 后不点击正文而直接输入，允许宿主继续在原 caret 输入；TOC 不负责移动 caret；
+15. 拖动 TOC 宽度后布局和 active 位置仍正确；
+16. 双击 resizer 恢复默认宽度；
+17. Markdown 导出按钮仍显示在 TOC 右侧；
+18. Markdown 表格、普通代码块、彩虹标题、LongText 改色均不受影响；
+19. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
