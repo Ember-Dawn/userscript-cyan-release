@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
-// @version      0.3.4
+// @version      0.3.5
 // @description  适配 ChatGPT 分页会话接口，可独立控制历史窗口，并持续后台统计与持久缓存总轮数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -210,15 +210,23 @@
         }
     }
 
+    function isTemporaryConversationId(conversationId) {
+        return typeof conversationId === 'string' && /^WEB:/i.test(conversationId);
+    }
+
+    function isStableConversationId(conversationId) {
+        return typeof conversationId === 'string' && Boolean(conversationId) && !isTemporaryConversationId(conversationId);
+    }
+
     function getRoundCountEntry(conversationId) {
-        if (!conversationId) {
+        if (!isStableConversationId(conversationId)) {
             return null;
         }
         return normalizeRoundCountEntry(roundCountCache.entries[conversationId]);
     }
 
     function setRoundCountEntry(conversationId, entry) {
-        if (!conversationId) {
+        if (!isStableConversationId(conversationId)) {
             return;
         }
         const normalized = normalizeRoundCountEntry({ ...entry, updatedAt: Date.now() });
@@ -483,7 +491,7 @@
     }
 
     function cacheCurrentConversationStats() {
-        if (!state.currentConversationId || state.totalRounds === null) {
+        if (!isStableConversationId(state.currentConversationId) || state.totalRounds === null) {
             return;
         }
         conversationStatsCache.delete(state.currentConversationId);
@@ -540,7 +548,7 @@
         if (requestInfo.kind === 'conversation' || requestInfo.kind === 'conversations') {
             const currentId = extractConversationPageId();
             return Boolean(
-                currentId &&
+                isStableConversationId(currentId) &&
                 state.currentConversationId === currentId &&
                 requestInfo.id === currentId
             );
@@ -1064,7 +1072,7 @@
             if (messagesInfo) {
                 const currentId = extractConversationPageId();
                 const isCurrent = Boolean(
-                    currentId &&
+                    isStableConversationId(currentId) &&
                     state.currentConversationId === currentId &&
                     messagesInfo.id === currentId
                 );
@@ -1547,22 +1555,46 @@
         }
     }
 
-    function seedVisibleUserMessageIds() {
+    function getVisibleUserMessageIds() {
         if (!document.querySelectorAll) {
-            return;
+            return [];
         }
+        const ids = [];
+        const seen = new Set();
         const nodes = document.querySelectorAll('[data-message-author-role="user"][data-message-id]');
         for (const node of nodes) {
             const id = node.getAttribute('data-message-id');
-            if (id) {
-                state.seenUserMessageIds.add(id);
+            if (!id || seen.has(id)) {
+                continue;
             }
+            seen.add(id);
+            ids.push(id);
         }
+        return ids;
+    }
+
+    function seedVisibleUserMessageIds() {
+        for (const id of getVisibleUserMessageIds()) {
+            state.seenUserMessageIds.add(id);
+        }
+    }
+
+    function renderTemporaryConversationStats() {
+        if (!isTemporaryConversationId(state.currentConversationId) || state.pendingNewConversationUserIds.size === 0) {
+            return;
+        }
+        const totalRounds = state.pendingNewConversationUserIds.size;
+        state.totalRounds = totalRounds;
+        state.keptRounds = config.enabled ? Math.min(config.keepRounds, totalRounds) : totalRounds;
+        state.loadedRounds = totalRounds;
+        state.hasEarlierHistory = false;
+        state.roundCountStatus = 'complete';
+        renderUiState();
     }
 
     function initializeFreshConversationStats(conversationId, messageIds) {
         const ids = [...new Set(messageIds.filter((id) => typeof id === 'string' && id))];
-        if (!conversationId || ids.length === 0) {
+        if (!isStableConversationId(conversationId) || ids.length === 0) {
             return false;
         }
 
@@ -1614,10 +1646,11 @@
             addedIds.push(id);
         }
 
-        if (addedIds.length > 0 && state.currentConversationId === null) {
+        if (addedIds.length > 0 && (state.currentConversationId === null || isTemporaryConversationId(state.currentConversationId))) {
             for (const id of addedIds) {
                 state.pendingNewConversationUserIds.add(id);
             }
+            renderTemporaryConversationStats();
             return;
         }
 
@@ -1662,7 +1695,21 @@
     function handleNavigation() {
         const previousConversationId = state.currentConversationId;
         const nextConversationId = extractConversationPageId();
-        const freshConversationUserIds = previousConversationId === null && nextConversationId
+        const previousWasTemporary = isTemporaryConversationId(previousConversationId);
+        const nextIsTemporary = isTemporaryConversationId(nextConversationId);
+        const visibleUserIds = getVisibleUserMessageIds();
+
+        if (previousConversationId === null || previousWasTemporary) {
+            for (const id of visibleUserIds) {
+                state.pendingNewConversationUserIds.add(id);
+            }
+        }
+
+        const canBootstrapFreshConversation = isStableConversationId(nextConversationId) && (
+            previousWasTemporary ||
+            (previousConversationId === null && state.pendingNewConversationUserIds.size > 0)
+        );
+        const freshConversationUserIds = canBootstrapFreshConversation
             ? [...state.pendingNewConversationUserIds]
             : [];
 
@@ -1674,10 +1721,18 @@
         state.roundCountRequestTemplate = null;
         state.currentConversationId = nextConversationId;
         state.seenUserMessageIds.clear();
-        state.pendingNewConversationUserIds.clear();
         state.domIncrementReady = false;
         state.domBaselineToken += 1;
 
+        if (nextIsTemporary) {
+            for (const id of state.pendingNewConversationUserIds) {
+                state.seenUserMessageIds.add(id);
+            }
+            renderTemporaryConversationStats();
+            return;
+        }
+
+        state.pendingNewConversationUserIds.clear();
         if (initializeFreshConversationStats(nextConversationId, freshConversationUserIds)) {
             return;
         }
