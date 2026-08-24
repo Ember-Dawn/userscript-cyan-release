@@ -28,12 +28,13 @@ v0.1 系列把 TOC 定义成一个“旁路 DOM UI 增强脚本”。
 
 脚本明确不做：
 
-- 不读取 `editor.editor`、`EditorState`、`EditorView`；
+- 不读取 `editor.editor`；
 - 不调用 `registerPlugin()`；
-- 不创建 ProseMirror Plugin；
-- 不 dispatch transaction；
-- 不读写 ProseMirror 的 `TextSelection` / `NodeSelection`；显式导航只允许使用浏览器原生 `Selection + Range` 同步 caret；
-- 除用户明确触发“跳到顶部 / 底部 / 某个标题”的导航动作外，不主动 `focus()` 编辑器；
+- 不创建 ProseMirror Plugin，也不建立长期 EditorView / selection bridge；
+- 普通 TOC 扫描、刷新、滚动 active、宽度拖拽等路径不读取 ProseMirror state；
+- 仅在用户明确触发“跳到顶部 / 底部 / 某个标题”时，一次性从当前 `.ProseMirror` 的 `pmViewDesc.view` 取得 EditorView，用 `posAtDOM()` 映射目标位置并 dispatch 一次仅 selection 的 transaction；
+- 导航 transaction 设置 `addToHistory=false`，不改正文内容；
+- 除上述显式导航外，不主动 `focus()` 编辑器；
 - 不向 `.ProseMirror` 内的标题、段落、代码块写入 `data-*`、class 或额外 child DOM；
 - 不在 `input`、`scroll`、MutationObserver 回调中直接做全量重建。
 
@@ -305,37 +306,43 @@ manualTocBrowsing = true
 
 ## 13. 显式导航与 caret 同步
 
-v0.1.3 起，“点击目录标题 / 跳到顶部 / 跳到底部”被定义为显式导航动作。排查发现，NocoDB 某些长文档刚打开时，浏览器真实 caret 可能仍停在文档后部的 codeBlock 中；如果 TOC 只修改 `scrollTop`，就会出现“视图已回到顶部，但 caret 仍在底部”的分离状态，下一次键盘输入会让浏览器重新滚回真实 caret，看起来像光标突然跳到末尾。
+v0.1.3 曾尝试只使用浏览器原生 `Selection + Range` 同步 caret。后续实测抓到明确时序：真实点击“跳到顶部”后，正文 `scrollTop` 在 `requestAnimationFrame` / `setTimeout(0)` 时已经到 `0`，但约 20ms 后又被 NocoDB / ProseMirror 拉回文档末尾。这说明只改 DOM selection 并没有同步 ProseMirror 内部 selection，宿主后续仍会按旧 PM selection 执行 scroll-to-selection。
 
-因此显式导航现在同时做两件事：
+v0.1.4 因此撤销原生 Range 方案。显式导航改为一次性的最小 PM selection 同步：
 
 ```text
-导航到目标位置
-→ 必要时用 focus({ preventScroll: true }) 保证 editor 接收输入
-→ 使用浏览器原生 Selection + Range
-→ 把 caret 同步到导航目标
+用户点击导航
+→ 从当前 .ProseMirror.pmViewDesc.view 一次性取得 EditorView
+→ view.posAtDOM() 把目标 DOM 换算为 PM position
+→ 使用当前 selection 类型继承的 Selection.near() 得到合法 selection
+→ dispatch 仅 selection 的 transaction（addToHistory=false）
+→ 最后校正正文 scrollTop
 ```
 
 具体规则：
 
-- 点击某个 TOC heading：caret 放到该 heading 内容开头；
-- 跳到顶部：caret 放到 editor 第一个可编辑顶层块的开头；
-- 跳到底部：caret 放到 editor 最后一个可编辑顶层块的末尾；
-- `[contenteditable="false"]` 的 NodeView 不作为顶部 / 底部 caret 目标。
+- 点击某个 TOC heading：PM caret 放到该 heading 内容开头；
+- 跳到顶部：PM caret 放到 editor 第一个可编辑顶层块的开头；
+- 跳到底部：PM caret 放到 editor 最后一个可编辑顶层块的末尾；
+- `[contenteditable="false"]` 的 NodeView 不作为顶部 / 底部 caret 目标；
+- navigation scroll 在立即、下一帧和约 40ms 后做有限次数校正，用于覆盖同一次导航中宿主晚到的 scroll-to-selection；不会建立持续滚动锁。
 
-这里仍然不会：
+这是一条严格限定的例外路径，不恢复旧版 PM bridge：
 
-- 读取 `editor.editor` / EditorState；
-- 创建或 dispatch ProseMirror transaction；
-- 使用 `TextSelection` / `NodeSelection`；
-- 在刷新、开关 TOC、拖拽宽度等非导航操作中改变 caret。
+- 不调用 `registerPlugin()`；
+- 不创建 ProseMirror Plugin；
+- 不缓存长期 EditorView；
+- 不监听 PM transaction / selection；
+- 不在普通输入、MutationObserver、scroll 热路径中访问 PM state；
+- 不修改文档内容；
+- 刷新、开关 TOC、拖拽宽度等非导航操作仍完全不碰 PM selection。
 
 如果 heading element 已被 Tiptap 替换，脚本仍只允许做一次轻量恢复：
 
 ```text
 重新 buildSnapshot()
 → 按原 index / text / level 匹配
-→ 再跳转并同步原生 caret
+→ 再执行一次性 PM selection 同步与滚动
 ```
 
 ## 14. 扁平化视觉规范
@@ -462,18 +469,17 @@ bootstrap
 
 ## 21. 禁止重新引入的机制
 
-除非有新的、非常明确且无法通过 DOM 方案解决的需求，否则不要重新引入：
+v0.1.4 只为显式导航保留“一次性 EditorView + selection transaction”这一条窄例外。除此之外，不要重新引入：
 
 ```text
 editor.editor
-EditorState / EditorView
+长期缓存 EditorView / EditorState
 registerPlugin()
 ProseMirror Plugin
+持续 transaction / selection bridge
 coordsAtPos()
 nodeDOM()
-transaction / dispatch
-TextSelection / NodeSelection
-通过 ProseMirror 内部 API 主动 focusEditor()
+在 input / scroll / MutationObserver 热路径读取 PM state
 给 heading 写 data-* ID
 ```
 
@@ -491,11 +497,12 @@ TextSelection / NodeSelection
 6. 中文输入标题时 composition 不被打断；
 7. 正文滚动停止后 active 更新；
 8. 手动滚动 TOC 时不会被强制拉回；
-9. 点击目录项后 viewport 与 caret 同步到目标 heading，且不使用 ProseMirror selection API；
+9. 点击目录项后 viewport 与 PM caret 同步到目标 heading，且只发生一次 selection transaction；
 10. 拖动 TOC 宽度后布局和 active 位置仍正确；
 11. 双击 resizer 恢复默认宽度；
 12. Markdown 导出按钮仍显示在 TOC 右侧；
 13. Markdown 表格、普通代码块、彩虹标题、LongText 改色均不受影响；
-14. 刚打开含长 codeBlock 的记录时，直接点击“跳到顶部”再输入，caret 不得回到原 codeBlock；
-15. 点击“跳到底部”后输入应发生在底部目标位置；
-16. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
+14. 刚打开 caret 位于文档后部的长记录时，直接点击“跳到顶部”，约 50ms 后正文仍保持在顶部；
+15. 紧接着直接输入字符，输入必须发生在顶部目标块，不能跳回文档末尾；
+16. 点击“跳到底部”后输入应发生在底部目标位置；
+17. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
