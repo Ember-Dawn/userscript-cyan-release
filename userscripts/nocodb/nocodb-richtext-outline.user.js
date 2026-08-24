@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.1
+// @version      0.1.2
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -49,8 +49,8 @@
     panelMinWidth: 132,
     panelMaxWidth: 360,
     panelResizeHandleWidth: 8,
-    panelLeftInset: 2,
-    contentInsetExtra: -2,
+    panelLeftInset: 13,
+    contentInsetExtra: -6,
     panelInsetY: 1,
     panelBottomGap: 2,
     buttonGap: 8,
@@ -147,7 +147,7 @@
         box-sizing: border-box;
         border: 0;
         border-right: 1px solid rgba(15, 23, 42, 0.10);
-        border-radius: 0;
+        border-radius: 8px 0 0 8px;
         background: var(--nc-bg-default, #fff);
         box-shadow: none;
         overflow: hidden;
