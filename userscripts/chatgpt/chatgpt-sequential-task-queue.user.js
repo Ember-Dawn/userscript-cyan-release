@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.3
+// @version      1.3.4
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.3';
+  const VERSION = '1.3.4';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -1906,7 +1906,7 @@
         <button type="button" class="${PREFIX}-collapse" data-action="collapse" aria-label="收起面板">−</button>
       </div>
       <div class="${PREFIX}-body">
-        <div class="${PREFIX}-hint">多行 Prompt 请用单独一行 --- 分隔；无分隔符时，每个非空行作为一轮命令。</div>
+        <div class="${PREFIX}-hint">多行 Prompt 请用单独一行 --- 分隔；<br>无分隔符时，每个非空行作为一轮命令。</div>
         <textarea id="${PREFIX}-input" spellcheck="false" placeholder="第一个 Prompt\n可以有多行内容\n\n---\n\n第二个 Prompt\n也可以有多行内容"></textarea>
         <div class="${PREFIX}-row">
           <label for="${PREFIX}-delay">回答结束后额外等待</label>
