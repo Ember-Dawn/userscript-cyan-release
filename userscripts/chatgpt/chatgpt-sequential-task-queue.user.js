@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.2
+// @version      1.3.3
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -19,7 +19,7 @@
 
 1. 任务输入
  - 面板默认收起为右下角圆角矩形进度按钮；点击按钮展开。
- - 在面板中粘贴多行文本，每个非空行作为一轮独立命令；未载入时进度条会实时显示 0 / N。
+ - 支持两种输入方式：有单独一行 --- 时按 Prompt 块分隔，每个块可包含多行；没有 --- 时仍按每个非空行作为一轮独立命令。
  - 已有队列时若修改任务文本，进度条保留当前执行进度，并额外显示草稿任务数；确认替换后才重置正式队列。
  - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
 
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.2';
+  const VERSION = '1.3.3';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -129,7 +129,7 @@
       mode: 'idle',
       conversationId: conversationId || null,
       delayMs: DEFAULT_BETWEEN_TASK_DELAY_MS,
-      notice: '请粘贴任务，每个非空行作为一轮命令。',
+      notice: '请粘贴任务；多行 Prompt 可用单独一行 --- 分隔。',
       createdAt: 0,
       updatedAt: Date.now(),
     };
@@ -408,10 +408,34 @@
   }
 
   function parseTasks(text) {
-    return String(text || '')
-      .split(/\r?\n/)
+    const source = String(text || '').replace(/\r\n?/g, '\n');
+    const hasBlockSeparator = source
+      .split('\n')
+      .some((line) => line.trim() === '---');
+
+    if (hasBlockSeparator) {
+      return source
+        .split(/^[\t ]*---[\t ]*$/m)
+        .map((block) => block.trim())
+        .filter(Boolean);
+    }
+
+    return source
+      .split('\n')
       .map((line) => line.trim())
       .filter(Boolean);
+  }
+
+  function getTaskSourceText(text) {
+    const source = String(text || '').replace(/\r\n?/g, '\n');
+    const tasks = parseTasks(source);
+    const hasBlockSeparator = source
+      .split('\n')
+      .some((line) => line.trim() === '---');
+
+    return hasBlockSeparator
+      ? tasks.join('\n\n---\n\n')
+      : tasks.join('\n');
   }
 
   function normalizeText(text) {
@@ -927,12 +951,14 @@
   function readPanelQueueDraft() {
     const textarea = document.getElementById(`${PREFIX}-input`);
     const delayInput = document.getElementById(`${PREFIX}-delay`);
-    const lines = parseTasks(textarea?.value || '');
+    const inputText = textarea?.value || '';
+    const lines = parseTasks(inputText);
 
     return {
       textarea,
       lines,
-      sourceText: lines.join('\n'),
+      sourceText: getTaskSourceText(inputText),
+      draftText: inputText,
       delayMs: clampInteger(
         Number(delayInput?.value) * 1000,
         1000,
@@ -952,7 +978,7 @@
     state = {
       version: 2,
       sourceText: draft.sourceText,
-      draftText: draft.sourceText,
+      draftText: draft.draftText,
       tasks: draft.lines.map((text, index) => ({
         id: index + 1,
         text,
@@ -996,7 +1022,7 @@
       if (draft.lines.length === 0) {
         await showPanelDialog({
           title: '没有可执行的任务',
-          message: '请粘贴任务，并确保每个非空行是一条命令。',
+          message: '请粘贴任务；多行 Prompt 可用单独一行 --- 分隔。',
           alertOnly: true,
         });
         return;
@@ -1880,8 +1906,8 @@
         <button type="button" class="${PREFIX}-collapse" data-action="collapse" aria-label="收起面板">−</button>
       </div>
       <div class="${PREFIX}-body">
-        <div class="${PREFIX}-hint">每个非空行作为一轮命令；脚本不读取回答正文。</div>
-        <textarea id="${PREFIX}-input" spellcheck="false" placeholder="请按照 xxx 文件生成第 1 页的图\n请按照 xxx 文件生成第 2 页的图"></textarea>
+        <div class="${PREFIX}-hint">多行 Prompt 请用单独一行 --- 分隔；无分隔符时，每个非空行作为一轮命令。</div>
+        <textarea id="${PREFIX}-input" spellcheck="false" placeholder="第一个 Prompt\n可以有多行内容\n\n---\n\n第二个 Prompt\n也可以有多行内容"></textarea>
         <div class="${PREFIX}-row">
           <label for="${PREFIX}-delay">回答结束后额外等待</label>
           <div class="${PREFIX}-unit-input">
@@ -2066,9 +2092,10 @@
     const conversation = getConversationStatus({ allowBind: false });
     const progress = getProgressSnapshot();
     const { totalCount, completedCount } = progress;
-    const draftLines = parseTasks(textarea?.value ?? state.draftText);
+    const draftInputText = textarea?.value ?? state.draftText;
+    const draftLines = parseTasks(draftInputText);
     const draftCount = draftLines.length;
-    const draftSourceText = draftLines.join('\n');
+    const draftSourceText = getTaskSourceText(draftInputText);
     const draftChanged = totalCount > 0 && draftSourceText !== state.sourceText;
     const displayTotalCount = totalCount > 0 ? totalCount : draftCount;
     const progressText = totalCount > 0
