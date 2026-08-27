@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.5
-// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持长任务二次完成确认、短任务兜底判定及独立会话状态。
+// @version      1.3.6
+// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、脚本写入防误暂停及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -25,7 +25,7 @@
 
 2. 顺序执行
  - 脚本把命令写入 ChatGPT 的 ProseMirror 输入框并点击发送按钮。
- - 每轮优先观察 data-testid="stop-button"；看到停止按钮后，停止按钮消失需先稳定 3 秒，再额外观察 12 秒；期间若停止按钮重新出现则恢复运行判定，连续空闲满 15 秒后才按设置的额外秒数等待并发送下一轮。
+ - 每轮优先观察 data-testid="stop-button"；看到停止按钮后，等待其消失并保持空闲 3 秒，再按设置的额外秒数等待后发送下一轮。
  - 若发送后输入框已确认清空，但前 8 秒始终未捕获停止按钮，则在输入框继续为空且停止按钮持续不存在 3 秒后，按超短任务已完成处理。
  - 脚本不读取、提取或判断回答正文，只观察输入框、停止按钮和当前会话地址。
 
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.5';
+  const VERSION = '1.3.6';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -78,7 +78,6 @@
   const SEND_BUTTON_TIMEOUT_MS = 8000;
   const START_GRACE_MS = 8000;
   const IDLE_STABLE_MS = 3000;
-  const LONG_TASK_RECHECK_MS = 12000;
   const DEFAULT_BETWEEN_TASK_DELAY_MS = 3000;
   const LOCK_STALE_MS = 15000;
   const LOCK_HEARTBEAT_MS = 5000;
@@ -109,9 +108,9 @@
   let ownedLockConversationId = undefined;
   let ownedLockKey = null;
   let idleSince = 0;
-  let longTaskRecheckStarted = false;
   let sendingEpoch = 0;
-  let internalInputUntil = 0;
+  let internalEditorWriteActive = false;
+  let internalEditorExpectedText = '';
   let locationSnapshot = location.href;
   let dialogResolver = null;
 
@@ -616,31 +615,36 @@
   function setEditorText(editor, text) {
     editor.focus();
     selectEditorContents(editor);
-    internalInputUntil = Date.now() + 1500;
+    internalEditorWriteActive = true;
+    internalEditorExpectedText = normalizeText(text);
 
     let inserted = false;
 
     try {
-      inserted = document.execCommand('insertText', false, text);
-    } catch (_) {
-      inserted = false;
-    }
+      try {
+        inserted = document.execCommand('insertText', false, text);
+      } catch (_) {
+        inserted = false;
+      }
 
-    if (!inserted || normalizeText(editor.innerText) !== normalizeText(text)) {
-      editor.replaceChildren();
-      const paragraph = document.createElement('p');
-      paragraph.textContent = text;
-      editor.appendChild(paragraph);
-      editor.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        cancelable: false,
-        inputType: 'insertText',
-        data: text,
-      }));
-    }
+      if (!inserted || normalizeText(editor.innerText) !== internalEditorExpectedText) {
+        editor.replaceChildren();
+        const paragraph = document.createElement('p');
+        paragraph.textContent = text;
+        editor.appendChild(paragraph);
+        editor.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          cancelable: false,
+          inputType: 'insertText',
+          data: text,
+        }));
+      }
 
-    editor.dispatchEvent(new Event('change', { bubbles: true }));
-    return normalizeText(editor.innerText) === normalizeText(text);
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+      return normalizeText(editor.innerText) === internalEditorExpectedText;
+    } finally {
+      internalEditorWriteActive = false;
+    }
   }
 
   function clearEditorIfMatches(text) {
@@ -649,17 +653,22 @@
 
     editor.focus();
     selectEditorContents(editor);
-    internalInputUntil = Date.now() + 1000;
+    internalEditorWriteActive = true;
+    internalEditorExpectedText = '';
 
     try {
-      document.execCommand('delete', false);
-    } catch (_) {
-      editor.replaceChildren(document.createElement('p'));
-      editor.dispatchEvent(new InputEvent('input', {
-        bubbles: true,
-        inputType: 'deleteContentBackward',
-        data: null,
-      }));
+      try {
+        document.execCommand('delete', false);
+      } catch (_) {
+        editor.replaceChildren(document.createElement('p'));
+        editor.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          inputType: 'deleteContentBackward',
+          data: null,
+        }));
+      }
+    } finally {
+      internalEditorWriteActive = false;
     }
   }
 
@@ -700,7 +709,7 @@
     state.mode = 'error';
     state.notice = message;
     idleSince = 0;
-    longTaskRecheckStarted = false;
+    internalEditorExpectedText = '';
     stopMonitor();
     releaseLock();
     saveState();
@@ -774,7 +783,6 @@
 
     state.activeIndex = index;
     idleSince = 0;
-    longTaskRecheckStarted = false;
     task.status = 'sending';
     task.hasSeenStop = false;
     task.inputClearedAfterSubmit = false;
@@ -852,12 +860,12 @@
 
     if (!task.inputClearedAfterSubmit && task.submittedAt && editorEmpty) {
       task.inputClearedAfterSubmit = true;
+      internalEditorExpectedText = '';
       saveState({ render: false });
     }
 
     if (stopButton) {
       idleSince = 0;
-      longTaskRecheckStarted = false;
 
       if (!task.hasSeenStop || task.status !== 'running') {
         task.hasSeenStop = true;
@@ -872,22 +880,12 @@
     if (task.hasSeenStop) {
       if (!idleSince) {
         idleSince = Date.now();
-        longTaskRecheckStarted = false;
-        state.notice = `第 ${state.activeIndex + 1} 轮的停止按钮已消失，正在进行 3 秒初步空闲确认。`;
+        state.notice = `第 ${state.activeIndex + 1} 轮的停止按钮已消失，正在确认空闲状态。`;
         saveState();
         return;
       }
 
-      const idleElapsed = Date.now() - idleSince;
-
-      if (!longTaskRecheckStarted && idleElapsed >= IDLE_STABLE_MS) {
-        longTaskRecheckStarted = true;
-        state.notice = `第 ${state.activeIndex + 1} 轮已连续空闲 3 秒；继续观察 ${Math.round(LONG_TASK_RECHECK_MS / 1000)} 秒，防止长任务阶段切换被误判为完成。`;
-        saveState();
-        return;
-      }
-
-      if (longTaskRecheckStarted && idleElapsed >= IDLE_STABLE_MS + LONG_TASK_RECHECK_MS) {
+      if (Date.now() - idleSince >= IDLE_STABLE_MS) {
         completeActiveTask();
       }
 
@@ -903,10 +901,8 @@
     if (shortTaskFallbackReady) {
       if (!editorEmpty) {
         idleSince = 0;
-        longTaskRecheckStarted = false;
       } else if (!idleSince) {
         idleSince = Date.now();
-        longTaskRecheckStarted = false;
         state.notice = `第 ${state.activeIndex + 1} 轮未捕获到停止按钮，输入框已清空；正在确认超短任务空闲状态。`;
         saveState();
         return;
@@ -934,7 +930,6 @@
     state.activeIndex = null;
     state.nextIndex = Math.max(state.nextIndex, index + 1);
     idleSince = 0;
-    longTaskRecheckStarted = false;
     stopMonitor();
 
     if (state.nextIndex >= state.tasks.length) {
@@ -961,7 +956,7 @@
     state.mode = 'completed';
     state.notice = `全部 ${state.tasks.length} 轮任务已完成。`;
     idleSince = 0;
-    longTaskRecheckStarted = false;
+    internalEditorExpectedText = '';
     stopMonitor();
     resetDispatchTimer();
     releaseLock();
@@ -1188,7 +1183,6 @@
     if (task) {
       if (stopButton) {
         idleSince = 0;
-        longTaskRecheckStarted = false;
         task.hasSeenStop = true;
         task.status = 'running';
         state.mode = 'running';
@@ -1203,7 +1197,6 @@
         state.mode = 'running';
         state.notice = `已恢复队列；正在重新确认第 ${state.activeIndex + 1} 轮是否已经结束。`;
         idleSince = Date.now();
-        longTaskRecheckStarted = false;
         acquireLock();
         saveState();
         startMonitor();
@@ -1290,7 +1283,6 @@
 
     if (stopButton) {
       idleSince = 0;
-      longTaskRecheckStarted = false;
       task.hasSeenStop = true;
       task.status = 'running';
       state.notice = `检测到第 ${state.activeIndex + 1} 轮仍在运行；后续发送保持暂停。`;
@@ -1303,7 +1295,6 @@
     if (task.hasSeenStop) {
       task.status = 'running';
       idleSince = Date.now();
-      longTaskRecheckStarted = false;
       state.notice = `停止按钮已消失，正在重新确认第 ${state.activeIndex + 1} 轮的空闲状态；确认完成后仍保持暂停。`;
       acquireLock();
       saveState();
@@ -1353,7 +1344,7 @@
     state.mode = 'paused';
     state.notice = `第 ${index + 1} 轮已重置，将重新发送。`;
     idleSince = 0;
-    longTaskRecheckStarted = false;
+    internalEditorExpectedText = '';
     sendingEpoch += 1;
     stopMonitor();
     releaseLock();
@@ -2253,9 +2244,14 @@
   }
 
   function handleTrustedEditorInput(event) {
-    if (!event.isTrusted || Date.now() <= internalInputUntil) return;
+    if (!event.isTrusted) return;
     if (!event.target.closest?.(EDITOR_SELECTOR)) return;
     if (state.mode !== 'running' && state.mode !== 'pausing') return;
+    if (internalEditorWriteActive) return;
+
+    const editorText = normalizeText(event.target.innerText || '');
+    if (!editorText) return;
+    if (internalEditorExpectedText && editorText === internalEditorExpectedText) return;
 
     resetDispatchTimer();
     state.mode = 'paused';
