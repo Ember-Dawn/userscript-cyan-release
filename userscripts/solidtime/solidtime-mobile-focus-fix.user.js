@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         solidtime 移动端焦点修正
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.0
-// @description  在移动端阻止 solidtime 点击 Start 后自动聚焦 Description，避免弹出历史记录和软键盘；手动点击 Description 仍保持原有行为。
+// @version      0.2.0
+// @description  阻止 solidtime 点击 Start 后自动聚焦 Description，避免弹出历史记录；PC 和手机通用，手动点击 Description 仍保持原有行为。
 // @author       Ember-Dawn
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-mobile-focus-fix.user.js
@@ -16,14 +16,9 @@
 
     const TIMER_BUTTON_SELECTOR = '[data-testid="timer_button"]';
     const DESCRIPTION_SELECTOR = '[data-testid="time_entry_description"]';
-    const MOBILE_QUERY = '(max-width: 768px) and (pointer: coarse)';
-    const FOCUS_GUARD_MS = 300;
+    const FOCUS_GUARD_MS = 500;
 
     let timerButtonPressedAt = 0;
-
-    function isMobileLike() {
-        return window.matchMedia(MOBILE_QUERY).matches;
-    }
 
     function blurDescriptionIfAutoFocused() {
         const descriptionInput = document.querySelector(DESCRIPTION_SELECTOR);
@@ -35,8 +30,6 @@
     document.addEventListener(
         'click',
         (event) => {
-            if (!isMobileLike()) return;
-
             const target = event.target;
             if (!(target instanceof Element)) return;
 
@@ -50,6 +43,7 @@
             queueMicrotask(blurDescriptionIfAutoFocused);
             requestAnimationFrame(blurDescriptionIfAutoFocused);
             setTimeout(blurDescriptionIfAutoFocused, 50);
+            setTimeout(blurDescriptionIfAutoFocused, 150);
         },
         true
     );
@@ -57,7 +51,6 @@
     document.addEventListener(
         'focusin',
         (event) => {
-            if (!isMobileLike()) return;
             if (performance.now() - timerButtonPressedAt > FOCUS_GUARD_MS) return;
 
             const target = event.target;
