@@ -1,12 +1,12 @@
 // ==UserScript==
-// @name         solidtime 计时器焦点修正
+// @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.5.0
-// @description  优化 solidtime 的计时器与 Project 交互：阻止自动聚焦输入框，并将 Project 按中英混合名称自然升序排列；PC 和手机通用。
+// @version      0.6.0
+// @description  优化 solidtime 的计时器与 Project 交互：阻止非必要自动聚焦，并将 Project 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
 // @match        *://*/*
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-focus-fix.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-focus-fix.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
