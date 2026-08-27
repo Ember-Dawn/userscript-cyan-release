@@ -75,7 +75,7 @@ NocoDB Markdown 表格的实际保存、NodeView 渲染和导出规则见 [`user
 
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
-| solidtime 移动端焦点修正 | [`solidtime-mobile-focus-fix.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-mobile-focus-fix.user.js) | 阻止点击 Start 后自动聚焦 Description，避免弹出历史记录；PC 和手机通用，手动点击 Description 不受影响。 |
+| solidtime 计时器焦点修正 | [`solidtime-focus-fix.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-focus-fix.user.js) | 阻止点击 Start 后自动聚焦 Description；PC 和手机通用，手动点击 Description 不受影响。 |
 
 ### YouTube
 

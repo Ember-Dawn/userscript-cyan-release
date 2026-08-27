@@ -1,12 +1,12 @@
 // ==UserScript==
-// @name         solidtime 移动端焦点修正
+// @name         solidtime 计时器焦点修正
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
 // @version      0.2.0
 // @description  阻止 solidtime 点击 Start 后自动聚焦 Description，避免弹出历史记录；PC 和手机通用，手动点击 Description 仍保持原有行为。
 // @author       Ember-Dawn
 // @match        *://*/*
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-mobile-focus-fix.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-mobile-focus-fix.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-focus-fix.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-focus-fix.user.js
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
