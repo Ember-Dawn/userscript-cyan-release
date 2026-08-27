@@ -14,6 +14,7 @@ userscript-cyan-release/
 │  ├─ chatgpt/
 │  ├─ github/
 │  ├─ nocodb/
+│  ├─ solidtime/
 │  └─ youtube/
 └─ plugins/
    └─ musicfree/
@@ -69,6 +70,12 @@ ChatGPT 长对话优化助手的轮数定义、Fetch Proxy、悬浮设置和维�
 NocoDB 代码块工具的功能、确认交互和 ProseMirror 维护约定见 [`userscripts/nocodb/nocodb-code-tools.md`](./userscripts/nocodb/nocodb-code-tools.md)。
 
 NocoDB Markdown 表格的实际保存、NodeView 渲染和导出规则见 [`userscripts/nocodb/README.md`](./userscripts/nocodb/README.md)。NocoDB Rich Text 大纲的纯 DOM 技术说明见 [`userscripts/nocodb/nocodb-richtext-outline.md`](./userscripts/nocodb/nocodb-richtext-outline.md)。
+
+### solidtime
+
+| 中文名称 | 安装文件 | 用途 |
+|---|---|---|
+| solidtime 移动端焦点修正 | [`solidtime-mobile-focus-fix.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-mobile-focus-fix.user.js) | 在移动端阻止点击 Start 后自动聚焦 Description，避免弹出历史记录和软键盘；手动点击 Description 不受影响。 |
 
 ### YouTube
 
