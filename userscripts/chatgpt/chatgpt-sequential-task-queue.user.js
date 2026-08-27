@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.4
-// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持短任务兜底判定、草稿任务实时计数及独立会话状态。
+// @version      1.3.5
+// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持长任务二次完成确认、短任务兜底判定及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -25,7 +25,7 @@
 
 2. 顺序执行
  - 脚本把命令写入 ChatGPT 的 ProseMirror 输入框并点击发送按钮。
- - 每轮优先观察 data-testid="stop-button"；看到停止按钮后，等待其消失并保持空闲 3 秒，再按设置的额外秒数等待后发送下一轮。
+ - 每轮优先观察 data-testid="stop-button"；看到停止按钮后，停止按钮消失需先稳定 3 秒，再额外观察 12 秒；期间若停止按钮重新出现则恢复运行判定，连续空闲满 15 秒后才按设置的额外秒数等待并发送下一轮。
  - 若发送后输入框已确认清空，但前 8 秒始终未捕获停止按钮，则在输入框继续为空且停止按钮持续不存在 3 秒后，按超短任务已完成处理。
  - 脚本不读取、提取或判断回答正文，只观察输入框、停止按钮和当前会话地址。
 
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.4';
+  const VERSION = '1.3.5';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -78,6 +78,7 @@
   const SEND_BUTTON_TIMEOUT_MS = 8000;
   const START_GRACE_MS = 8000;
   const IDLE_STABLE_MS = 3000;
+  const LONG_TASK_RECHECK_MS = 12000;
   const DEFAULT_BETWEEN_TASK_DELAY_MS = 3000;
   const LOCK_STALE_MS = 15000;
   const LOCK_HEARTBEAT_MS = 5000;
@@ -108,6 +109,7 @@
   let ownedLockConversationId = undefined;
   let ownedLockKey = null;
   let idleSince = 0;
+  let longTaskRecheckStarted = false;
   let sendingEpoch = 0;
   let internalInputUntil = 0;
   let locationSnapshot = location.href;
@@ -698,6 +700,7 @@
     state.mode = 'error';
     state.notice = message;
     idleSince = 0;
+    longTaskRecheckStarted = false;
     stopMonitor();
     releaseLock();
     saveState();
@@ -770,6 +773,8 @@
     const epoch = ++sendingEpoch;
 
     state.activeIndex = index;
+    idleSince = 0;
+    longTaskRecheckStarted = false;
     task.status = 'sending';
     task.hasSeenStop = false;
     task.inputClearedAfterSubmit = false;
@@ -852,6 +857,7 @@
 
     if (stopButton) {
       idleSince = 0;
+      longTaskRecheckStarted = false;
 
       if (!task.hasSeenStop || task.status !== 'running') {
         task.hasSeenStop = true;
@@ -866,12 +872,22 @@
     if (task.hasSeenStop) {
       if (!idleSince) {
         idleSince = Date.now();
-        state.notice = `第 ${state.activeIndex + 1} 轮的停止按钮已消失，正在确认空闲状态。`;
+        longTaskRecheckStarted = false;
+        state.notice = `第 ${state.activeIndex + 1} 轮的停止按钮已消失，正在进行 3 秒初步空闲确认。`;
         saveState();
         return;
       }
 
-      if (Date.now() - idleSince >= IDLE_STABLE_MS) {
+      const idleElapsed = Date.now() - idleSince;
+
+      if (!longTaskRecheckStarted && idleElapsed >= IDLE_STABLE_MS) {
+        longTaskRecheckStarted = true;
+        state.notice = `第 ${state.activeIndex + 1} 轮已连续空闲 3 秒；继续观察 ${Math.round(LONG_TASK_RECHECK_MS / 1000)} 秒，防止长任务阶段切换被误判为完成。`;
+        saveState();
+        return;
+      }
+
+      if (longTaskRecheckStarted && idleElapsed >= IDLE_STABLE_MS + LONG_TASK_RECHECK_MS) {
         completeActiveTask();
       }
 
@@ -887,8 +903,10 @@
     if (shortTaskFallbackReady) {
       if (!editorEmpty) {
         idleSince = 0;
+        longTaskRecheckStarted = false;
       } else if (!idleSince) {
         idleSince = Date.now();
+        longTaskRecheckStarted = false;
         state.notice = `第 ${state.activeIndex + 1} 轮未捕获到停止按钮，输入框已清空；正在确认超短任务空闲状态。`;
         saveState();
         return;
@@ -916,6 +934,7 @@
     state.activeIndex = null;
     state.nextIndex = Math.max(state.nextIndex, index + 1);
     idleSince = 0;
+    longTaskRecheckStarted = false;
     stopMonitor();
 
     if (state.nextIndex >= state.tasks.length) {
@@ -942,6 +961,7 @@
     state.mode = 'completed';
     state.notice = `全部 ${state.tasks.length} 轮任务已完成。`;
     idleSince = 0;
+    longTaskRecheckStarted = false;
     stopMonitor();
     resetDispatchTimer();
     releaseLock();
@@ -1167,6 +1187,8 @@
 
     if (task) {
       if (stopButton) {
+        idleSince = 0;
+        longTaskRecheckStarted = false;
         task.hasSeenStop = true;
         task.status = 'running';
         state.mode = 'running';
@@ -1179,8 +1201,9 @@
 
       if (task.hasSeenStop) {
         state.mode = 'running';
-        state.notice = `已恢复队列；正在确认第 ${state.activeIndex + 1} 轮是否已经结束。`;
+        state.notice = `已恢复队列；正在重新确认第 ${state.activeIndex + 1} 轮是否已经结束。`;
         idleSince = Date.now();
+        longTaskRecheckStarted = false;
         acquireLock();
         saveState();
         startMonitor();
@@ -1266,6 +1289,8 @@
     state.mode = 'paused';
 
     if (stopButton) {
+      idleSince = 0;
+      longTaskRecheckStarted = false;
       task.hasSeenStop = true;
       task.status = 'running';
       state.notice = `检测到第 ${state.activeIndex + 1} 轮仍在运行；后续发送保持暂停。`;
@@ -1278,7 +1303,8 @@
     if (task.hasSeenStop) {
       task.status = 'running';
       idleSince = Date.now();
-      state.notice = `停止按钮已消失，正在确认第 ${state.activeIndex + 1} 轮的空闲状态；确认后仍保持暂停。`;
+      longTaskRecheckStarted = false;
+      state.notice = `停止按钮已消失，正在重新确认第 ${state.activeIndex + 1} 轮的空闲状态；确认完成后仍保持暂停。`;
       acquireLock();
       saveState();
       startMonitor();
@@ -1327,6 +1353,7 @@
     state.mode = 'paused';
     state.notice = `第 ${index + 1} 轮已重置，将重新发送。`;
     idleSince = 0;
+    longTaskRecheckStarted = false;
     sendingEpoch += 1;
     stopMonitor();
     releaseLock();
