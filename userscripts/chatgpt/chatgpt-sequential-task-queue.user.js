@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.7
+// @version      1.3.8
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、统一稳定写入及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -24,7 +24,7 @@
  - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
 
 2. 顺序执行
- - 脚本通过 ProseMirror 的粘贴处理路径统一写入 Prompt，等待编辑器完成同步后再点击发送按钮。
+ - 脚本通过 ProseMirror 的粘贴处理路径统一写入 Prompt，等待输入框出现内容并完成同步后再点击发送按钮。
  - 每轮优先观察 data-testid="stop-button"；看到停止按钮后，等待其消失并保持空闲 3 秒，再按设置的额外秒数等待后发送下一轮。
  - 若发送后输入框已确认清空，但前 8 秒始终未捕获停止按钮，则在输入框继续为空且停止按钮持续不存在 3 秒后，按超短任务已完成处理。
  - 脚本不读取、提取或判断回答正文，只观察输入框、停止按钮和当前会话地址。
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.7';
+  const VERSION = '1.3.8';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -76,6 +76,8 @@
   const MONITOR_INTERVAL_MS = 400;
   const START_TIMEOUT_MS = 30000;
   const SEND_BUTTON_TIMEOUT_MS = 8000;
+  const EDITOR_WRITE_TIMEOUT_MS = 5000;
+  const EDITOR_WRITE_POLL_MS = 50;
   const START_GRACE_MS = 8000;
   const IDLE_STABLE_MS = 3000;
   const DEFAULT_BETWEEN_TASK_DELAY_MS = 3000;
@@ -639,10 +641,16 @@
       });
 
       editor.dispatchEvent(pasteEvent);
-      await waitForEditorSettlement();
 
-      const editorText = normalizeText(editor.innerText);
-      return editorText === internalEditorExpectedText;
+      const populated = await waitFor(
+        () => editor.isConnected && (editor.textContent || '').length > 0,
+        EDITOR_WRITE_TIMEOUT_MS,
+        EDITOR_WRITE_POLL_MS
+      );
+      if (!populated) return false;
+
+      await waitForEditorSettlement();
+      return editor.isConnected && (editor.textContent || '').length > 0;
     } catch (_) {
       return false;
     } finally {
