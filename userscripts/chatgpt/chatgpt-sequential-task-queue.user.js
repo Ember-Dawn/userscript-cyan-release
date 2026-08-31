@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.3.6
-// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、脚本写入防误暂停及独立会话状态。
+// @version      1.3.7
+// @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、统一稳定写入及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -24,7 +24,7 @@
  - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
 
 2. 顺序执行
- - 脚本把命令写入 ChatGPT 的 ProseMirror 输入框并点击发送按钮。
+ - 脚本通过 ProseMirror 的粘贴处理路径统一写入 Prompt，等待编辑器完成同步后再点击发送按钮。
  - 每轮优先观察 data-testid="stop-button"；看到停止按钮后，等待其消失并保持空闲 3 秒，再按设置的额外秒数等待后发送下一轮。
  - 若发送后输入框已确认清空，但前 8 秒始终未捕获停止按钮，则在输入框继续为空且停止按钮持续不存在 3 秒后，按超短任务已完成处理。
  - 脚本不读取、提取或判断回答正文，只观察输入框、停止按钮和当前会话地址。
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.3.6';
+  const VERSION = '1.3.7';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -612,36 +612,39 @@
     selection?.addRange(range);
   }
 
-  function setEditorText(editor, text) {
+  function waitForEditorSettlement() {
+    return new Promise((resolve) => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          window.setTimeout(resolve, 0);
+        });
+      });
+    });
+  }
+
+  async function setEditorText(editor, text) {
     editor.focus();
     selectEditorContents(editor);
     internalEditorWriteActive = true;
     internalEditorExpectedText = normalizeText(text);
 
-    let inserted = false;
-
     try {
-      try {
-        inserted = document.execCommand('insertText', false, text);
-      } catch (_) {
-        inserted = false;
-      }
+      const clipboardData = new DataTransfer();
+      clipboardData.setData('text/plain', text);
 
-      if (!inserted || normalizeText(editor.innerText) !== internalEditorExpectedText) {
-        editor.replaceChildren();
-        const paragraph = document.createElement('p');
-        paragraph.textContent = text;
-        editor.appendChild(paragraph);
-        editor.dispatchEvent(new InputEvent('input', {
-          bubbles: true,
-          cancelable: false,
-          inputType: 'insertText',
-          data: text,
-        }));
-      }
+      const pasteEvent = new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData,
+      });
 
-      editor.dispatchEvent(new Event('change', { bubbles: true }));
-      return normalizeText(editor.innerText) === internalEditorExpectedText;
+      editor.dispatchEvent(pasteEvent);
+      await waitForEditorSettlement();
+
+      const editorText = normalizeText(editor.innerText);
+      return editorText === internalEditorExpectedText;
+    } catch (_) {
+      return false;
     } finally {
       internalEditorWriteActive = false;
     }
@@ -791,7 +794,7 @@
     state.notice = `正在发送第 ${index + 1} / ${state.tasks.length} 轮。`;
     saveState();
 
-    const inserted = setEditorText(editor, task.text);
+    const inserted = await setEditorText(editor, task.text);
     if (!inserted) {
       markError(`第 ${index + 1} 轮写入输入框失败。`, { taskStatus: 'failed' });
       return;
