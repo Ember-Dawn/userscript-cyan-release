@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @version      0.1.0
-// @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用深色悬浮播放器播放，并提供进度与键盘快捷键。
+// @version      0.2.0
+// @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
 // @run-at       document-start
@@ -23,6 +23,9 @@
 
   const PLAYER_ID = 'tm-nocodb-audio-player';
   const STYLE_ID = 'tm-nocodb-audio-player-style';
+  const POSITION_STORAGE_KEY = 'tm-nocodb-audio-player-position-v1';
+  const DEFAULT_HINT = 'Space 播放/暂停 · ←/→ ±5s · ↑/↓ 倍速';
+  const VIEWPORT_MARGIN = 8;
 
   let player = null;
   let audio = null;
@@ -36,6 +39,10 @@
   let speedIndex = DEFAULT_SPEED_INDEX;
   let currentUrl = '';
   let draggingProgress = false;
+  let draggingPlayer = false;
+  let dragPointerId = null;
+  let dragOffsetX = 0;
+  let dragOffsetY = 0;
 
   const nativeOpen = window.open.bind(window);
 
@@ -86,13 +93,13 @@
         z-index: 2147483000;
         width: min(390px, calc(100vw - 32px));
         box-sizing: border-box;
-        padding: 14px;
+        padding: 10px 12px 11px;
         border: 1px solid rgba(255, 255, 255, 0.09);
         border-radius: 14px;
         background: rgba(24, 26, 31, 0.97);
         color: #f4f5f7;
         box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
-        font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         backdrop-filter: blur(10px);
       }
 
@@ -102,9 +109,16 @@
 
       #${PLAYER_ID} .tm-nap-header {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 10px;
         min-width: 0;
+        cursor: grab;
+        user-select: none;
+        touch-action: none;
+      }
+
+      #${PLAYER_ID}.tm-nap-dragging .tm-nap-header {
+        cursor: grabbing;
       }
 
       #${PLAYER_ID} .tm-nap-title-wrap {
@@ -121,11 +135,12 @@
       }
 
       #${PLAYER_ID} .tm-nap-status {
-        min-height: 16px;
-        margin-top: 2px;
+        min-height: 14px;
+        margin-top: 1px;
         overflow: hidden;
-        color: #9ea4ae;
-        font-size: 11px;
+        color: #aeb4bf;
+        font-size: 10.5px;
+        font-weight: 500;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
@@ -166,7 +181,7 @@
         grid-template-columns: 38px 42px minmax(0, 1fr) 42px 58px;
         align-items: center;
         gap: 8px;
-        margin-top: 12px;
+        margin-top: 7px;
       }
 
       #${PLAYER_ID} .tm-nap-button {
@@ -195,15 +210,80 @@
         font-size: 12px;
         font-variant-numeric: tabular-nums;
       }
-
-      #${PLAYER_ID} .tm-nap-hint {
-        margin-top: 9px;
-        color: #777e89;
-        font-size: 10px;
-        text-align: center;
-      }
     `;
     document.head.appendChild(style);
+  }
+
+  function clampPlayerPosition(left, top) {
+    if (!player) return { left, top };
+    const width = player.offsetWidth;
+    const height = player.offsetHeight;
+    const maxLeft = Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN);
+    const maxTop = Math.max(VIEWPORT_MARGIN, window.innerHeight - height - VIEWPORT_MARGIN);
+
+    return {
+      left: Math.min(Math.max(VIEWPORT_MARGIN, left), maxLeft),
+      top: Math.min(Math.max(VIEWPORT_MARGIN, top), maxTop),
+    };
+  }
+
+  function applyPlayerPosition(left, top) {
+    if (!player) return;
+    const next = clampPlayerPosition(left, top);
+    player.style.left = `${next.left}px`;
+    player.style.top = `${next.top}px`;
+    player.style.right = 'auto';
+    player.style.bottom = 'auto';
+  }
+
+  function savePlayerPosition() {
+    if (!player || !player.style.left || !player.style.top) return;
+    try {
+      localStorage.setItem(POSITION_STORAGE_KEY, JSON.stringify({
+        left: Number.parseFloat(player.style.left),
+        top: Number.parseFloat(player.style.top),
+      }));
+    } catch {
+      // Ignore storage failures; dragging should still work for the current page.
+    }
+  }
+
+  function restorePlayerPosition() {
+    if (!player) return;
+    try {
+      const raw = localStorage.getItem(POSITION_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (!Number.isFinite(saved?.left) || !Number.isFinite(saved?.top)) return;
+      applyPlayerPosition(saved.left, saved.top);
+    } catch {
+      // Keep the default bottom-right position if saved data is unavailable.
+    }
+  }
+
+  function startPlayerDrag(event) {
+    if (!player || event.button !== 0 || event.target.closest('button, input')) return;
+    const rect = player.getBoundingClientRect();
+    draggingPlayer = true;
+    dragPointerId = event.pointerId;
+    dragOffsetX = event.clientX - rect.left;
+    dragOffsetY = event.clientY - rect.top;
+    player.classList.add('tm-nap-dragging');
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  }
+
+  function movePlayerDrag(event) {
+    if (!draggingPlayer || event.pointerId !== dragPointerId) return;
+    applyPlayerPosition(event.clientX - dragOffsetX, event.clientY - dragOffsetY);
+  }
+
+  function endPlayerDrag(event) {
+    if (!draggingPlayer || event.pointerId !== dragPointerId) return;
+    draggingPlayer = false;
+    dragPointerId = null;
+    player?.classList.remove('tm-nap-dragging');
+    savePlayerPosition();
   }
 
   function ensurePlayer() {
@@ -219,7 +299,7 @@
       <div class="tm-nap-header">
         <div class="tm-nap-title-wrap">
           <div class="tm-nap-title">Audio</div>
-          <div class="tm-nap-status">Ready</div>
+          <div class="tm-nap-status">${DEFAULT_HINT}</div>
         </div>
         <button type="button" class="tm-nap-close" title="关闭播放器" aria-label="关闭播放器">×</button>
       </div>
@@ -230,7 +310,6 @@
         <span class="tm-nap-time tm-nap-duration">00:00</span>
         <button type="button" class="tm-nap-speed" title="点击切换倍速">1.00×</button>
       </div>
-      <div class="tm-nap-hint">Space 播放/暂停 · ←/→ ±5s · ↑/↓ 倍速</div>
     `;
 
     document.documentElement.appendChild(player);
@@ -245,6 +324,12 @@
 
     audio = document.createElement('audio');
     audio.preload = 'metadata';
+
+    const header = player.querySelector('.tm-nap-header');
+    header.addEventListener('pointerdown', startPlayerDrag);
+    header.addEventListener('pointermove', movePlayerDrag);
+    header.addEventListener('pointerup', endPlayerDrag);
+    header.addEventListener('pointercancel', endPlayerDrag);
 
     player.querySelector('.tm-nap-close').addEventListener('click', closePlayer);
     playButton.addEventListener('click', togglePlayback);
@@ -277,15 +362,25 @@
     audio.addEventListener('pause', updatePlayState);
     audio.addEventListener('ended', updatePlayState);
     audio.addEventListener('waiting', () => setStatus('Loading…'));
-    audio.addEventListener('playing', () => setStatus(`${SPEED_STEPS[speedIndex].toFixed(2)}×`));
+    audio.addEventListener('playing', restoreHint);
     audio.addEventListener('error', () => {
       updatePlayState();
       setStatus('Audio unavailable');
+    });
+
+    window.addEventListener('resize', () => {
+      if (!player?.style.left || !player?.style.top) return;
+      applyPlayerPosition(Number.parseFloat(player.style.left), Number.parseFloat(player.style.top));
+      savePlayerPosition();
     });
   }
 
   function setStatus(text) {
     if (statusEl) statusEl.textContent = text;
+  }
+
+  function restoreHint() {
+    setStatus(DEFAULT_HINT);
   }
 
   function updatePlayState() {
@@ -294,8 +389,7 @@
     playButton.setAttribute('aria-label', audio.paused ? '播放' : '暂停');
     playButton.title = audio.paused ? '播放' : '暂停';
 
-    if (audio.ended) setStatus('Ended');
-    else if (audio.paused && currentUrl) setStatus(`${SPEED_STEPS[speedIndex].toFixed(2)}× · Paused`);
+    if (audio.ended || (audio.paused && currentUrl)) restoreHint();
   }
 
   function updateTimeline() {
@@ -345,7 +439,7 @@
     const speed = SPEED_STEPS[speedIndex];
     audio.playbackRate = speed;
     speedButton.textContent = `${speed.toFixed(2)}×`;
-    setStatus(audio.paused ? `${speed.toFixed(2)}× · Paused` : `${speed.toFixed(2)}×`);
+    restoreHint();
   }
 
   function seekBy(seconds) {
@@ -362,7 +456,7 @@
     currentUrl = '';
     player.hidden = true;
     titleEl.textContent = 'Audio';
-    setStatus('Ready');
+    restoreHint();
     currentTimeEl.textContent = '00:00';
     durationEl.textContent = '00:00';
     progress.value = '0';
@@ -374,6 +468,10 @@
 
     const normalizedUrl = new URL(String(url), location.href).href;
     player.hidden = false;
+
+    if (!player.style.left && !player.style.top) {
+      requestAnimationFrame(restorePlayerPosition);
+    }
 
     if (normalizedUrl === currentUrl) {
       togglePlayback();
