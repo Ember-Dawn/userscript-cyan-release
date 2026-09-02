@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @version      0.2.0
+// @version      0.3.0
 // @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -17,8 +17,10 @@
 
   const AUDIO_ORIGIN = 'https://media.380782744.xyz';
   const AUDIO_PATH_PREFIX = '/media/audio/';
-  const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
-  const DEFAULT_SPEED_INDEX = SPEED_STEPS.indexOf(1);
+  const MIN_SPEED = 0.5;
+  const MAX_SPEED = 2.0;
+  const SPEED_STEP = 0.1;
+  const DEFAULT_SPEED = 1.0;
   const SEEK_SECONDS = 5;
 
   const PLAYER_ID = 'tm-nocodb-audio-player';
@@ -35,8 +37,8 @@
   let progress = null;
   let currentTimeEl = null;
   let durationEl = null;
-  let speedButton = null;
-  let speedIndex = DEFAULT_SPEED_INDEX;
+  let speedDisplay = null;
+  let currentSpeed = DEFAULT_SPEED;
   let currentUrl = '';
   let draggingProgress = false;
   let draggingPlayer = false;
@@ -146,8 +148,7 @@
       }
 
       #${PLAYER_ID} .tm-nap-close,
-      #${PLAYER_ID} .tm-nap-button,
-      #${PLAYER_ID} .tm-nap-speed {
+      #${PLAYER_ID} .tm-nap-button {
         border: 0;
         color: #eef0f4;
         background: #343841;
@@ -156,14 +157,12 @@
       }
 
       #${PLAYER_ID} .tm-nap-close:hover,
-      #${PLAYER_ID} .tm-nap-button:hover,
-      #${PLAYER_ID} .tm-nap-speed:hover {
+      #${PLAYER_ID} .tm-nap-button:hover {
         background: #444955;
       }
 
       #${PLAYER_ID} .tm-nap-close:active,
-      #${PLAYER_ID} .tm-nap-button:active,
-      #${PLAYER_ID} .tm-nap-speed:active {
+      #${PLAYER_ID} .tm-nap-button:active {
         transform: translateY(1px);
       }
 
@@ -176,9 +175,19 @@
         line-height: 28px;
       }
 
+      #${PLAYER_ID} .tm-nap-speed-display {
+        flex: 0 0 auto;
+        min-width: 34px;
+        color: #c7ccd5;
+        font-size: 11.5px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
+
       #${PLAYER_ID} .tm-nap-controls {
         display: grid;
-        grid-template-columns: 38px 42px minmax(0, 1fr) 42px 58px;
+        grid-template-columns: 38px 42px minmax(0, 1fr) 42px;
         align-items: center;
         gap: 8px;
         margin-top: 7px;
@@ -204,12 +213,6 @@
         cursor: pointer;
       }
 
-      #${PLAYER_ID} .tm-nap-speed {
-        height: 30px;
-        border-radius: 8px;
-        font-size: 12px;
-        font-variant-numeric: tabular-nums;
-      }
     `;
     document.head.appendChild(style);
   }
@@ -295,12 +298,14 @@
     player.id = PLAYER_ID;
     player.hidden = true;
     player.setAttribute('aria-label', 'NocoDB 音频播放器');
+    player.tabIndex = 0;
     player.innerHTML = `
       <div class="tm-nap-header">
         <div class="tm-nap-title-wrap">
           <div class="tm-nap-title">Audio</div>
           <div class="tm-nap-status">${DEFAULT_HINT}</div>
         </div>
+        <span class="tm-nap-speed-display" aria-label="当前倍速">1.0×</span>
         <button type="button" class="tm-nap-close" title="关闭播放器" aria-label="关闭播放器">×</button>
       </div>
       <div class="tm-nap-controls">
@@ -308,7 +313,6 @@
         <span class="tm-nap-time tm-nap-current">00:00</span>
         <input class="tm-nap-progress" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度">
         <span class="tm-nap-time tm-nap-duration">00:00</span>
-        <button type="button" class="tm-nap-speed" title="点击切换倍速">1.00×</button>
       </div>
     `;
 
@@ -320,7 +324,7 @@
     progress = player.querySelector('.tm-nap-progress');
     currentTimeEl = player.querySelector('.tm-nap-current');
     durationEl = player.querySelector('.tm-nap-duration');
-    speedButton = player.querySelector('.tm-nap-speed');
+    speedDisplay = player.querySelector('.tm-nap-speed-display');
 
     audio = document.createElement('audio');
     audio.preload = 'metadata';
@@ -333,7 +337,6 @@
 
     player.querySelector('.tm-nap-close').addEventListener('click', closePlayer);
     playButton.addEventListener('click', togglePlayback);
-    speedButton.addEventListener('click', () => changeSpeed(1));
 
     progress.addEventListener('pointerdown', () => {
       draggingProgress = true;
@@ -435,10 +438,10 @@
 
   function changeSpeed(direction) {
     if (!audio) return;
-    speedIndex = Math.max(0, Math.min(SPEED_STEPS.length - 1, speedIndex + direction));
-    const speed = SPEED_STEPS[speedIndex];
-    audio.playbackRate = speed;
-    speedButton.textContent = `${speed.toFixed(2)}×`;
+    const next = currentSpeed + (direction * SPEED_STEP);
+    currentSpeed = Math.round(Math.max(MIN_SPEED, Math.min(MAX_SPEED, next)) * 10) / 10;
+    audio.playbackRate = currentSpeed;
+    speedDisplay.textContent = `${currentSpeed.toFixed(1)}×`;
     restoreHint();
   }
 
@@ -480,13 +483,13 @@
 
     currentUrl = normalizedUrl;
     titleEl.textContent = filenameFromUrl(normalizedUrl);
-    speedIndex = DEFAULT_SPEED_INDEX;
-    speedButton.textContent = '1.00×';
+    currentSpeed = DEFAULT_SPEED;
+    speedDisplay.textContent = '1.0×';
     setStatus('Loading…');
 
     audio.pause();
     audio.src = normalizedUrl;
-    audio.playbackRate = SPEED_STEPS[speedIndex];
+    audio.playbackRate = currentSpeed;
     audio.load();
     void safePlay();
   }
@@ -499,7 +502,18 @@
   }
 
   document.addEventListener('keydown', (event) => {
-    if (!currentUrl || player?.hidden || isEditableTarget(event.target)) return;
+    if (!currentUrl || player?.hidden) return;
+
+    if (event.key === 'Escape') {
+      if (player.contains(document.activeElement)) {
+        closePlayer();
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+
+    if (isEditableTarget(event.target)) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
 
     let handled = true;
