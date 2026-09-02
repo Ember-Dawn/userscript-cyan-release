@@ -63,13 +63,14 @@ ChatGPT 长对话优化助手的轮数定义、Fetch Proxy、悬浮设置和维�
 | NocoDB 代码块工具 | [`nocodb-code-tools.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-tools.user.js) | 为 Rich Text 代码块提供悬浮复制和带确认的安全清空功能。 |
 | NocoDB 彩虹标题 | [`nocodb-rainbow-headings.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-rainbow-headings.user.js) | 为 Rich Text 标题应用不同颜色。 |
 | NocoDB LongText 字体改色 | [`nocodb-longtext-color.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-longtext-color.user.js) | 为特定富文本内容应用颜色。 |
+| NocoDB 音频播放器 | [`nocodb-audio-player.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js) | 接管指定 Media Manager MP3 Button，在 NocoDB 页面内显示可拖动的深色悬浮播放器，并提供进度、倍速和快捷键控制。 |
 | NocoDB Markdown 表格 | [`nocodb-markdown-table.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js) | 自动识别 Markdown 表格，并提供表格渲染、单元格编辑及行列增删。 |
 | NocoDB Rich Text Markdown 导出 | [`nocodb-richtext-markdown-export.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js) | 将当前 Rich Text 编辑器导出为普通 Markdown，并通过“切换 TOC”按钮锚点定位导出按钮。 |
 | NocoDB Rich Text 大纲 | [`nocodb-richtext-outline.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js) | 以纯 DOM 旁路方式提供可滚动、可调宽度的 H1-H6 TOC。 |
 
 NocoDB 代码块工具的功能、确认交互和 ProseMirror 维护约定见 [`userscripts/nocodb/nocodb-code-tools.md`](./userscripts/nocodb/nocodb-code-tools.md)。
 
-NocoDB Markdown 表格的实际保存、NodeView 渲染和导出规则见 [`userscripts/nocodb/README.md`](./userscripts/nocodb/README.md)。NocoDB Rich Text 大纲的纯 DOM 技术说明见 [`userscripts/nocodb/nocodb-richtext-outline.md`](./userscripts/nocodb/nocodb-richtext-outline.md)。
+NocoDB Markdown 表格的实际保存、NodeView 渲染和导出规则见 [`userscripts/nocodb/README.md`](./userscripts/nocodb/README.md)。NocoDB Rich Text 大纲的纯 DOM 技术说明见 [`userscripts/nocodb/nocodb-richtext-outline.md`](./userscripts/nocodb/nocodb-richtext-outline.md)。NocoDB 音频播放器的 URL 拦截、悬浮播放器和快捷键说明见 [`userscripts/nocodb/nocodb-audio-player.md`](./userscripts/nocodb/nocodb-audio-player.md)。
 
 ### solidtime
 
