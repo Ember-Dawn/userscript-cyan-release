@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.6.0
-// @description  优化 solidtime 的计时器与 Project 交互：阻止非必要自动聚焦，并将 Project 按中英混合名称自然升序排列；PC 和手机通用。
+// @version      0.7.0
+// @description  优化 solidtime 的计时器与 Project/Task 交互：阻止非必要自动聚焦，并将 Project 和 Task 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
 // @match        *://*/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
@@ -17,11 +17,23 @@
     const TIMER_BUTTON_SELECTOR = '[data-testid="timer_button"]';
     const DESCRIPTION_SELECTOR = '[data-testid="time_entry_description"]';
     const PROJECT_SEARCH_SELECTOR = '[data-testid="client_dropdown_search"]';
-    const PROJECT_INDEX_PATH_RE = /\/api\/v1\/organizations\/[^/]+\/projects\/?$/;
     const FOCUS_GUARD_MS = 500;
     const MANUAL_PROJECT_SEARCH_GUARD_MS = 800;
 
-    const projectNameCollator = new Intl.Collator(['zh-CN-u-co-pinyin', 'en'], {
+    const SORTABLE_INDEX_CONFIGS = [
+        {
+            pathPattern: /\/api\/v1\/organizations\/[^/]+\/projects\/?$/,
+            requiredParam: ['archived', 'all'],
+            label: 'Project',
+        },
+        {
+            pathPattern: /\/api\/v1\/organizations\/[^/]+\/tasks\/?$/,
+            requiredParam: ['done', 'all'],
+            label: 'Task',
+        },
+    ];
+
+    const itemNameCollator = new Intl.Collator(['zh-CN-u-co-pinyin', 'en'], {
         usage: 'sort',
         sensitivity: 'base',
         numeric: true,
@@ -43,36 +55,42 @@
         }
     }
 
-    function isProjectIndexUrl(url, method = 'GET') {
-        if (String(method).toUpperCase() !== 'GET') return false;
-        if (!url || url.origin !== location.origin) return false;
-        if (!PROJECT_INDEX_PATH_RE.test(url.pathname)) return false;
-        return url.searchParams.get('archived') === 'all';
+    function getSortableIndexConfig(url, method = 'GET') {
+        if (String(method).toUpperCase() !== 'GET') return null;
+        if (!url || url.origin !== location.origin) return null;
+
+        return (
+            SORTABLE_INDEX_CONFIGS.find((config) => {
+                if (!config.pathPattern.test(url.pathname)) return false;
+                const [paramName, paramValue] = config.requiredParam;
+                return url.searchParams.get(paramName) === paramValue;
+            }) ?? null
+        );
     }
 
-    function compareProjectsByName(a, b) {
+    function compareItemsByName(a, b) {
         const nameA = typeof a?.name === 'string' ? a.name : '';
         const nameB = typeof b?.name === 'string' ? b.name : '';
-        const nameResult = projectNameCollator.compare(nameA, nameB);
+        const nameResult = itemNameCollator.compare(nameA, nameB);
         if (nameResult !== 0) return nameResult;
 
         return String(a?.id ?? '').localeCompare(String(b?.id ?? ''));
     }
 
-    function buildSortedProjectPayload(firstPayload, allProjects) {
-        const sortedProjects = [...allProjects].sort(compareProjectsByName);
+    function buildSortedPayload(firstPayload, allItems) {
+        const sortedItems = [...allItems].sort(compareItemsByName);
 
         return {
             ...firstPayload,
-            data: sortedProjects,
+            data: sortedItems,
             meta: {
                 ...firstPayload.meta,
                 current_page: 1,
-                from: sortedProjects.length > 0 ? 1 : null,
+                from: sortedItems.length > 0 ? 1 : null,
                 last_page: 1,
-                per_page: sortedProjects.length,
-                to: sortedProjects.length > 0 ? sortedProjects.length : null,
-                total: sortedProjects.length,
+                per_page: sortedItems.length,
+                to: sortedItems.length > 0 ? sortedItems.length : null,
+                total: sortedItems.length,
             },
             links: firstPayload.links
                 ? {
@@ -86,7 +104,7 @@
         };
     }
 
-    function fetchProjectPageWithNativeXhr(baseUrl, page, state, sourceXhr) {
+    function fetchPageWithNativeXhr(baseUrl, page, state, sourceXhr, label) {
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             const pageUrl = new URL(baseUrl.href);
@@ -107,14 +125,14 @@
 
             xhr.onload = () => {
                 if (xhr.status < 200 || xhr.status >= 300) {
-                    reject(new Error(`Project page ${page} returned ${xhr.status}`));
+                    reject(new Error(`${label} page ${page} returned ${xhr.status}`));
                     return;
                 }
 
                 try {
                     const payload = JSON.parse(xhr.responseText);
                     if (!Array.isArray(payload?.data)) {
-                        reject(new Error(`Project page ${page} has invalid data`));
+                        reject(new Error(`${label} page ${page} has invalid data`));
                         return;
                     }
                     resolve(payload);
@@ -122,9 +140,9 @@
                     reject(error);
                 }
             };
-            xhr.onerror = () => reject(new Error(`Project page ${page} failed`));
-            xhr.ontimeout = () => reject(new Error(`Project page ${page} timed out`));
-            xhr.onabort = () => reject(new Error(`Project page ${page} was aborted`));
+            xhr.onerror = () => reject(new Error(`${label} page ${page} failed`));
+            xhr.ontimeout = () => reject(new Error(`${label} page ${page} timed out`));
+            xhr.onabort = () => reject(new Error(`${label} page ${page} was aborted`));
 
             nativeXhrSend.call(xhr, null);
         });
@@ -165,7 +183,7 @@
         return true;
     }
 
-    function installProjectSortXhrProxy() {
+    function installNaturalSortXhrProxy() {
         XMLHttpRequest.prototype.open = function (method, url, ...rest) {
             const parsedUrl = getUrl(url);
             xhrState.set(this, {
@@ -186,8 +204,9 @@
             const state = xhrState.get(this);
             const requestUrl = state?.url;
             const page = Number(requestUrl?.searchParams.get('page') || '1');
+            const sortConfig = state ? getSortableIndexConfig(requestUrl, state.method) : null;
 
-            if (!state || !isProjectIndexUrl(requestUrl, state.method) || page !== 1) {
+            if (!state || !sortConfig || page !== 1) {
                 return nativeXhrSend.apply(this, args);
             }
 
@@ -216,20 +235,21 @@
                 }
 
                 const lastPage = Number(firstPayload.meta.last_page) || 1;
-                const allProjects = [...firstPayload.data];
+                const allItems = [...firstPayload.data];
 
                 try {
                     for (let nextPage = 2; nextPage <= lastPage; nextPage += 1) {
-                        const pagePayload = await fetchProjectPageWithNativeXhr(
+                        const pagePayload = await fetchPageWithNativeXhr(
                             requestUrl,
                             nextPage,
                             state,
-                            xhr
+                            xhr,
+                            sortConfig.label
                         );
-                        allProjects.push(...pagePayload.data);
+                        allItems.push(...pagePayload.data);
                     }
 
-                    const sortedPayload = buildSortedProjectPayload(firstPayload, allProjects);
+                    const sortedPayload = buildSortedPayload(firstPayload, allItems);
                     overrideXhrJsonResponse(xhr, sortedPayload);
                 } catch {
                     // 任何额外分页或响应覆盖失败时，保持 solidtime 原始响应，不阻断正常使用。
@@ -242,7 +262,7 @@
         };
     }
 
-    installProjectSortXhrProxy();
+    installNaturalSortXhrProxy();
 
     function blurDescriptionIfAutoFocused() {
         const descriptionInput = document.querySelector(DESCRIPTION_SELECTOR);

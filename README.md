@@ -76,9 +76,9 @@ NocoDB Markdown 表格的实际保存、NodeView 渲染和导出规则见 [`user
 
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
-| solidtime 交互增强助手 | [`solidtime-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js) | 优化计时器与 Project 交互，包括抑制非必要自动聚焦和 Project 中英混合自然升序；PC 和手机通用。 |
+| solidtime 交互增强助手 | [`solidtime-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js) | 优化计时器与 Project/Task 交互，包括抑制非必要自动聚焦，以及 Project 和 Task 的中英混合自然升序；PC 和手机通用。 |
 
-详细功能、Project XHR 排序机制和维护测试见 [`userscripts/solidtime/README.md`](./userscripts/solidtime/README.md)。
+详细功能、Project/Task XHR 全分页排序机制和维护测试见 [`userscripts/solidtime/README.md`](./userscripts/solidtime/README.md)。
 
 ### YouTube
 
