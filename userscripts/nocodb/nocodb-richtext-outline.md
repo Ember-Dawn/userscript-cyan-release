@@ -34,6 +34,7 @@ v0.1 系列把 TOC 定义成一个“旁路 DOM UI 增强脚本”。
 - 不使用浏览器原生 `Selection + Range` 去替用户移动 caret；
 - 不主动 `focus()` 编辑器；
 - “点击标题 / 跳到顶部 / 跳到底部”只修改正文滚动容器的 `scrollTop`，只负责 viewport，不负责 caret；
+- 当前真实滚动容器不是永久缓存：显式导航前与低频几何刷新时重新检测，必要时迁移 scroll listener 并刷新 heading 几何；
 - TOC 普通按钮不得在 `pointerdown` / `mousedown` / `mouseup` 阶段调用 `preventDefault()`；应保留浏览器与 NocoDB / Tiptap 正常的 focus / selection 生命周期，只在 `click` 阶段做必要的冒泡隔离；
 - 不向 `.ProseMirror` 内的标题、段落、代码块写入 `data-*`、class 或额外 child DOM；
 - 不在 `input`、`scroll`、MutationObserver 回调中直接做全量重建。
@@ -437,6 +438,42 @@ click
 
 最终经验是：**对于 contenteditable / ProseMirror 周边 UI，不仅要避免直接改 selection，也要谨慎对真实 pointer 事件调用 `preventDefault()`。一个看似与编辑器无关的外部按钮，也可能因为阻断默认 focus/selection 生命周期而改变宿主后续编辑行为。**
 
+### 13.5 v0.1.6 的坑：初始化时不可滚动，后续变长后 scrollContainer 会过期
+
+又一个实机场景暴露了 `scrollContainer` 生命周期问题：打开编辑器时正文很短、尚不能滚动，脚本初始化阶段的 `detectScrollContainer()` 会因为 `.ProseMirror` 当时满足不了 `scrollHeight - clientHeight > 2`，暂时退回到 `contentWrap`。随后用户在同一次编辑会话中新增大量内容，`.ProseMirror` 已经变成真正的滚动容器，但旧实现一直保留初始化时的 `state.scrollContainer`。
+
+因此会出现：
+
+```text
+打开时内容较短
+→ state.scrollContainer 暂时落到 fallback
+→ 同一会话继续新增大量正文
+→ .ProseMirror 变成真正可滚动元素
+→ state.scrollContainer 仍指向旧 fallback
+→ 点击“跳到顶部 / 底部”修改了错误元素的 scrollTop
+→ 视觉上导航无效
+
+关闭再重新打开
+→ 初始化时正文已经足够长
+→ detectScrollContainer() 直接识别 .ProseMirror
+→ 导航恢复正常
+```
+
+v0.1.7 不再把初始化阶段的滚动容器视为永久引用。采用两层低频校验：
+
+```text
+显式导航前
+→ syncScrollContainer()
+→ 重新 detectScrollContainer()
+→ 如 scroller 变化，迁移 scroll listener
+→ 刷新 heading geometry
+→ 再执行纯 scrollTop 导航
+```
+
+同时普通正文变化触发的 debounce geometry refresh 在真正执行时也会先重检一次滚动容器。这样从“不可滚动”变成“可滚动”的编辑器通常会在输入安静后自动完成切换；即使用户立即点击导航，导航前的同步校验仍会兜底。
+
+这项修复仍遵守纯 DOM 边界：不读取 ProseMirror state，不修改 selection/caret，不 focus editor，也不 dispatch transaction。重新探测只读取候选元素的 overflow / scrollHeight / clientHeight，并且发生在低频 geometry refresh 或用户明确导航时，不进入每键热路径。
+
 ## 14. 扁平化视觉规范
 
 v0.1 系列将 TOC 从“悬浮卡片”改成与正文同一编辑器中的扁平侧栏：
@@ -561,7 +598,7 @@ bootstrap
 
 ## 21. 禁止重新引入的机制
 
-v0.1.6 已通过实机 A/B 与 pointer bypass 测试确认：导航不仅要保持“纯 scrollTop”，普通 TOC 按钮还必须保留浏览器默认 pointer/focus 行为。后续维护不要重新引入：
+v0.1.7 延续 v0.1.6 的纯滚动与默认 pointer/focus 边界，并进一步确认 `scrollContainer` 必须允许随内容尺寸变化重新检测。后续维护不要重新引入：
 
 ```text
 editor.editor
@@ -581,7 +618,7 @@ transaction.setSelection() / dispatch()
 给 heading 写 data-* ID
 ```
 
-旧 v46.0.2、v0.1.3、v0.1.4 的经验都说明：TOC 一旦承担“替宿主管理 selection/caret”的职责，就很容易重新进入与 Tiptap / ProseMirror 状态机耦合的风险区。当前稳定边界是：**读 DOM、算几何、写 TOC 自己的 UI、写正文滚动容器的 `scrollTop`；普通按钮保留默认 pointer 行为，只在 click 阶段做必要冒泡隔离；除此之外不碰编辑状态。**
+旧 v46.0.2、v0.1.3、v0.1.4 的经验都说明：TOC 一旦承担“替宿主管理 selection/caret”的职责，就很容易重新进入与 Tiptap / ProseMirror 状态机耦合的风险区。当前稳定边界是：**读 DOM、按需重新确认真实滚动容器、算几何、写 TOC 自己的 UI、写当前正文滚动容器的 `scrollTop`；普通按钮保留默认 pointer 行为，只在 click 阶段做必要冒泡隔离；除此之外不碰编辑状态。**
 
 ## 22. 维护测试清单
 
@@ -607,4 +644,6 @@ transaction.setSelection() / dispatch()
 18. 双击 resizer 恢复默认宽度；
 19. Markdown 导出按钮仍显示在 TOC 右侧；
 20. Markdown 表格、普通代码块、彩虹标题、LongText 改色均不受影响；
-21. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
+21. 打开内容尚短、初始不可滚动的 Rich Text，在同一会话中新增足够多正文使其变为可滚动后，“跳到顶部 / 底部”和标题导航必须立即有效，不得要求关闭重开；
+22. 上述短→长场景中，切换真实滚动容器后正文 scroll listener 与 heading geometry 必须继续正常工作；
+23. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。

@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.6
+// @version      0.1.7
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -20,6 +20,7 @@
  * - 不读取 editor.editor / EditorState / EditorView，不注册 ProseMirror plugin，不建立 PM bridge；
  * - 不读取或修改 DOM / ProseMirror selection，不调用 focus()，不 dispatch transaction；
  * - 显式导航只修改正文滚动容器的 scrollTop，TOC 只负责视口位置，不负责 caret；
+ * - 导航前会重新确认当前真实滚动容器，内容从短变长后无需关闭编辑器即可切换到新的 scroller；
  * - TOC 操作按钮保留浏览器正常 pointer/mouse 默认行为，只在 click 阶段隔离冒泡并执行动作；
  * - 不向 .ProseMirror 正文节点写入 data-*、class、child DOM；
  * - TOC 只读取最终 DOM 中的 h1~h6，并只写自己的面板、按钮与 scrollTop；
@@ -406,6 +407,27 @@
       if (isScrollableElement(candidate)) return candidate;
     }
     return contentWrap instanceof HTMLElement ? contentWrap : editor;
+  }
+
+  function syncScrollContainer(state) {
+    if (!state || state.destroyed) return false;
+    if (!(state.editor instanceof HTMLElement) || !(state.contentWrap instanceof HTMLElement) || !(state.root instanceof HTMLElement)) return false;
+    const next = detectScrollContainer(state.editor, state.contentWrap, state.root);
+    if (!(next instanceof HTMLElement) || next === state.scrollContainer) return false;
+
+    const previous = state.scrollContainer;
+    clearScrollTimers(state);
+    if (state.runtimeBound && previous instanceof HTMLElement && typeof state.onScroll === 'function') {
+      try { previous.removeEventListener('scroll', state.onScroll, false); } catch (_) {}
+    }
+
+    state.scrollContainer = next;
+    state.pendingScrollTop = next.scrollTop;
+
+    if (state.runtimeBound && typeof state.onScroll === 'function') {
+      next.addEventListener('scroll', state.onScroll, { passive: true });
+    }
+    return true;
   }
 
   function collectRefs(root) {
@@ -932,6 +954,7 @@
   function jumpToHeading(state, index, text, level) {
     if (!state || state.destroyed) return;
     exitManualTocBrowsing(state, false);
+    if (syncScrollContainer(state)) refreshHeadingGeometry(state);
     const resolved = resolveHeadingForJump(state, index, text, level);
     if (!resolved.heading || !(resolved.heading.element instanceof HTMLElement)) {
       setStatus(state, '目录已变化，请刷新后重试。');
@@ -947,8 +970,10 @@
   }
 
   function scrollContainerTo(state, where) {
-    if (!state || state.destroyed || !(state.scrollContainer instanceof HTMLElement)) return;
+    if (!state || state.destroyed) return;
     exitManualTocBrowsing(state, false);
+    if (syncScrollContainer(state)) refreshHeadingGeometry(state);
+    if (!(state.scrollContainer instanceof HTMLElement)) return;
     if (where === 'bottom') {
       state.scrollContainer.scrollTop = Math.max(0, state.scrollContainer.scrollHeight - state.scrollContainer.clientHeight);
     } else {
@@ -1019,6 +1044,7 @@
     state.geometryTimer = window.setTimeout(() => {
       state.geometryTimer = 0;
       if (!state || state.destroyed || !state.open || state.isComposing) return;
+      syncScrollContainer(state);
       refreshHeadingGeometry(state);
     }, delay);
   }
