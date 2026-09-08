@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @version      0.4.0
+// @version      0.4.1
 // @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -17,6 +17,7 @@
 
   const AUDIO_ORIGIN = 'https://media.380782744.xyz';
   const AUDIO_PATH_PREFIX = '/media/audio/';
+  const CORPUS_AUDIO_PATH_RE = /^\/media\/audio\/[a-z0-9]{8}\.mp3$/;
   const MIN_SPEED = 0.5;
   const MAX_SPEED = 2.0;
   const SPEED_STEP = 0.1;
@@ -62,6 +63,15 @@
     } catch {
       return false;
     }
+  }
+
+  function buildPlaybackUrl(url) {
+    const playbackUrl = new URL(url);
+    const path = decodeURIComponent(playbackUrl.pathname);
+    if (CORPUS_AUDIO_PATH_RE.test(path)) {
+      playbackUrl.searchParams.set('_t', Date.now().toString());
+    }
+    return playbackUrl.href;
   }
 
   function formatTime(seconds) {
@@ -427,7 +437,9 @@
     if (!audio || !currentUrl) return;
 
     if (audio.ended) {
-      audio.currentTime = 0;
+      audio.src = buildPlaybackUrl(currentUrl);
+      audio.playbackRate = currentSpeed;
+      audio.load();
       void safePlay();
       return;
     }
@@ -488,7 +500,7 @@
     setStatus('Loading…');
 
     audio.pause();
-    audio.src = normalizedUrl;
+    audio.src = buildPlaybackUrl(normalizedUrl);
     audio.playbackRate = currentSpeed;
     audio.load();
     void safePlay();

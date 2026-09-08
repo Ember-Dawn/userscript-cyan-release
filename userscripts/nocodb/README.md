@@ -6,7 +6,7 @@
 
 | 中文名称 | 文件 | 用途 |
 |---|---|---|
-| NocoDB 音频播放器 | `nocodb-audio-player.user.js` | 接管指定 Media Manager MP3 的原生 Button openURL，在页面右下角提供深色悬浮播放器。参见[详细说明](./nocodb-audio-player.md)。 |
+| NocoDB 音频播放器 | `nocodb-audio-player.user.js` | 接管指定 Media Manager MP3 的原生 Button openURL，在页面右下角提供深色悬浮播放器；对 8 位 `corpus_id.mp3` 的 Batch TTS 音频在实际播放请求中追加时间戳以规避旧缓存。参见[详细说明](./nocodb-audio-player.md)。 |
 | NocoDB 代码块工具 | `nocodb-code-tools.user.js` | 为 Rich Text 代码块提供悬浮复制和带确认的安全清空功能。参见[详细说明](./nocodb-code-tools.md)。 |
 | NocoDB 彩虹标题 | `nocodb-rainbow-headings.user.js` | 为 H1-H6 标题应用不同颜色。 |
 | NocoDB LongText 字体改色 | `nocodb-longtext-color.user.js` | 为特定富文本内容应用颜色。 |
@@ -14,7 +14,7 @@
 | NocoDB Rich Text Markdown 导出 | `nocodb-richtext-markdown-export.user.js` | 复制或下载当前 Rich Text 编辑器的全部内容为普通 Markdown。 |
 | NocoDB Rich Text 大纲 | `nocodb-richtext-outline.user.js` | 以纯 DOM 旁路方式显示可滚动、可调整宽度的 H1-H6 TOC。参见[详细说明](./nocodb-richtext-outline.md)。 |
 
-`nocodb-audio-player.user.js` 不解析 NocoDB Canvas Grid，也不读取记录行。它只包装页面的 `window.open`，并严格接管 `https://media.380782744.xyz/media/audio/*.mp3`，其他 URL 保持 NocoDB 原行为。英语语料项目中的 Button Formula、Media Manager URL 和 `corpus_id.mp3` 命名约定由 `Ember-Dawn/english-speaking-lab` 维护，详细边界见 [`nocodb-audio-player.md`](./nocodb-audio-player.md)。
+`nocodb-audio-player.user.js` 不解析 NocoDB Canvas Grid，也不读取记录行。它只包装页面的 `window.open`，并严格接管 `https://media.380782744.xyz/media/audio/*.mp3`，其他 URL 保持 NocoDB 原行为。对于 `/media/audio/[a-z0-9]{8}.mp3` 这一 Batch TTS 命名模式，脚本只在实际赋给播放器的请求 URL 上追加 `_t=<timestamp>`，用于绕过固定 URL 的旧缓存；NocoDB Formula 和逻辑 URL 本身保持不变。英语语料项目中的 Button Formula、Media Manager URL 和 `corpus_id.mp3` 命名约定由 `Ember-Dawn/english-speaking-lab` 维护，详细边界见 [`nocodb-audio-player.md`](./nocodb-audio-player.md)。
 
 `nocodb-folders.user.js` 已归档并停止公开发布。该脚本曾长期配合 NocoDB v2026.05.1 使用；NocoDB v2026.08.1 原生加入 Data 侧边栏文件夹（Base Sections）后，不再作为现役脚本维护。
 
@@ -120,5 +120,5 @@ NocoDB LongText Rich Text 弹窗的右下角带有原生尺寸调整手柄，可
 - 导出只在用户点击按钮时遍历正文，不要在 `input`、`scroll` 或 MutationObserver 热路径中持续转换 Markdown。
 - 修改跨脚本接口时，应同时检查表格脚本、导出脚本和本说明。
 - `nocodb-richtext-outline.user.js` 不得重新注册 ProseMirror plugin、读写 selection 或向正文 heading 写入脚本 DOM 标记；详细边界见 [`nocodb-richtext-outline.md`](./nocodb-richtext-outline.md)。
-- `nocodb-audio-player.user.js` 只允许窄范围接管指定 Media Manager MP3 的 `window.open`；不要扩展为全局链接拦截器，也不要依赖 Canvas 行列坐标。
+- `nocodb-audio-player.user.js` 只允许窄范围接管指定 Media Manager MP3 的 `window.open`；不要扩展为全局链接拦截器，也不要依赖 Canvas 行列坐标。对 Batch TTS 的 `_t` 只应用于 8 位 `corpus_id.mp3` 命名模式。
 - NocoDB 或 Tiptap 升级后，优先检查展开弹窗、编辑器、TOC 按钮和表格 NodeView 的选择器是否仍然有效。
