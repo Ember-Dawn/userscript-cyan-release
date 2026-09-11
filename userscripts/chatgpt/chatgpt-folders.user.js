@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.6.4
-// @description  ChatGPT 普通聊天文件夹管理：v0.6.4；延后首次侧边栏 DOM 注入以避开 React hydration，并保留侧边栏重建挂载保护。
+// @version      0.6.5
+// @description  ChatGPT 普通聊天文件夹管理：v0.6.5；文件夹拖拽移动不再改变当前选中状态，并保留 hydration-safe 挂载与多端同步。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.6.4';
+  const VERSION = '0.6.5';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1927,7 +1927,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (targetId !== ROOT_ID) target.collapsed = false;
     sortFolderChildren(p, oldParent.id);
     sortFolderChildren(p, targetId);
-    selectedFolderId = sourceId;
+    // Moving a folder changes hierarchy only. Do not implicitly select it; preserve
+    // the user's existing page-local selection state across drag/drop moves.
     queueRender();
     schedulePersist('move-folder');
     toast(targetId === ROOT_ID ? '文件夹已移动到顶层。' : '文件夹已移动。');

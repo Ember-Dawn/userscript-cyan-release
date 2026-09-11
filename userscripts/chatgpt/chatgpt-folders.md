@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.6.4  
+> 当前说明版本：v0.6.5  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -377,6 +377,7 @@ payload：
 - 根节点不能拖；
 - 不能拖到自身或子孙；
 - 移动后只排序源父级与目标父级；
+- 拖拽移动只改变层级，不主动修改 `selectedFolderId`：原本未选中的文件夹移动后仍未选中，原本已选中的文件夹移动后继续保持选中；
 - 不使用 mousemove 自定义拖动。
 
 ### 9.4 聊天拖入
@@ -564,7 +565,7 @@ user_at_example_com-5a54db9a.json
 ```json
 {
   "app": "ChatGPT文件夹",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "schema": 3,
   "exportedAt": "ISO time",
   "account": {
@@ -886,7 +887,7 @@ node --check userscripts/chatgpt/chatgpt-folders.user.js
 3. sidebar 展开/收起正常；
 4. 创建、重命名、改色、删除、折叠文件夹正常；
 5. Recent 拖入文件夹正常，拖到 Projects 尽量不受影响；
-6. 文件夹移动不会形成循环；
+6. 文件夹移动不会形成循环，且拖拽移动不会无故改变当前选中高亮；
 7. Recent 三点菜单“移至文件夹”正常且 observer 会停止；
 8. 文件夹聊天点击优先走原生 SPA 链接；
 9. 文件夹树无内部滚动条；
@@ -989,6 +990,13 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 设置弹窗预创建延后到首次成功 mount 后；
 - 后续 remount 保持快速；
 - 修复由脚本首次 DOM 注入触发的 React RecoverableError #418。
+
+### v0.6.5：文件夹移动保持选中状态语义
+
+- `moveFolderToFolder()` 不再在移动成功后强制执行 `selectedFolderId = sourceId`；
+- 拖到其他文件夹或拖到顶部“文件夹”标题返回根目录时，只改变文件夹层级，不把被移动文件夹自动设为选中；
+- 若文件夹移动前本来已被用户选中，则因 `selectedFolderId` 保持不变，移动后仍继续选中；
+- 修复“未选中文件夹拖回根目录后持续出现 `cgfm-selected` 色块”的问题。
 
 ## 31. 不建议重新引入的方案
 
