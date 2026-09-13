@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.1.0
-// @description  柔化 ChatGPT 白天模式背景，并为临时对话输入框增加琥珀色视觉提示。
+// @version      0.1.1
+// @description  柔化 ChatGPT 白天模式的主界面与侧边栏背景，并为临时对话输入框增加琥珀色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -22,14 +22,15 @@
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
 
     const css = `
-/* 白天模式：把纯白主背景柔化成非常浅的暖灰，同时保留输入框层次。 */
+/* 白天模式：主界面与侧边栏统一为中性浅灰，输入框稍亮以保留层次。 */
 html:not(.dark) {
-    --main-surface-primary: #f7f6f3 !important;
-    --composer-surface-primary: #fbfaf8 !important;
+    --main-surface-primary: #f4f4f2 !important;
+    --sidebar-surface-primary: #f4f4f2 !important;
+    --composer-surface-primary: #fafaf9 !important;
 }
 
 html:not(.dark) body {
-    background-color: #f7f6f3 !important;
+    background-color: #f4f4f2 !important;
 }
 
 /* 临时对话：沿用原脚本的琥珀色输入框提示，深浅模式均生效。 */
