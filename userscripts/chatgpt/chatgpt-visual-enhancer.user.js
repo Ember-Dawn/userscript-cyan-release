@@ -1,12 +1,12 @@
 // ==UserScript==
-// @name         ChatGPT 临时对话高亮助手
+// @name         ChatGPT 界面视觉增强助手
 // @namespace    https://chatgpt.com/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-temporary-chat-highlighter.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-temporary-chat-highlighter.user.js
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @version      0.1.0
-// @description  为 ChatGPT 临时对话的输入框增加琥珀色描边、淡色背景和轻微阴影，便于与普通对话区分。
+// @description  柔化 ChatGPT 白天模式背景，并为临时对话输入框增加琥珀色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -17,12 +17,23 @@
 (() => {
     'use strict';
 
-    const STYLE_ID = 'cg-temporary-chat-highlighter-style';
-    const ACTIVE_ATTRIBUTE = 'data-cg-temporary-chat';
-    const LOCATION_CHANGE_EVENT = 'cg-temporary-chat-location-change';
+    const STYLE_ID = 'cg-visual-enhancer-style';
+    const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
+    const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
 
     const css = `
-html[${ACTIVE_ATTRIBUTE}="true"] [data-composer-surface="true"] {
+/* 白天模式：把纯白主背景柔化成非常浅的暖灰，同时保留输入框层次。 */
+html:not(.dark) {
+    --main-surface-primary: #f7f6f3 !important;
+    --composer-surface-primary: #fbfaf8 !important;
+}
+
+html:not(.dark) body {
+    background-color: #f7f6f3 !important;
+}
+
+/* 临时对话：沿用原脚本的琥珀色输入框提示，深浅模式均生效。 */
+html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-surface="true"] {
     border: 2px solid rgba(245, 158, 11, 0.75) !important;
     background-color: var(--composer-surface-primary) !important;
     background-color: color-mix(in srgb, var(--composer-surface-primary) 94%, #f59e0b 6%) !important;
@@ -58,9 +69,9 @@ html[${ACTIVE_ATTRIBUTE}="true"] [data-composer-surface="true"] {
         }
 
         if (isTemporaryChat()) {
-            root.setAttribute(ACTIVE_ATTRIBUTE, 'true');
+            root.setAttribute(TEMPORARY_CHAT_ATTRIBUTE, 'true');
         } else {
-            root.removeAttribute(ACTIVE_ATTRIBUTE);
+            root.removeAttribute(TEMPORARY_CHAT_ATTRIBUTE);
         }
     }
 
