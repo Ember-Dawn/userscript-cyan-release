@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-tools.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-tools.user.js
-// @version      5.0.1
+// @version      5.0.2
 // @description  为 NocoDB longtext rich-text 中的代码块提供悬浮复制与带确认的安全清空工具
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -751,7 +751,6 @@
 
     observeDom();
 
-    console.log('[NocoDB 代码块工具] ready');
   }
 
   init();
