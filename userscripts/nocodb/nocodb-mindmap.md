@@ -2,7 +2,7 @@
 
 `nocodb-mindmap.user.js` 用于在自部署 NocoDB CE 的 Grid 中通过原生 Button 打开思维导图大弹窗。脚本不解析 Canvas Grid 的行列 DOM；当前记录由 Button URL 中的 `recordId` 定位，Base ID 和 Table ID 从当前 NocoDB 页面 URL 解析，脑图内容保存到同一记录的 `MindMapData` JSON 字段。
 
-从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。v0.2.2 配合 WebUI 的专用 Embed 数据层：由 SimpleMindMap 实例作为唯一实时文档状态源，不再借用 WebUI 的 `takeOverApp` 文档存储链，并为关闭确认增加“取消”操作。v0.2.3 修复初始化误 dirty，恢复 2 秒防抖自动保存，并把预热 iframe 改为可直接复用的常驻预热；新建脑图默认使用向右展开的逻辑结构图。v0.2.4 把预热 iframe 的一次性 ready 改为可重复 hello/ready 握手，并增加初始化超时自动重试；Space 编辑改走 SimpleMindMap 自己的快捷键系统。
+从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。v0.2.2 配合 WebUI 的专用 Embed 数据层：由 SimpleMindMap 实例作为唯一实时文档状态源，不再借用 WebUI 的 `takeOverApp` 文档存储链，并为关闭确认增加“取消”操作。v0.2.3 修复初始化误 dirty，恢复 2 秒防抖自动保存，并把预热 iframe 改为可直接复用的常驻预热；新建脑图默认使用向右展开的逻辑结构图。v0.2.4 把预热 iframe 的一次性 ready 改为可重复 hello/ready 握手，并增加初始化超时自动重试；Space 编辑改走 SimpleMindMap 自己的快捷键系统。v0.2.5 为 WebUI iframe URL 增加独立 build cache-buster，避免预热 iframe、浏览器或 CDN 长时间复用旧 WebUI 资源。
 
 ## 架构
 
@@ -35,10 +35,10 @@ https://mindmap.380782744.xyz/
 油猴脚本实际加载：
 
 ```text
-https://mindmap.380782744.xyz/?embed=1&parentOrigin=https%3A%2F%2Fnocodb.380782744.xyz
+https://mindmap.380782744.xyz/?embed=1&parentOrigin=https%3A%2F%2Fnocodb.380782744.xyz&build=<当前 WebUI build>
 ```
 
-`embed=1` 会启用 `mind-map` 仓库中的 NocoDB bridge。`parentOrigin` 用于限制 iframe 与父页面之间的 `postMessage` 来源。
+`embed=1` 会启用 `mind-map` 仓库中的 NocoDB bridge。`parentOrigin` 用于限制 iframe 与父页面之间的 `postMessage` 来源。`build` 是脚本维护的 WebUI 缓存穿透标识；部署新的 WebUI 版本时同步更新该值，可让新创建和预热的 iframe 使用新的文档 URL。
 
 油猴脚本不再包含 `@require simple-mind-map`、`@resource simpleMindMapCss` 或 `GM_getResourceText`。SimpleMindMap 的完整 UI、插件和快捷键均由独立 WebUI 自己维护。
 
@@ -275,7 +275,7 @@ Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上�
 脚本在 NocoDB 页面空闲时进行两级预热：
 
 1. 对 `https://mindmap.380782744.xyz` 建立 `preconnect`。
-2. 创建一个屏幕外 iframe 并保持常驻，只加载 WebUI/bridge 和静态依赖，不发送 `mindmap:init`。真正点击 Button 时直接把这个 iframe 移入 Modal，然后主动发送 `mindmap:hello`，由 bridge 再回复一次 `mindmap:ready`；不再依赖预热阶段可能早已错过的 startup ready。Modal 关闭后再为空闲状态准备下一只预热 iframe。
+2. 创建一个屏幕外 iframe 并保持常驻，只加载 WebUI/bridge 和静态依赖，不发送 `mindmap:init`。iframe URL 带当前 `build` cache-buster；部署 WebUI 新版本时更新该值后，新建 NocoDB 页面和后续预热 iframe 不会继续沿用旧文档 URL。真正点击 Button 时直接把这个 iframe 移入 Modal，然后主动发送 `mindmap:hello`，由 bridge 再回复一次 `mindmap:ready`；不再依赖预热阶段可能早已错过的 startup ready。Modal 关闭后再为空闲状态准备下一只预热 iframe。
 
 如果 8 秒内没有收到 ready，或发送 init 后 12 秒仍没有收到 `mindmap:app-ready`，脚本会丢弃当前 iframe、创建新 iframe 并自动重试一次；再次失败才显示明确错误。这样不会因为预热竞态长期停在“正在读取 NocoDB 记录并加载 MindMap WebUI…”。
 
@@ -297,7 +297,7 @@ Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上�
 | 全选 | `Ctrl+A` |
 | 整理布局 | `Ctrl+L` |
 | 搜索替换 | `Ctrl+F` |
-| 编辑节点 | `F2` / `Space`（Embed 模式；Space 走 SimpleMindMap `keyCommand`） |
+| 编辑节点 | `F2` / `Space`（Space 走 SimpleMindMap `keyCommand`） |
 | 手动保存到 NocoDB | `Ctrl+S` |
 
 ## 维护边界

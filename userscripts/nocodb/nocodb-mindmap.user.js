@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.2.4
+// @version      0.2.5
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 自动/手动保存 MindMapData JSON。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
@@ -20,6 +20,7 @@
   const MINDMAP_PATH = '/__mindmap__';
   const MINDMAP_WEB_URL = 'https://mindmap.380782744.xyz/';
   const MINDMAP_WEB_ORIGIN = new URL(MINDMAP_WEB_URL).origin;
+  const MINDMAP_WEB_BUILD = '20260914-1';
   const DATA_FIELD = 'MindMapData';
   const ENGINE_NAME = 'simple-mind-map';
   const ENGINE_VERSION = '0.14.0-fix.3';
@@ -658,6 +659,7 @@
     const url = new URL(MINDMAP_WEB_URL);
     url.searchParams.set('embed', '1');
     url.searchParams.set('parentOrigin', unsafeWindow.location.origin);
+    url.searchParams.set('build', MINDMAP_WEB_BUILD);
     return url.toString();
   }
 
