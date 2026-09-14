@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.2.1
+// @version      0.2.2
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 手动保存 MindMapData JSON。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
@@ -676,6 +676,7 @@
             <div class="tm-nmm-close-popover" hidden>
               <div class="tm-nmm-close-popover-text">有未保存修改</div>
               <div class="tm-nmm-close-popover-actions">
+                <button type="button" class="tm-nmm-close-cancel">取消</button>
                 <button type="button" class="tm-nmm-close-discard">放弃</button>
                 <button type="button" class="tm-nmm-close-save">保存</button>
               </div>
@@ -1064,6 +1065,10 @@
 
     overlay.querySelector('.tm-nmm-close').addEventListener('click', () => {
       void requestCloseMindMapModal();
+    });
+
+    overlay.querySelector('.tm-nmm-close-cancel').addEventListener('click', () => {
+      hideClosePopover(modalState);
     });
 
     overlay.querySelector('.tm-nmm-close-discard').addEventListener('click', () => {

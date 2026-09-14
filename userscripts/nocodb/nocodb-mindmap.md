@@ -2,7 +2,7 @@
 
 `nocodb-mindmap.user.js` 用于在自部署 NocoDB CE 的 Grid 中通过原生 Button 打开思维导图大弹窗。脚本不解析 Canvas Grid 的行列 DOM；当前记录由 Button URL 中的 `recordId` 定位，Base ID 和 Table ID 从当前 NocoDB 页面 URL 解析，脑图内容保存到同一记录的 `MindMapData` JSON 字段。
 
-从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。
+从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。v0.2.2 配合 WebUI 的专用 Embed 数据层：由 SimpleMindMap 实例作为唯一实时文档状态源，不再借用 WebUI 的 `takeOverApp` 文档存储链，并为关闭确认增加“取消”操作。
 
 ## 架构
 
@@ -119,10 +119,10 @@ Button Open URL
   → 读取 fields.MindMapData
   → 等待 iframe bridge ready
   → mindmap:init
-  → WebUI 只初始化一次并强制应用该完整数据
+  → WebUI 只初始化一次，并直接用该完整数据创建 SimpleMindMap
 ```
 
-外层 loading 会一直覆盖 iframe，直到 WebUI 确认 SimpleMindMap 实例已经应用父页面传入的数据，避免先显示默认 `根节点` 再闪换为真实数据。
+外层 loading 会一直覆盖 iframe，直到 WebUI 确认 SimpleMindMap 实例已经由父页面传入的完整数据创建。Embed 模式不会先加载 localStorage/exampleData，也不会在初始化后再次 `setFullData()`，因此不存在第二套文档状态覆盖首次渲染的问题。
 
 如果 `MindMapData` 为空，油猴脚本会在内存中生成新脑图；不会自动 PATCH NocoDB。
 
@@ -167,7 +167,7 @@ mindmap:request-data
 mindmap:save-result
 ```
 
-WebUI 自己维护 revision。保存结果只有在对应 revision 仍然是当前 revision 时才会清除 dirty，避免“保存请求发出后又继续编辑”导致新修改被误标为已保存。
+WebUI 自己维护 revision。Embed 模式下运行时唯一可信文档状态是当前 SimpleMindMap 实例；显式保存始终读取 `mindMap.getData(true)`。保存结果只有在对应 revision 仍然是当前 revision 时才会清除 dirty，避免“保存请求发出后又继续编辑”导致新修改被误标为已保存。
 
 ## `MindMapData` 数据格式
 
@@ -256,11 +256,12 @@ PATCH 成功且 revision 未变化 → ✓ 已保存
 
 ```text
 有未保存修改
-[放弃] [保存]
+[取消] [放弃] [保存]
 ```
 
 Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上，其右上角与 `×` 按钮左下角对齐。
 
+- `取消`：只关闭该 Popover，保留 Modal，继续编辑。
 - `放弃`：立即关闭，不写 NocoDB。
 - `保存`：显式请求 iframe 当前完整数据；PATCH 成功并收到 WebUI 保存确认后再关闭。
 - 保存失败或保存期间又发生新编辑：保持弹窗打开。
