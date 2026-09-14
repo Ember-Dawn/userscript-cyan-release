@@ -5,16 +5,14 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.1.0
+// @version      0.1.1
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中使用 SimpleMindMap 编辑 MindMapData JSON，并通过 NocoDB v3 API 自动保存。
 // @match        https://nocodb.380782744.xyz/*
 // @require      https://unpkg.com/simple-mind-map@0.14.0-fix.3/dist/simpleMindMap.umd.min.js
 // @resource     simpleMindMapCss https://unpkg.com/simple-mind-map@0.14.0-fix.3/dist/simpleMindMap.esm.min.css
 // @grant        GM_addStyle
-// @grant        GM_deleteValue
 // @grant        GM_getResourceText
 // @grant        GM_getValue
-// @grant        GM_registerMenuCommand
 // @grant        GM_setValue
 // @grant        unsafeWindow
 // @run-at       document-start
@@ -361,7 +359,6 @@
   function setApiToken(token) {
     const normalized = String(token || '').trim();
     if (normalized) GM_setValue(TOKEN_STORAGE_KEY, normalized);
-    else GM_deleteValue(TOKEN_STORAGE_KEY);
     return normalized;
   }
 
@@ -377,7 +374,7 @@
     });
   }
 
-  async function promptForToken({ force = false } = {}) {
+  async function promptForToken({ force = false, authFailed = false } = {}) {
     const current = getApiToken();
     if (current && !force) return current;
 
@@ -395,14 +392,15 @@
     overlay.id = TOKEN_MODAL_ID;
     overlay.innerHTML = `
       <div class="tm-nmm-token-dialog" role="dialog" aria-modal="true" aria-label="设置 NocoDB API Token">
-        <div class="tm-nmm-token-title">设置 NocoDB API Token</div>
+        <div class="tm-nmm-token-title">${authFailed ? 'NocoDB API Token 无效或权限不足' : '设置 NocoDB API Token'}</div>
         <div class="tm-nmm-token-help">
-          Token 仅保存在 Tampermonkey 当前脚本的本地存储中，不会写入 GitHub。脚本使用它访问当前 NocoDB 的 v3 Data API。
+          ${authFailed ? '请重新输入可用的 API Token。保存后脚本会自动重试刚才的请求。' : '首次使用需要 API Token。'}
+          Token 仅保存在 Tampermonkey 当前脚本的本地存储中，不会写入 GitHub。
         </div>
         <input type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 NocoDB API Token">
         <div class="tm-nmm-token-actions">
           <button type="button" class="tm-nmm-token-cancel">取消</button>
-          <button type="button" class="tm-nmm-token-save">保存</button>
+          <button type="button" class="tm-nmm-token-save">保存并继续</button>
         </div>
       </div>
     `;
@@ -450,25 +448,37 @@
     return promise;
   }
 
-  async function apiRequest(path, options = {}) {
+  async function apiRequest(path, options = {}, allowTokenRetry = true) {
     let token = getApiToken();
     if (!token) token = await promptForToken();
     if (!token) throw new Error('未设置 NocoDB API Token。');
 
-    const response = await fetch(path, {
-      ...options,
-      credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'xc-token': token,
-        ...(options.headers || {}),
-      },
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        ...options,
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'xc-token': token,
+          ...(options.headers || {}),
+        },
+      });
+    } catch (error) {
+      throw new ApiError(error?.message || 'NocoDB API 网络请求失败。');
+    }
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      throw new ApiError(`NocoDB API 请求失败（HTTP ${response.status}）。`, response.status, body);
+      const apiError = new ApiError(`NocoDB API 请求失败（HTTP ${response.status}）。`, response.status, body);
+
+      if (allowTokenRetry && [401, 403].includes(response.status)) {
+        const replacement = await promptForToken({ force: true, authFailed: true });
+        if (replacement) return apiRequest(path, options, false);
+      }
+
+      throw apiError;
     }
 
     if (response.status === 204) return null;
@@ -596,7 +606,6 @@
           <button type="button" class="tm-nmm-tool" data-action="zoom-in">+</button>
           <span class="tm-nmm-separator" aria-hidden="true"></span>
           <button type="button" class="tm-nmm-tool" data-action="save">立即保存</button>
-          <button type="button" class="tm-nmm-tool" data-action="token">API Token</button>
         </div>
         <div class="tm-nmm-canvas">
           <div class="tm-nmm-loading">正在读取 NocoDB 记录…</div>
@@ -760,11 +769,6 @@
           modalState.dirty = true;
           await saveCurrentMindMap({ force: true });
           break;
-        case 'token': {
-          const token = await promptForToken({ force: true });
-          if (token) setModalStatus('saved', 'API Token 已更新');
-          break;
-        }
         default:
           break;
       }
@@ -848,7 +852,7 @@
     } catch (error) {
       console.error('[NocoDB 思维导图] 初始化失败:', error);
       const suffix = error instanceof ApiError && [401, 403].includes(error.status)
-        ? ' 请通过脚本菜单或弹窗工具栏重新设置 API Token。'
+        ? ' 请重新点击 MindMap Button 并设置可用的 API Token。'
         : '';
       const text = `${error.message || '初始化失败。'}${suffix}`;
       setCanvasMessage('error', text);
@@ -927,13 +931,4 @@
 
     return nativeOpen(url, target, features);
   };
-
-  GM_registerMenuCommand('设置 NocoDB MindMap API Token', () => {
-    void promptForToken({ force: true });
-  });
-
-  GM_registerMenuCommand('清除 NocoDB MindMap API Token', () => {
-    GM_deleteValue(TOKEN_STORAGE_KEY);
-    unsafeWindow.alert('已清除 NocoDB MindMap API Token。');
-  });
 })();
