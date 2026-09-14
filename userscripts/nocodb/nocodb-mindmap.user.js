@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.2.2
-// @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 手动保存 MindMapData JSON。
+// @version      0.2.3
+// @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 自动/手动保存 MindMapData JSON。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -35,6 +35,7 @@
 
   let modalState = null;
   let tokenDialogState = null;
+  let prewarmState = null;
 
   function isTokenInputTarget(target) {
     return target instanceof Element && target.matches(`#${TOKEN_MODAL_ID} input`);
@@ -626,7 +627,7 @@
     if (!text) text = '中心主题';
 
     return {
-      layout: 'mindMap',
+      layout: 'logicalStructure',
       root: {
         data: {
           text,
@@ -684,7 +685,7 @@
           </div>
         </div>
         <div class="tm-nmm-frame-wrap">
-          <iframe class="tm-nmm-frame" title="MindMap WebUI" src="${escapeHtml(buildMindMapIframeUrl())}"></iframe>
+          <iframe class="tm-nmm-frame" title="MindMap WebUI" src="about:blank"></iframe>
           <div class="tm-nmm-loading">正在读取 NocoDB 记录并加载 MindMap WebUI…</div>
         </div>
       </div>
@@ -753,7 +754,7 @@
     state.initSent = true;
     postToMindMap(state, 'mindmap:init', {
       data: state.initialData,
-      dirty: !state.hadStoredData,
+      dirty: false,
     });
     setModalStatus('loading', '初始化编辑器…');
   }
@@ -773,6 +774,7 @@
     if (state.saveRequestTimer) window.clearTimeout(state.saveRequestTimer);
     state.overlay.remove();
     modalState = null;
+    scheduleMindMapPrewarm();
   }
 
   async function saveMindMapPayload(state, data, requestId = null) {
@@ -924,13 +926,18 @@
   }
 
   function handleMindMapMessage(event) {
-    const state = modalState;
-    if (!state) return;
     if (event.origin !== MINDMAP_WEB_ORIGIN) return;
-    if (event.source !== state.iframe?.contentWindow) return;
 
     const message = event.data;
     if (!message || message.source !== 'mind-map-web') return;
+
+    if (prewarmState && event.source === prewarmState.iframe?.contentWindow) {
+      if (message.type === 'mindmap:ready') prewarmState.ready = true;
+      return;
+    }
+
+    const state = modalState;
+    if (!state || event.source !== state.iframe?.contentWindow) return;
 
     switch (message.type) {
       case 'mindmap:ready':
@@ -940,11 +947,8 @@
       case 'mindmap:app-ready':
         state.appReady = true;
         clearFrameMessage();
-        state.dirty = !state.hadStoredData;
-        setModalStatus(
-          state.dirty ? 'dirty' : 'saved',
-          state.dirty ? '有未保存修改' : '✓ 已加载'
-        );
+        state.dirty = false;
+        setModalStatus('saved', '✓ 已加载');
         break;
       case 'mindmap:dirty':
         state.dirty = Boolean(message.dirty);
@@ -984,25 +988,26 @@
   window.addEventListener('message', handleMindMapMessage);
 
   function scheduleMindMapPrewarm() {
-    if (document.getElementById(PREWARM_ID)) return;
+    if (modalState || prewarmState?.iframe?.isConnected) return;
 
-    const preconnect = document.createElement('link');
-    preconnect.rel = 'preconnect';
-    preconnect.href = MINDMAP_WEB_ORIGIN;
-    preconnect.crossOrigin = 'anonymous';
-    document.head?.appendChild(preconnect);
+    if (!document.querySelector('link[data-tm-nmm-preconnect]')) {
+      const preconnect = document.createElement('link');
+      preconnect.rel = 'preconnect';
+      preconnect.href = MINDMAP_WEB_ORIGIN;
+      preconnect.crossOrigin = 'anonymous';
+      preconnect.dataset.tmNmmPreconnect = '1';
+      document.head?.appendChild(preconnect);
+    }
 
     const warm = () => {
-      if (modalState || document.getElementById(PREWARM_ID)) return;
+      if (modalState || prewarmState?.iframe?.isConnected) return;
       const iframe = document.createElement('iframe');
       iframe.id = PREWARM_ID;
       iframe.src = buildMindMapIframeUrl();
       iframe.tabIndex = -1;
       iframe.setAttribute('aria-hidden', 'true');
       iframe.style.cssText = 'position:fixed;width:1px;height:1px;left:-9999px;top:-9999px;border:0;opacity:0;pointer-events:none;';
-      iframe.addEventListener('load', () => {
-        window.setTimeout(() => iframe.remove(), 1500);
-      }, { once: true });
+      prewarmState = { iframe, ready: false };
       document.body?.appendChild(iframe);
     };
 
@@ -1011,6 +1016,25 @@
     } else {
       window.setTimeout(warm, 1500);
     }
+  }
+
+  function adoptPrewarmedIframe(placeholder) {
+    const warm = prewarmState;
+    if (!warm?.iframe?.isConnected) {
+      placeholder.src = buildMindMapIframeUrl();
+      return { iframe: placeholder, ready: false };
+    }
+
+    prewarmState = null;
+    const iframe = warm.iframe;
+    iframe.removeAttribute('id');
+    iframe.removeAttribute('aria-hidden');
+    iframe.removeAttribute('tabindex');
+    iframe.removeAttribute('style');
+    iframe.className = 'tm-nmm-frame';
+    iframe.title = 'MindMap WebUI';
+    placeholder.replaceWith(iframe);
+    return { iframe, ready: warm.ready };
   }
 
   async function openMindMap(recordId) {
@@ -1034,7 +1058,9 @@
     }
 
     const overlay = createModalShell(recordId);
-    const iframe = overlay.querySelector('.tm-nmm-frame');
+    const placeholder = overlay.querySelector('.tm-nmm-frame');
+    const adopted = adoptPrewarmedIframe(placeholder);
+    const iframe = adopted.iframe;
     modalState = {
       overlay,
       iframe,
@@ -1042,7 +1068,7 @@
       context,
       initialData: null,
       hadStoredData: false,
-      iframeReady: false,
+      iframeReady: adopted.ready,
       appReady: false,
       initSent: false,
       dirty: false,

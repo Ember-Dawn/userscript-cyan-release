@@ -2,7 +2,7 @@
 
 `nocodb-mindmap.user.js` 用于在自部署 NocoDB CE 的 Grid 中通过原生 Button 打开思维导图大弹窗。脚本不解析 Canvas Grid 的行列 DOM；当前记录由 Button URL 中的 `recordId` 定位，Base ID 和 Table ID 从当前 NocoDB 页面 URL 解析，脑图内容保存到同一记录的 `MindMapData` JSON 字段。
 
-从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。v0.2.2 配合 WebUI 的专用 Embed 数据层：由 SimpleMindMap 实例作为唯一实时文档状态源，不再借用 WebUI 的 `takeOverApp` 文档存储链，并为关闭确认增加“取消”操作。
+从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。v0.2.2 配合 WebUI 的专用 Embed 数据层：由 SimpleMindMap 实例作为唯一实时文档状态源，不再借用 WebUI 的 `takeOverApp` 文档存储链，并为关闭确认增加“取消”操作。v0.2.3 修复初始化误 dirty，恢复 2 秒防抖自动保存，并把预热 iframe 改为可直接复用的常驻预热；新建脑图默认使用向右展开的逻辑结构图。
 
 ## 架构
 
@@ -15,7 +15,7 @@ NocoDB Grid
   → iframe 加载 https://mindmap.380782744.xyz/?embed=1&parentOrigin=...
   → postMessage 发送完整脑图数据
   → MindMap WebUI 负责编辑、快捷键和完整 UI
-  → 手动保存时 WebUI 回传当前 getData(true)
+  → 自动/手动保存时 WebUI 回传当前 getData(true)
   → Tampermonkey PATCH NocoDB MindMapData
 ```
 
@@ -130,7 +130,7 @@ Button Open URL
 
 当 `MindMapData` 为 `null`、空值或没有有效脑图数据时：
 
-- 默认布局：`mindMap`
+- 默认布局：`logicalStructure`，即“逻辑结构图（向右展开）”
 - 默认主题：`classic15`，即“脑图经典15”
 - 根节点文本只优先取 `Title`、`Name`、`标题`、`名称`
 - 如果这些明确标题字段都不存在，则使用 `中心主题`
@@ -179,7 +179,7 @@ WebUI 自己维护 revision。Embed 模式下运行时唯一可信文档状态�
   "engine": "simple-mind-map",
   "engineVersion": "0.14.0-fix.3",
   "data": {
-    "layout": "mindMap",
+    "layout": "logicalStructure",
     "root": {},
     "theme": {
       "template": "classic15",
@@ -192,11 +192,11 @@ WebUI 自己维护 revision。Embed 模式下运行时唯一可信文档状态�
 
 上面的 `classic15` 只是新建脑图的默认示例；已有数据继续使用其保存的主题。读取逻辑继续兼容早期直接保存的 SimpleMindMap 完整数据；只要对象顶层存在 `root`，脚本会将其视为旧格式读取，下一次保存时再统一包装成当前 schema。
 
-## 手动保存
+## 自动保存与手动保存
 
-v0.2.0 起取消自动保存。普通编辑只标记 dirty，不自动调用 NocoDB PATCH。
+v0.2.3 起恢复自动保存。WebUI 在初始化完成后先建立当前 `getData(true)` baseline；初始化过程自身产生的 render/view 事件不会标记 dirty。之后每次真实文档变化都会重启 2 秒 debounce，连续编辑期间不会反复 PATCH；停止操作约 2 秒后自动把当前完整 `getData(true)` 写回 NocoDB。
 
-保存入口：
+手动保存入口仍然保留：
 
 1. 外层 Modal 顶部“保存”按钮。
 2. MindMap WebUI 内按 `Ctrl+S` / `Cmd+S`。
@@ -246,7 +246,7 @@ PATCH 成功且 revision 未变化 → ✓ 已保存
 继续编辑 → 有未保存修改
 ```
 
-新建但尚未写入 NocoDB 的脑图从打开完成开始就视为 dirty，因此直接关闭时也会出现保存确认。
+打开完成时不会仅因为初始化或“这是新脑图”就自动标记 dirty。只有 baseline 之后的真实内容/布局/主题/视图变化才进入 dirty；若用户不做任何修改，状态保持 `✓ 已加载`。真实修改后会进入 dirty，并由 2 秒自动保存清除；自动保存失败时 dirty 会保留。
 
 ## 关闭确认
 
@@ -271,9 +271,9 @@ Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上�
 脚本在 NocoDB 页面空闲时进行两级预热：
 
 1. 对 `https://mindmap.380782744.xyz` 建立 `preconnect`。
-2. 创建一个屏幕外 iframe，只加载 WebUI/bridge 和静态依赖，不发送 `mindmap:init`，加载完成后自动移除。
+2. 创建一个屏幕外 iframe 并保持常驻，只加载 WebUI/bridge 和静态依赖，不发送 `mindmap:init`。真正点击 Button 时直接把这个已经 ready 的 iframe 移入 Modal，不再新建第二个 iframe；Modal 关闭后再为空闲状态准备下一只预热 iframe。
 
-这样不会读取或修改任何 NocoDB record，也不会创建实际脑图实例，但可以提前缓存 Vue、SimpleMindMap 和 WebUI 相关资源，降低真正点击 Button 后的等待时间。当前部署仍是 Vue Dev Server/HMR；未来切到 production build + nginx 后还可进一步缩短冷启动时间。
+这样不会提前读取或修改任何 NocoDB record，也不会提前创建具体 record 的 SimpleMindMap 实例，但能省掉 iframe 文档和前端模块的重复加载。当前部署仍是 Vue Dev Server/HMR，因此真正 `new MindMap()` 和首次渲染仍有初始化成本；未来切到 production build + nginx 后还可进一步缩短冷启动时间。
 
 ## 快捷键
 
@@ -291,6 +291,7 @@ Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上�
 | 全选 | `Ctrl+A` |
 | 整理布局 | `Ctrl+L` |
 | 搜索替换 | `Ctrl+F` |
+| 编辑节点 | `F2` / `Space`（Embed 模式） |
 | 手动保存到 NocoDB | `Ctrl+S` |
 
 ## 维护边界
