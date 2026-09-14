@@ -2,7 +2,7 @@
 
 `nocodb-mindmap.user.js` 用于在自部署 NocoDB CE 的 Grid 中通过原生 Button 打开思维导图大弹窗。脚本不解析 Canvas Grid 的行列 DOM；当前记录由 Button URL 中的 `recordId` 定位，Base ID 和 Table ID 从当前 NocoDB 页面 URL 解析，脑图内容保存到同一记录的 `MindMapData` JSON 字段。
 
-从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。v0.2.2 配合 WebUI 的专用 Embed 数据层：由 SimpleMindMap 实例作为唯一实时文档状态源，不再借用 WebUI 的 `takeOverApp` 文档存储链，并为关闭确认增加“取消”操作。v0.2.3 修复初始化误 dirty，恢复 2 秒防抖自动保存，并把预热 iframe 改为可直接复用的常驻预热；新建脑图默认使用向右展开的逻辑结构图。
+从 v0.2.0 开始，油猴脚本不再自己加载和实例化 `simple-mind-map`。完整编辑器由单独部署的 `Ember-Dawn/mind-map` WebUI 提供，油猴脚本只负责 NocoDB 集成、外层 Modal、iframe、API Token、GET/PATCH 和保存确认。v0.2.1 进一步修正手动保存、dirty 状态、初始主题和 iframe 预热逻辑。v0.2.2 配合 WebUI 的专用 Embed 数据层：由 SimpleMindMap 实例作为唯一实时文档状态源，不再借用 WebUI 的 `takeOverApp` 文档存储链，并为关闭确认增加“取消”操作。v0.2.3 修复初始化误 dirty，恢复 2 秒防抖自动保存，并把预热 iframe 改为可直接复用的常驻预热；新建脑图默认使用向右展开的逻辑结构图。v0.2.4 把预热 iframe 的一次性 ready 改为可重复 hello/ready 握手，并增加初始化超时自动重试；Space 编辑改走 SimpleMindMap 自己的快捷键系统。
 
 ## 架构
 
@@ -117,7 +117,8 @@ Button Open URL
   → 从当前页面 URL 解析 baseId / tableId
   → GET /api/v3/data/{baseId}/{tableId}/records/{recordId}
   → 读取 fields.MindMapData
-  → 等待 iframe bridge ready
+  → parent 发送 mindmap:hello
+  → iframe 回复 mindmap:ready
   → mindmap:init
   → WebUI 只初始化一次，并直接用该完整数据创建 SimpleMindMap
 ```
@@ -161,11 +162,14 @@ mindmap:save-status
 油猴 → WebUI：
 
 ```text
+mindmap:hello
 mindmap:init
 mindmap:request-save
 mindmap:request-data
 mindmap:save-result
 ```
+
+`mindmap:hello` 是可重复握手，不依赖 iframe 首次加载时那一次 `mindmap:ready`。因此后台预热 iframe 即使早已发过 startup ready，被移动进 Modal 后也会再次确认 ready。油猴还会分别监控握手和 app 初始化；超时后自动换成新的 iframe 重试一次，避免 loading 永久停住。
 
 WebUI 自己维护 revision。Embed 模式下运行时唯一可信文档状态是当前 SimpleMindMap 实例；显式保存始终读取 `mindMap.getData(true)`。保存结果只有在对应 revision 仍然是当前 revision 时才会清除 dirty，避免“保存请求发出后又继续编辑”导致新修改被误标为已保存。
 
@@ -271,7 +275,9 @@ Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上�
 脚本在 NocoDB 页面空闲时进行两级预热：
 
 1. 对 `https://mindmap.380782744.xyz` 建立 `preconnect`。
-2. 创建一个屏幕外 iframe 并保持常驻，只加载 WebUI/bridge 和静态依赖，不发送 `mindmap:init`。真正点击 Button 时直接把这个已经 ready 的 iframe 移入 Modal，不再新建第二个 iframe；Modal 关闭后再为空闲状态准备下一只预热 iframe。
+2. 创建一个屏幕外 iframe 并保持常驻，只加载 WebUI/bridge 和静态依赖，不发送 `mindmap:init`。真正点击 Button 时直接把这个 iframe 移入 Modal，然后主动发送 `mindmap:hello`，由 bridge 再回复一次 `mindmap:ready`；不再依赖预热阶段可能早已错过的 startup ready。Modal 关闭后再为空闲状态准备下一只预热 iframe。
+
+如果 8 秒内没有收到 ready，或发送 init 后 12 秒仍没有收到 `mindmap:app-ready`，脚本会丢弃当前 iframe、创建新 iframe 并自动重试一次；再次失败才显示明确错误。这样不会因为预热竞态长期停在“正在读取 NocoDB 记录并加载 MindMap WebUI…”。
 
 这样不会提前读取或修改任何 NocoDB record，也不会提前创建具体 record 的 SimpleMindMap 实例，但能省掉 iframe 文档和前端模块的重复加载。当前部署仍是 Vue Dev Server/HMR，因此真正 `new MindMap()` 和首次渲染仍有初始化成本；未来切到 production build + nginx 后还可进一步缩短冷启动时间。
 
@@ -291,7 +297,7 @@ Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上�
 | 全选 | `Ctrl+A` |
 | 整理布局 | `Ctrl+L` |
 | 搜索替换 | `Ctrl+F` |
-| 编辑节点 | `F2` / `Space`（Embed 模式） |
+| 编辑节点 | `F2` / `Space`（Embed 模式；Space 走 SimpleMindMap `keyCommand`） |
 | 手动保存到 NocoDB | `Ctrl+S` |
 
 ## 维护边界
@@ -312,13 +318,16 @@ Popover 使用 `top: 32px; right: 32px` 挂在 32×32 的关闭按钮容器上�
 3. 清空 Token 后点击 Button，确认会要求输入 Token，且粘贴快捷键正常。
 4. 打开空 `MindMapData`，确认第一帧最终显示 `中心主题`，主题为“脑图经典15”，不再先显示日期或最终回退为 `根节点`。
 5. 打开已有 `MindMapData`，确认节点、布局、主题和视图状态保持原样。
-6. 修改任意节点后，顶部立即变成“有未保存修改”，且等待不会自动 PATCH。
+6. 修改任意节点后，顶部立即变成“有未保存修改”；停止操作约 2 秒后应自动 PATCH，并最终回到“✓ 已保存”。
 7. 在 dirty 与非 dirty 两种状态下分别点击顶部“保存”，确认都真正执行 PATCH，并最终显示“✓ 已保存”。
 8. 修改后按 `Ctrl+S` / `Cmd+S`，确认同样保存到 NocoDB。
 9. 保存请求发出后继续编辑，确认旧保存结果不会清除新修改的 dirty 状态。
-10. 新建脑图但不编辑，直接点 `×`，确认仍会出现“放弃 / 保存”。
+10. 新建脑图但不编辑，直接点 `×`，确认不会因为初始化本身误报 dirty；做一次真实修改后再点 `×` 才出现“取消 / 放弃 / 保存”。
 11. 点击 Popover“保存”，确认收到 WebUI 保存确认后才关闭。
 12. 使用错误 Token，确认 `401/403` 会要求更新 Token 并只自动重试一次。
 13. 模拟网络错误或 `5xx`，确认不会覆盖已有 Token。
 14. 在没有 `MindMapData` 字段的表点击 Button，确认明确提示字段缺失。
-15. 点击其他普通 Open URL Button，确认仍保持 NocoDB 原生行为。
+15. 等 NocoDB 页面空闲、预热 iframe 已经存在后再打开导图，确认仍能通过 hello/ready 握手正常进入编辑器。
+16. 临时制造 iframe/WebUI 初始化失败，确认超时后自动换新 iframe 重试一次，而不是永久停在 loading。
+17. 选中单个节点按 `Space`，确认进入节点编辑；进入编辑后输入空格应仍是普通空格。
+18. 点击其他普通 Open URL Button，确认仍保持 NocoDB 原生行为。

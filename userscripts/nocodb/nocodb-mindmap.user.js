@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.2.3
+// @version      0.2.4
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 自动/手动保存 MindMapData JSON。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
@@ -30,6 +30,9 @@
   const TOKEN_MODAL_ID = 'tm-nocodb-mindmap-token-modal';
   const PREWARM_ID = 'tm-nocodb-mindmap-prewarm';
   const SAVE_REQUEST_TIMEOUT_MS = 30000;
+  const IFRAME_READY_TIMEOUT_MS = 8000;
+  const APP_READY_TIMEOUT_MS = 12000;
+  const IFRAME_MAX_RETRIES = 1;
 
   const nativeOpen = unsafeWindow.open.bind(unsafeWindow);
 
@@ -749,6 +752,87 @@
     return true;
   }
 
+  function clearIframeTimer(state, key) {
+    if (!state?.[key]) return;
+    window.clearTimeout(state[key]);
+    state[key] = 0;
+  }
+
+  function clearIframeTimers(state) {
+    clearIframeTimer(state, 'iframeReadyTimer');
+    clearIframeTimer(state, 'appReadyTimer');
+  }
+
+  function failMindMapIframe(state, message) {
+    if (!state || state !== modalState) return;
+    clearIframeTimers(state);
+    setFrameMessage('error', message);
+    setModalStatus('error', 'WebUI 初始化失败');
+  }
+
+  function retryMindMapIframe(state, reason) {
+    if (!state || state !== modalState) return;
+    if (state.iframeRetryCount >= IFRAME_MAX_RETRIES) {
+      failMindMapIframe(state, `${reason}。请关闭后重试。`);
+      return;
+    }
+
+    clearIframeTimers(state);
+    state.iframeRetryCount += 1;
+    state.iframeReady = false;
+    state.appReady = false;
+    state.initSent = false;
+
+    const iframe = document.createElement('iframe');
+    iframe.className = 'tm-nmm-frame';
+    iframe.title = 'MindMap WebUI';
+    state.iframe.replaceWith(iframe);
+    state.iframe = iframe;
+
+    setFrameMessage('loading', `${reason}，正在自动重试…`);
+    setModalStatus('loading', '重新连接编辑器…');
+    bindMindMapIframe(state, iframe);
+    iframe.src = buildMindMapIframeUrl();
+    sendMindMapHello(state);
+  }
+
+  function armIframeReadyTimeout(state) {
+    if (!state || state !== modalState || state.iframeReady || state.appReady) return;
+    clearIframeTimer(state, 'iframeReadyTimer');
+    state.iframeReadyTimer = window.setTimeout(() => {
+      state.iframeReadyTimer = 0;
+      if (state !== modalState || state.iframeReady || state.appReady) return;
+      retryMindMapIframe(state, 'MindMap WebUI 握手超时');
+    }, IFRAME_READY_TIMEOUT_MS);
+  }
+
+  function armAppReadyTimeout(state) {
+    if (!state || state !== modalState || !state.initSent || state.appReady) return;
+    clearIframeTimer(state, 'appReadyTimer');
+    state.appReadyTimer = window.setTimeout(() => {
+      state.appReadyTimer = 0;
+      if (state !== modalState || state.appReady) return;
+      retryMindMapIframe(state, 'MindMap WebUI 初始化超时');
+    }, APP_READY_TIMEOUT_MS);
+  }
+
+  function sendMindMapHello(state) {
+    if (!state || state !== modalState || state.appReady) return;
+    postToMindMap(state, 'mindmap:hello');
+    armIframeReadyTimeout(state);
+  }
+
+  function bindMindMapIframe(state, iframe) {
+    iframe.addEventListener('load', () => {
+      if (state !== modalState || state.iframe !== iframe) return;
+      sendMindMapHello(state);
+    });
+    iframe.addEventListener('error', () => {
+      if (state !== modalState || state.iframe !== iframe) return;
+      retryMindMapIframe(state, 'MindMap WebUI 加载失败');
+    });
+  }
+
   function sendInitIfReady(state) {
     if (!state || state !== modalState || state.initSent || !state.iframeReady || !state.initialData) return;
     state.initSent = true;
@@ -757,6 +841,7 @@
       dirty: false,
     });
     setModalStatus('loading', '初始化编辑器…');
+    armAppReadyTimeout(state);
   }
 
   function showClosePopover(state) {
@@ -772,6 +857,7 @@
   function destroyMindMapModal(state) {
     if (!state || state !== modalState) return;
     if (state.saveRequestTimer) window.clearTimeout(state.saveRequestTimer);
+    clearIframeTimers(state);
     state.overlay.remove();
     modalState = null;
     scheduleMindMapPrewarm();
@@ -942,10 +1028,12 @@
     switch (message.type) {
       case 'mindmap:ready':
         state.iframeReady = true;
+        clearIframeTimer(state, 'iframeReadyTimer');
         sendInitIfReady(state);
         break;
       case 'mindmap:app-ready':
         state.appReady = true;
+        clearIframeTimers(state);
         clearFrameMessage();
         state.dirty = false;
         setModalStatus('saved', '✓ 已加载');
@@ -1034,7 +1122,7 @@
     iframe.className = 'tm-nmm-frame';
     iframe.title = 'MindMap WebUI';
     placeholder.replaceWith(iframe);
-    return { iframe, ready: warm.ready };
+    return { iframe, ready: false };
   }
 
   async function openMindMap(recordId) {
@@ -1071,6 +1159,9 @@
       iframeReady: adopted.ready,
       appReady: false,
       initSent: false,
+      iframeReadyTimer: 0,
+      appReadyTimer: 0,
+      iframeRetryCount: 0,
       dirty: false,
       saving: false,
       savePromise: null,
@@ -1109,11 +1200,8 @@
       if (event.target === overlay) void requestCloseMindMapModal();
     });
 
-    iframe.addEventListener('error', () => {
-      if (modalState?.iframe !== iframe) return;
-      setFrameMessage('error', `MindMap WebUI 加载失败：${MINDMAP_WEB_URL}`);
-      setModalStatus('error', 'WebUI 加载失败');
-    });
+    bindMindMapIframe(modalState, iframe);
+    sendMindMapHello(modalState);
 
     await initializeMindMap(modalState);
   }
