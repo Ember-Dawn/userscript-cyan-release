@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.2.5
-// @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 自动/手动保存 MindMapData JSON。
+// @version      0.3.0
+// @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，通过 NocoDB v3 API 保存 MindMapData，并可向 WebUI 注入 EasyImages2.0 图床配置。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -20,15 +20,16 @@
   const MINDMAP_PATH = '/__mindmap__';
   const MINDMAP_WEB_URL = 'https://mindmap.380782744.xyz/';
   const MINDMAP_WEB_ORIGIN = new URL(MINDMAP_WEB_URL).origin;
-  const MINDMAP_WEB_BUILD = '20260914-1';
+  const MINDMAP_WEB_BUILD = '20260914-2';
   const DATA_FIELD = 'MindMapData';
   const ENGINE_NAME = 'simple-mind-map';
   const ENGINE_VERSION = '0.14.0-fix.3';
   const SCHEMA_VERSION = 1;
   const TOKEN_STORAGE_KEY = 'tm-nocodb-mindmap-api-token-v1';
+  const SETTINGS_STORAGE_KEY = 'tm-nocodb-mindmap-settings-v1';
   const STYLE_ID = 'tm-nocodb-mindmap-style';
   const MODAL_ID = 'tm-nocodb-mindmap-modal';
-  const TOKEN_MODAL_ID = 'tm-nocodb-mindmap-token-modal';
+  const SETTINGS_MODAL_ID = 'tm-nocodb-mindmap-settings-modal';
   const PREWARM_ID = 'tm-nocodb-mindmap-prewarm';
   const SAVE_REQUEST_TIMEOUT_MS = 30000;
   const IFRAME_READY_TIMEOUT_MS = 8000;
@@ -38,22 +39,22 @@
   const nativeOpen = unsafeWindow.open.bind(unsafeWindow);
 
   let modalState = null;
-  let tokenDialogState = null;
+  let settingsDialogState = null;
   let prewarmState = null;
 
-  function isTokenInputTarget(target) {
-    return target instanceof Element && target.matches(`#${TOKEN_MODAL_ID} input`);
+  function isSettingsInputTarget(target) {
+    return target instanceof Element && target.matches(`#${SETTINGS_MODAL_ID} input, #${SETTINGS_MODAL_ID} select`);
   }
 
-  function protectTokenInputKeyboard(event) {
-    if (!isTokenInputTarget(event.target)) return;
+  function protectSettingsInputKeyboard(event) {
+    if (!isSettingsInputTarget(event.target)) return;
     const key = String(event.key || '').toLowerCase();
     if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(key)) {
       event.stopImmediatePropagation();
     }
   }
 
-  document.addEventListener('keydown', protectTokenInputKeyboard, true);
+  document.addEventListener('keydown', protectSettingsInputKeyboard, true);
 
   class ApiError extends Error {
     constructor(message, status = 0, body = '') {
@@ -71,7 +72,7 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${MODAL_ID},
-      #${TOKEN_MODAL_ID} {
+      #${SETTINGS_MODAL_ID} {
         position: fixed;
         inset: 0;
         z-index: 2147483000;
@@ -85,7 +86,7 @@
       }
 
       #${MODAL_ID}[hidden],
-      #${TOKEN_MODAL_ID}[hidden] {
+      #${SETTINGS_MODAL_ID}[hidden] {
         display: none !important;
       }
 
@@ -151,7 +152,7 @@
       #${MODAL_ID} .tm-nmm-save,
       #${MODAL_ID} .tm-nmm-close,
       #${MODAL_ID} .tm-nmm-close-popover button,
-      #${TOKEN_MODAL_ID} button {
+      #${SETTINGS_MODAL_ID} button {
         border: 1px solid #d1d5db;
         border-radius: 7px;
         background: #fff;
@@ -164,7 +165,7 @@
       #${MODAL_ID} .tm-nmm-save:hover,
       #${MODAL_ID} .tm-nmm-close:hover,
       #${MODAL_ID} .tm-nmm-close-popover button:hover,
-      #${TOKEN_MODAL_ID} button:hover {
+      #${SETTINGS_MODAL_ID} button:hover {
         background: #f3f4f6;
       }
 
@@ -290,8 +291,11 @@
         color: #b91c1c;
       }
 
-      #${TOKEN_MODAL_ID} .tm-nmm-token-dialog {
-        width: min(460px, calc(100vw - 40px));
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-dialog {
+        width: min(560px, calc(100vw - 40px));
+        max-height: min(80vh, 760px);
+        overflow: auto;
+        box-sizing: border-box;
         padding: 20px;
         border: 1px solid rgba(15, 23, 42, 0.16);
         border-radius: 12px;
@@ -301,18 +305,43 @@
         font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
-      #${TOKEN_MODAL_ID} .tm-nmm-token-title {
-        margin-bottom: 8px;
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-title {
+        margin-bottom: 14px;
         font-size: 16px;
         font-weight: 650;
       }
 
-      #${TOKEN_MODAL_ID} .tm-nmm-token-help {
-        margin-bottom: 12px;
-        color: #6b7280;
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-section + .tm-nmm-settings-section {
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 1px solid #e5e7eb;
       }
 
-      #${TOKEN_MODAL_ID} input {
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-section-title {
+        margin-bottom: 8px;
+        font-weight: 650;
+      }
+
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-help {
+        margin: 0 0 10px;
+        color: #6b7280;
+        font-size: 12px;
+      }
+
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-field {
+        display: grid;
+        grid-template-columns: 110px minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        margin-top: 9px;
+      }
+
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-field > span {
+        color: #4b5563;
+      }
+
+      #${SETTINGS_MODAL_ID} input[type="text"],
+      #${SETTINGS_MODAL_ID} input[type="password"] {
         width: 100%;
         height: 36px;
         box-sizing: border-box;
@@ -323,36 +352,55 @@
         font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
 
-      #${TOKEN_MODAL_ID} input:focus {
+      #${SETTINGS_MODAL_ID} input:focus {
         border-color: #6366f1;
         box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.14);
       }
 
-      #${TOKEN_MODAL_ID} .tm-nmm-token-actions {
+      #${SETTINGS_MODAL_ID} .tm-nmm-image-enabled-wrap {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      #${SETTINGS_MODAL_ID} .tm-nmm-image-override-fields[hidden],
+      #${SETTINGS_MODAL_ID} .tm-nmm-image-fields[hidden] {
+        display: none !important;
+      }
+
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-error {
+        min-height: 20px;
+        margin-top: 10px;
+        color: #b91c1c;
+        font-size: 12px;
+      }
+
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-actions {
         display: flex;
         justify-content: flex-end;
         gap: 8px;
         margin-top: 14px;
       }
 
-      #${TOKEN_MODAL_ID} button {
+      #${SETTINGS_MODAL_ID} button {
         min-height: 32px;
         padding: 5px 12px;
       }
 
-      #${TOKEN_MODAL_ID} .tm-nmm-token-save {
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-save {
         border-color: #4f46e5;
         background: #4f46e5;
         color: #fff;
       }
 
-      #${TOKEN_MODAL_ID} .tm-nmm-token-save:hover {
+      #${SETTINGS_MODAL_ID} .tm-nmm-settings-save:hover {
         background: #4338ca;
       }
 
       @media (max-width: 820px), (max-height: 620px) {
         #${MODAL_ID},
-        #${TOKEN_MODAL_ID} {
+        #${SETTINGS_MODAL_ID} {
           padding: 10px;
         }
 
@@ -361,6 +409,11 @@
           height: calc(100vh - 20px);
           min-width: 0;
           min-height: 0;
+        }
+
+        #${SETTINGS_MODAL_ID} .tm-nmm-settings-field {
+          grid-template-columns: 1fr;
+          gap: 4px;
         }
       }
     `;
@@ -408,14 +461,89 @@
     return { workspaceId, baseId, tableId, viewId };
   }
 
+  function getDefaultSettings() {
+    return {
+      nocodb: {
+        token: String(GM_getValue(TOKEN_STORAGE_KEY, '') || '').trim(),
+      },
+      imageHost: {
+        override: false,
+        enabled: false,
+        provider: 'easyimages2',
+        url: '',
+        token: '',
+      },
+    };
+  }
+
+  function getSettings() {
+    const defaults = getDefaultSettings();
+    const stored = GM_getValue(SETTINGS_STORAGE_KEY, null);
+    if (!stored) return defaults;
+
+    let parsed = stored;
+    if (typeof parsed === 'string') {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        return defaults;
+      }
+    }
+
+    if (!parsed || typeof parsed !== 'object') return defaults;
+    return {
+      nocodb: {
+        token: String(parsed.nocodb?.token || defaults.nocodb.token || '').trim(),
+      },
+      imageHost: {
+        override: Boolean(parsed.imageHost?.override),
+        enabled: Boolean(parsed.imageHost?.enabled),
+        provider: String(parsed.imageHost?.provider || 'easyimages2').trim() || 'easyimages2',
+        url: String(parsed.imageHost?.url || '').trim(),
+        token: String(parsed.imageHost?.token || '').trim(),
+      },
+    };
+  }
+
+  function saveSettings(settings) {
+    const normalized = {
+      nocodb: {
+        token: String(settings?.nocodb?.token || '').trim(),
+      },
+      imageHost: {
+        override: Boolean(settings?.imageHost?.override),
+        enabled: Boolean(settings?.imageHost?.enabled),
+        provider: 'easyimages2',
+        url: String(settings?.imageHost?.url || '').trim(),
+        token: String(settings?.imageHost?.token || '').trim(),
+      },
+    };
+    GM_setValue(SETTINGS_STORAGE_KEY, normalized);
+    if (normalized.nocodb.token) {
+      GM_setValue(TOKEN_STORAGE_KEY, normalized.nocodb.token);
+    }
+    return normalized;
+  }
+
   function getApiToken() {
-    return String(GM_getValue(TOKEN_STORAGE_KEY, '') || '').trim();
+    return getSettings().nocodb.token;
   }
 
   function setApiToken(token) {
-    const normalized = String(token || '').trim();
-    if (normalized) GM_setValue(TOKEN_STORAGE_KEY, normalized);
-    return normalized;
+    const settings = getSettings();
+    settings.nocodb.token = String(token || '').trim();
+    return saveSettings(settings).nocodb.token;
+  }
+
+  function getImageUploadConfig() {
+    const imageHost = getSettings().imageHost;
+    if (!imageHost.override) return null;
+    return {
+      enabled: imageHost.enabled,
+      provider: 'easyimages2',
+      url: imageHost.url,
+      token: imageHost.token,
+    };
   }
 
   function ensureDocumentReady() {
@@ -437,14 +565,14 @@
     button.textContent = text;
   }
 
-  async function promptForToken({ force = false, authFailed = false } = {}) {
-    const current = getApiToken();
-    if (current && !force) return current;
+  async function promptForSettings({ force = false, authFailed = false } = {}) {
+    const current = getSettings();
+    if (current.nocodb.token && !force) return current.nocodb.token;
 
     await ensureDocumentReady();
     injectStyle();
 
-    if (tokenDialogState) return tokenDialogState.promise;
+    if (settingsDialogState) return settingsDialogState.promise;
 
     let resolvePromise;
     const promise = new Promise((resolve) => {
@@ -452,44 +580,125 @@
     });
 
     const overlay = document.createElement('div');
-    overlay.id = TOKEN_MODAL_ID;
+    overlay.id = SETTINGS_MODAL_ID;
     overlay.innerHTML = `
-      <div class="tm-nmm-token-dialog" role="dialog" aria-modal="true" aria-label="设置 NocoDB API Token">
-        <div class="tm-nmm-token-title">${authFailed ? 'NocoDB API Token 无效或权限不足' : '设置 NocoDB API Token'}</div>
-        <div class="tm-nmm-token-help">
-          ${authFailed ? '请重新输入可用的 API Token。保存后脚本会自动重试刚才的请求。' : '首次使用需要 API Token。'}
-          Token 仅保存在 Tampermonkey 当前脚本的本地存储中，不会写入 GitHub。
+      <div class="tm-nmm-settings-dialog" role="dialog" aria-modal="true" aria-label="NocoDB 思维导图设置">
+        <div class="tm-nmm-settings-title">NocoDB 思维导图设置</div>
+        <div class="tm-nmm-settings-section">
+          <div class="tm-nmm-settings-section-title">NocoDB</div>
+          <div class="tm-nmm-settings-help">
+            ${authFailed ? '当前 API Token 无效或权限不足，请重新输入。' : 'Token 仅保存在 Tampermonkey 当前脚本的本地存储中，不会写入 GitHub。'}
+          </div>
+          <label class="tm-nmm-settings-field">
+            <span>API Token</span>
+            <input class="tm-nmm-nocodb-token" type="password" autocomplete="off" spellcheck="false" placeholder="NocoDB API Token">
+          </label>
         </div>
-        <input type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 NocoDB API Token">
-        <div class="tm-nmm-token-actions">
-          <button type="button" class="tm-nmm-token-cancel">取消</button>
-          <button type="button" class="tm-nmm-token-save">保存并继续</button>
+        <div class="tm-nmm-settings-section">
+          <div class="tm-nmm-settings-section-title">图片上传</div>
+          <div class="tm-nmm-settings-help">当前支持 EasyImages2.0。开启覆盖后，本配置会在打开思维导图时临时传给 WebUI，并优先于 WebUI 自己保存的图床配置。</div>
+          <label class="tm-nmm-image-enabled-wrap">
+            <input class="tm-nmm-image-override" type="checkbox">
+            <span>使用油猴脚本图床配置（覆盖 Web 设置）</span>
+          </label>
+          <div class="tm-nmm-image-override-fields">
+            <label class="tm-nmm-image-enabled-wrap">
+              <input class="tm-nmm-image-enabled" type="checkbox">
+              <span>启用 EasyImages2.0 图床</span>
+            </label>
+            <div class="tm-nmm-image-fields">
+            <div class="tm-nmm-settings-field">
+              <span>图床类型</span>
+              <input type="text" value="EasyImages2.0" disabled>
+            </div>
+            <label class="tm-nmm-settings-field">
+              <span>图床地址</span>
+              <input class="tm-nmm-image-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://img.example.com 或完整 /api/index.php">
+            </label>
+            <label class="tm-nmm-settings-field">
+              <span>API Token</span>
+              <input class="tm-nmm-image-token" type="password" autocomplete="off" spellcheck="false" placeholder="EasyImages2.0 API Token">
+            </label>
+            </div>
+          </div>
+        </div>
+        <div class="tm-nmm-settings-error"></div>
+        <div class="tm-nmm-settings-actions">
+          <button type="button" class="tm-nmm-settings-cancel">取消</button>
+          <button type="button" class="tm-nmm-settings-save">保存</button>
         </div>
       </div>
     `;
 
     document.documentElement.appendChild(overlay);
-    const input = overlay.querySelector('input');
-    const saveButton = overlay.querySelector('.tm-nmm-token-save');
-    const cancelButton = overlay.querySelector('.tm-nmm-token-cancel');
+    const nocodbTokenInput = overlay.querySelector('.tm-nmm-nocodb-token');
+    const imageOverrideInput = overlay.querySelector('.tm-nmm-image-override');
+    const imageOverrideFields = overlay.querySelector('.tm-nmm-image-override-fields');
+    const imageEnabledInput = overlay.querySelector('.tm-nmm-image-enabled');
+    const imageFields = overlay.querySelector('.tm-nmm-image-fields');
+    const imageUrlInput = overlay.querySelector('.tm-nmm-image-url');
+    const imageTokenInput = overlay.querySelector('.tm-nmm-image-token');
+    const errorEl = overlay.querySelector('.tm-nmm-settings-error');
+    const saveButton = overlay.querySelector('.tm-nmm-settings-save');
+    const cancelButton = overlay.querySelector('.tm-nmm-settings-cancel');
 
-    if (force && current) input.value = current;
+    nocodbTokenInput.value = current.nocodb.token;
+    imageOverrideInput.checked = current.imageHost.override;
+    imageEnabledInput.checked = current.imageHost.enabled;
+    imageUrlInput.value = current.imageHost.url;
+    imageTokenInput.value = current.imageHost.token;
+
+    const syncImageFields = () => {
+      imageOverrideFields.hidden = !imageOverrideInput.checked;
+      imageFields.hidden = !imageEnabledInput.checked;
+    };
+    syncImageFields();
+    imageOverrideInput.addEventListener('change', syncImageFields);
+    imageEnabledInput.addEventListener('change', syncImageFields);
 
     const finish = (value) => {
-      if (!tokenDialogState) return;
-      tokenDialogState = null;
+      if (!settingsDialogState) return;
+      settingsDialogState = null;
       overlay.remove();
       resolvePromise(value);
     };
 
     const save = () => {
-      const token = setApiToken(input.value);
-      if (!token) {
-        input.focus();
+      const next = {
+        nocodb: {
+          token: nocodbTokenInput.value,
+        },
+        imageHost: {
+          override: imageOverrideInput.checked,
+          enabled: imageEnabledInput.checked,
+          provider: 'easyimages2',
+          url: imageUrlInput.value,
+          token: imageTokenInput.value,
+        },
+      };
+
+      const nocodbToken = String(next.nocodb.token || '').trim();
+      const imageUrl = String(next.imageHost.url || '').trim();
+      const imageToken = String(next.imageHost.token || '').trim();
+      if (!nocodbToken) {
+        errorEl.textContent = '请填写 NocoDB API Token。';
+        nocodbTokenInput.focus();
         return;
       }
+      if (next.imageHost.override && next.imageHost.enabled && (!imageUrl || !imageToken)) {
+        errorEl.textContent = '启用 EasyImages2.0 后，需要同时填写图床地址和 API Token。';
+        (!imageUrl ? imageUrlInput : imageTokenInput).focus();
+        return;
+      }
+
+      const saved = saveSettings(next);
       setApiStatus('pending', 'API 待验证');
-      finish(token);
+      if (modalState) {
+        postToMindMap(modalState, 'mindmap:image-upload-config', {
+          imageUploadConfig: getImageUploadConfig(),
+        });
+      }
+      finish(saved.nocodb.token);
     };
 
     saveButton.addEventListener('click', save);
@@ -497,38 +706,35 @@
     overlay.addEventListener('mousedown', (event) => {
       if (event.target === overlay) finish('');
     });
-    input.addEventListener('keydown', (event) => {
-      const key = String(event.key || '').toLowerCase();
-      if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(key)) {
-        event.stopPropagation();
-        return;
-      }
 
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        event.stopPropagation();
-        save();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        finish('');
+    overlay.querySelectorAll('input').forEach((input) => {
+      input.addEventListener('keydown', (event) => {
+        const key = String(event.key || '').toLowerCase();
+        if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(key)) {
+          event.stopPropagation();
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          finish('');
+        }
+      });
+      for (const type of ['paste', 'copy', 'cut']) {
+        input.addEventListener(type, (event) => {
+          event.stopPropagation();
+        });
       }
     });
 
-    for (const type of ['paste', 'copy', 'cut']) {
-      input.addEventListener(type, (event) => {
-        event.stopPropagation();
-      });
-    }
-
-    tokenDialogState = { overlay, promise };
-    requestAnimationFrame(() => input.focus());
+    settingsDialogState = { overlay, promise };
+    requestAnimationFrame(() => nocodbTokenInput.focus());
     return promise;
   }
 
   async function apiRequest(path, options = {}, allowTokenRetry = true) {
     let token = getApiToken();
-    if (!token) token = await promptForToken();
+    if (!token) token = await promptForSettings();
     if (!token) {
       setApiStatus('error', 'API 未配置');
       throw new Error('未设置 NocoDB API Token。');
@@ -559,7 +765,7 @@
       setApiStatus('error', 'API ✕');
 
       if (allowTokenRetry && [401, 403].includes(response.status)) {
-        const replacement = await promptForToken({ force: true, authFailed: true });
+        const replacement = await promptForSettings({ force: true, authFailed: true });
         if (replacement) return apiRequest(path, options, false);
       }
 
@@ -675,7 +881,7 @@
         <div class="tm-nmm-header">
           <div class="tm-nmm-title">思维导图 · Record ${escapeHtml(recordId)}</div>
           <div class="tm-nmm-status" data-state="loading">读取中…</div>
-          <button type="button" class="tm-nmm-api" data-state="${tokenState}" title="设置或重新验证 NocoDB API Token">${tokenText}</button>
+          <button type="button" class="tm-nmm-api" data-state="${tokenState}" title="NocoDB API / EasyImages2.0 设置">${tokenText}</button>
           <button type="button" class="tm-nmm-save" title="保存到 NocoDB">保存</button>
           <div class="tm-nmm-close-wrap">
             <button type="button" class="tm-nmm-close" title="关闭" aria-label="关闭">×</button>
@@ -841,6 +1047,7 @@
     postToMindMap(state, 'mindmap:init', {
       data: state.initialData,
       dirty: false,
+      imageUploadConfig: getImageUploadConfig(),
     });
     setModalStatus('loading', '初始化编辑器…');
     armAppReadyTimeout(state);
@@ -1174,7 +1381,7 @@
     };
 
     overlay.querySelector('.tm-nmm-api').addEventListener('click', async () => {
-      const token = await promptForToken({ force: true });
+      const token = await promptForSettings({ force: true });
       if (token && modalState) await verifyApiToken(modalState);
     });
 
