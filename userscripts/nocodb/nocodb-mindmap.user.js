@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.2.0
+// @version      0.2.1
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 手动保存 MindMapData JSON。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
@@ -28,6 +28,7 @@
   const STYLE_ID = 'tm-nocodb-mindmap-style';
   const MODAL_ID = 'tm-nocodb-mindmap-modal';
   const TOKEN_MODAL_ID = 'tm-nocodb-mindmap-token-modal';
+  const PREWARM_ID = 'tm-nocodb-mindmap-prewarm';
   const SAVE_REQUEST_TIMEOUT_MS = 30000;
 
   const nativeOpen = unsafeWindow.open.bind(unsafeWindow);
@@ -43,7 +44,6 @@
     if (!isTokenInputTarget(event.target)) return;
     const key = String(event.key || '').toLowerCase();
     if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(key)) {
-      // Keep the browser's native edit action, but prevent NocoDB/global shortcuts from handling it.
       event.stopImmediatePropagation();
     }
   }
@@ -142,6 +142,7 @@
         color: #b91c1c;
       }
 
+      #${MODAL_ID} .tm-nmm-api,
       #${MODAL_ID} .tm-nmm-save,
       #${MODAL_ID} .tm-nmm-close,
       #${MODAL_ID} .tm-nmm-close-popover button,
@@ -154,6 +155,7 @@
         font: inherit;
       }
 
+      #${MODAL_ID} .tm-nmm-api:hover,
       #${MODAL_ID} .tm-nmm-save:hover,
       #${MODAL_ID} .tm-nmm-close:hover,
       #${MODAL_ID} .tm-nmm-close-popover button:hover,
@@ -161,9 +163,25 @@
         background: #f3f4f6;
       }
 
+      #${MODAL_ID} .tm-nmm-api,
       #${MODAL_ID} .tm-nmm-save {
         min-height: 32px;
         padding: 5px 12px;
+      }
+
+      #${MODAL_ID} .tm-nmm-api[data-state="ok"] {
+        border-color: #86efac;
+        color: #15803d;
+      }
+
+      #${MODAL_ID} .tm-nmm-api[data-state="pending"] {
+        border-color: #fde68a;
+        color: #a16207;
+      }
+
+      #${MODAL_ID} .tm-nmm-api[data-state="error"] {
+        border-color: #fecaca;
+        color: #b91c1c;
       }
 
       #${MODAL_ID} .tm-nmm-save:disabled {
@@ -407,6 +425,13 @@
     });
   }
 
+  function setApiStatus(state, text) {
+    const button = modalState?.overlay?.querySelector('.tm-nmm-api');
+    if (!button) return;
+    button.dataset.state = state;
+    button.textContent = text;
+  }
+
   async function promptForToken({ force = false, authFailed = false } = {}) {
     const current = getApiToken();
     if (current && !force) return current;
@@ -458,6 +483,7 @@
         input.focus();
         return;
       }
+      setApiStatus('pending', 'API 待验证');
       finish(token);
     };
 
@@ -498,7 +524,12 @@
   async function apiRequest(path, options = {}, allowTokenRetry = true) {
     let token = getApiToken();
     if (!token) token = await promptForToken();
-    if (!token) throw new Error('未设置 NocoDB API Token。');
+    if (!token) {
+      setApiStatus('error', 'API 未配置');
+      throw new Error('未设置 NocoDB API Token。');
+    }
+
+    setApiStatus('pending', 'API 验证中…');
 
     let response;
     try {
@@ -513,12 +544,14 @@
         },
       });
     } catch (error) {
+      setApiStatus('error', 'API ✕');
       throw new ApiError(error?.message || 'NocoDB API 网络请求失败。');
     }
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       const apiError = new ApiError(`NocoDB API 请求失败（HTTP ${response.status}）。`, response.status, body);
+      setApiStatus('error', 'API ✕');
 
       if (allowTokenRetry && [401, 403].includes(response.status)) {
         const replacement = await promptForToken({ force: true, authFailed: true });
@@ -528,6 +561,7 @@
       throw apiError;
     }
 
+    setApiStatus('ok', 'API ✓');
     if (response.status === 204) return null;
     return response.json();
   }
@@ -573,9 +607,7 @@
       return parsed.data;
     }
 
-    // 兼容早期直接保存 SimpleMindMap 完整数据的情况。
     if (parsed.root && typeof parsed.root === 'object') return parsed;
-
     return null;
   }
 
@@ -591,14 +623,6 @@
       }
     }
 
-    if (!text) {
-      const firstText = Object.entries(fields).find(([key, value]) => (
-        key !== DATA_FIELD && typeof value === 'string' && value.trim()
-      ));
-      if (firstText) text = firstText[1].trim();
-    }
-
-    if (!text) text = `Record ${record?.id ?? ''}`.trim();
     if (!text) text = '中心主题';
 
     return {
@@ -610,7 +634,7 @@
         children: [],
       },
       theme: {
-        template: 'default',
+        template: 'classic15',
         config: {},
       },
       view: null,
@@ -638,11 +662,14 @@
 
     const overlay = document.createElement('div');
     overlay.id = MODAL_ID;
+    const tokenState = getApiToken() ? 'pending' : 'error';
+    const tokenText = getApiToken() ? 'API 待验证' : 'API 未配置';
     overlay.innerHTML = `
       <div class="tm-nmm-dialog" role="dialog" aria-modal="true" aria-label="NocoDB 思维导图">
         <div class="tm-nmm-header">
           <div class="tm-nmm-title">思维导图 · Record ${escapeHtml(recordId)}</div>
           <div class="tm-nmm-status" data-state="loading">读取中…</div>
+          <button type="button" class="tm-nmm-api" data-state="${tokenState}" title="设置或重新验证 NocoDB API Token">${tokenText}</button>
           <button type="button" class="tm-nmm-save" title="保存到 NocoDB">保存</button>
           <div class="tm-nmm-close-wrap">
             <button type="button" class="tm-nmm-close" title="关闭" aria-label="关闭">×</button>
@@ -706,11 +733,7 @@
     for (const key of ['Title', 'Name', '标题', '名称']) {
       if (typeof fields[key] === 'string' && fields[key].trim()) return fields[key].trim();
     }
-
-    const firstText = Object.entries(fields).find(([key, value]) => (
-      key !== DATA_FIELD && typeof value === 'string' && value.trim()
-    ));
-    return firstText ? firstText[1].trim() : `Record ${recordId}`;
+    return `Record ${recordId}`;
   }
 
   function postToMindMap(state, type, payload = {}) {
@@ -727,7 +750,10 @@
   function sendInitIfReady(state) {
     if (!state || state !== modalState || state.initSent || !state.iframeReady || !state.initialData) return;
     state.initSent = true;
-    postToMindMap(state, 'mindmap:init', { data: state.initialData });
+    postToMindMap(state, 'mindmap:init', {
+      data: state.initialData,
+      dirty: !state.hadStoredData,
+    });
     setModalStatus('loading', '初始化编辑器…');
   }
 
@@ -767,7 +793,7 @@
         if (requestId !== null) {
           postToMindMap(state, 'mindmap:save-result', { requestId, ok: true });
         }
-        setModalStatus('saved', '✓ 已保存');
+        setModalStatus('saving', '已写入，确认状态…');
         return true;
       } catch (error) {
         console.error('[NocoDB 思维导图] 保存失败:', error);
@@ -809,12 +835,6 @@
     if (state.savePromise) {
       const previousOk = await state.savePromise;
       if (!previousOk || state !== modalState) return false;
-      if (!state.dirty) return true;
-    }
-
-    if (!state.dirty) {
-      setModalStatus('saved', '✓ 无需保存');
-      return true;
     }
 
     if (state.saveRequestPromise) return state.saveRequestPromise;
@@ -868,6 +888,15 @@
     destroyMindMapModal(state);
   }
 
+  async function verifyApiToken(state) {
+    if (!state || state !== modalState) return;
+    try {
+      await readRecord(state.context, state.recordId);
+    } catch (error) {
+      console.error('[NocoDB 思维导图] API Token 验证失败:', error);
+    }
+  }
+
   async function initializeMindMap(state) {
     try {
       const record = await readRecord(state.context, state.recordId);
@@ -886,7 +915,7 @@
     } catch (error) {
       console.error('[NocoDB 思维导图] 初始化失败:', error);
       const suffix = error instanceof ApiError && [401, 403].includes(error.status)
-        ? ' 请重新点击 MindMap Button 并设置可用的 API Token。'
+        ? ' 请重新设置可用的 API Token。'
         : '';
       setFrameMessage('error', `${error.message || '初始化失败。'}${suffix}`);
       setModalStatus('error', '打开失败');
@@ -910,7 +939,11 @@
       case 'mindmap:app-ready':
         state.appReady = true;
         clearFrameMessage();
-        setModalStatus('saved', state.hadStoredData ? '✓ 已加载' : '新建脑图，尚未保存');
+        state.dirty = !state.hadStoredData;
+        setModalStatus(
+          state.dirty ? 'dirty' : 'saved',
+          state.dirty ? '有未保存修改' : '✓ 已加载'
+        );
         break;
       case 'mindmap:dirty':
         state.dirty = Boolean(message.dirty);
@@ -932,15 +965,15 @@
           finishSaveRequest(state, false);
           break;
         }
-        void (async () => {
-          const ok = await saveMindMapPayload(state, message.data, message.requestId ?? null);
-          if (state === modalState) finishSaveRequest(state, ok);
-        })();
+        void saveMindMapPayload(state, message.data, message.requestId ?? null);
         break;
       case 'mindmap:save-status':
         if (!message.ok && message.error) {
           setModalStatus('error', `保存失败：${message.error}`);
+        } else if (message.ok) {
+          setModalStatus(state.dirty ? 'dirty' : 'saved', state.dirty ? '有未保存修改' : '✓ 已保存');
         }
+        finishSaveRequest(state, Boolean(message.ok));
         break;
       default:
         break;
@@ -948,6 +981,36 @@
   }
 
   window.addEventListener('message', handleMindMapMessage);
+
+  function scheduleMindMapPrewarm() {
+    if (document.getElementById(PREWARM_ID)) return;
+
+    const preconnect = document.createElement('link');
+    preconnect.rel = 'preconnect';
+    preconnect.href = MINDMAP_WEB_ORIGIN;
+    preconnect.crossOrigin = 'anonymous';
+    document.head?.appendChild(preconnect);
+
+    const warm = () => {
+      if (modalState || document.getElementById(PREWARM_ID)) return;
+      const iframe = document.createElement('iframe');
+      iframe.id = PREWARM_ID;
+      iframe.src = buildMindMapIframeUrl();
+      iframe.tabIndex = -1;
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.style.cssText = 'position:fixed;width:1px;height:1px;left:-9999px;top:-9999px;border:0;opacity:0;pointer-events:none;';
+      iframe.addEventListener('load', () => {
+        window.setTimeout(() => iframe.remove(), 1500);
+      }, { once: true });
+      document.body?.appendChild(iframe);
+    };
+
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(warm, { timeout: 3000 });
+    } else {
+      window.setTimeout(warm, 1500);
+    }
+  }
 
   async function openMindMap(recordId) {
     await ensureDocumentReady();
@@ -989,6 +1052,11 @@
       saveRequestTimer: 0,
       lastSavedPayload: null,
     };
+
+    overlay.querySelector('.tm-nmm-api').addEventListener('click', async () => {
+      const token = await promptForToken({ force: true });
+      if (token && modalState) await verifyApiToken(modalState);
+    });
 
     overlay.querySelector('.tm-nmm-save').addEventListener('click', () => {
       void requestIframeSave(modalState);
@@ -1048,4 +1116,6 @@
 
     return nativeOpen(url, target, features);
   };
+
+  void ensureDocumentReady().then(scheduleMindMapPrewarm);
 })();
