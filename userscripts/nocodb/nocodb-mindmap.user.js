@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.3.0
+// @version      0.3.1
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，通过 NocoDB v3 API 保存 MindMapData，并可向 WebUI 注入 EasyImages2.0 图床配置。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
@@ -20,7 +20,7 @@
   const MINDMAP_PATH = '/__mindmap__';
   const MINDMAP_WEB_URL = 'https://mindmap.380782744.xyz/';
   const MINDMAP_WEB_ORIGIN = new URL(MINDMAP_WEB_URL).origin;
-  const MINDMAP_WEB_BUILD = '20260914-2';
+  const MINDMAP_WEB_BUILD = '20260914-3';
   const DATA_FIELD = 'MindMapData';
   const ENGINE_NAME = 'simple-mind-map';
   const ENGINE_VERSION = '0.14.0-fix.3';
@@ -693,7 +693,7 @@
 
       const saved = saveSettings(next);
       setApiStatus('pending', 'API 待验证');
-      if (modalState) {
+      if (modalState?.iframeReady) {
         postToMindMap(modalState, 'mindmap:image-upload-config', {
           imageUploadConfig: getImageUploadConfig(),
         });
@@ -896,7 +896,7 @@
           </div>
         </div>
         <div class="tm-nmm-frame-wrap">
-          <iframe class="tm-nmm-frame" title="MindMap WebUI" src="about:blank"></iframe>
+          <iframe class="tm-nmm-frame" title="MindMap WebUI" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
           <div class="tm-nmm-loading">正在读取 NocoDB 记录并加载 MindMap WebUI…</div>
         </div>
       </div>
@@ -994,6 +994,7 @@
     const iframe = document.createElement('iframe');
     iframe.className = 'tm-nmm-frame';
     iframe.title = 'MindMap WebUI';
+    iframe.allow = 'clipboard-read; clipboard-write';
     state.iframe.replaceWith(iframe);
     state.iframe = iframe;
 
@@ -1001,7 +1002,7 @@
     setModalStatus('loading', '重新连接编辑器…');
     bindMindMapIframe(state, iframe);
     iframe.src = buildMindMapIframeUrl();
-    sendMindMapHello(state);
+    armIframeReadyTimeout(state);
   }
 
   function armIframeReadyTimeout(state) {
@@ -1300,6 +1301,7 @@
       if (modalState || prewarmState?.iframe?.isConnected) return;
       const iframe = document.createElement('iframe');
       iframe.id = PREWARM_ID;
+      iframe.allow = 'clipboard-read; clipboard-write';
       iframe.src = buildMindMapIframeUrl();
       iframe.tabIndex = -1;
       iframe.setAttribute('aria-hidden', 'true');
@@ -1318,8 +1320,7 @@
   function adoptPrewarmedIframe(placeholder) {
     const warm = prewarmState;
     if (!warm?.iframe?.isConnected) {
-      placeholder.src = buildMindMapIframeUrl();
-      return { iframe: placeholder, ready: false };
+      return { iframe: placeholder, ready: false, needsNavigation: true };
     }
 
     prewarmState = null;
@@ -1331,7 +1332,7 @@
     iframe.className = 'tm-nmm-frame';
     iframe.title = 'MindMap WebUI';
     placeholder.replaceWith(iframe);
-    return { iframe, ready: false };
+    return { iframe, ready: Boolean(warm.ready), needsNavigation: false };
   }
 
   async function openMindMap(recordId) {
@@ -1410,7 +1411,12 @@
     });
 
     bindMindMapIframe(modalState, iframe);
-    sendMindMapHello(modalState);
+    if (adopted.needsNavigation) {
+      iframe.src = buildMindMapIframeUrl();
+    }
+    if (!modalState.iframeReady) {
+      armIframeReadyTimeout(modalState);
+    }
 
     await initializeMindMap(modalState);
   }
