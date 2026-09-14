@@ -5,13 +5,9 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.1.2
-// @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中使用 SimpleMindMap 编辑 MindMapData JSON，并通过 NocoDB v3 API 自动保存。
+// @version      0.2.0
+// @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，并通过 NocoDB v3 API 手动保存 MindMapData JSON。
 // @match        https://nocodb.380782744.xyz/*
-// @require      https://unpkg.com/simple-mind-map@0.14.0-fix.3/dist/simpleMindMap.umd.min.js
-// @resource     simpleMindMapCss https://unpkg.com/simple-mind-map@0.14.0-fix.3/dist/simpleMindMap.esm.min.css
-// @grant        GM_addStyle
-// @grant        GM_getResourceText
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        unsafeWindow
@@ -22,21 +18,22 @@
   'use strict';
 
   const MINDMAP_PATH = '/__mindmap__';
+  const MINDMAP_WEB_URL = 'https://mindmap.380782744.xyz/';
+  const MINDMAP_WEB_ORIGIN = new URL(MINDMAP_WEB_URL).origin;
   const DATA_FIELD = 'MindMapData';
   const ENGINE_NAME = 'simple-mind-map';
   const ENGINE_VERSION = '0.14.0-fix.3';
   const SCHEMA_VERSION = 1;
-  const SAVE_DELAY_MS = 1500;
   const TOKEN_STORAGE_KEY = 'tm-nocodb-mindmap-api-token-v1';
   const STYLE_ID = 'tm-nocodb-mindmap-style';
   const MODAL_ID = 'tm-nocodb-mindmap-modal';
   const TOKEN_MODAL_ID = 'tm-nocodb-mindmap-token-modal';
+  const SAVE_REQUEST_TIMEOUT_MS = 30000;
 
   const nativeOpen = unsafeWindow.open.bind(unsafeWindow);
 
   let modalState = null;
   let tokenDialogState = null;
-  let libraryCssInjected = false;
 
   function isTokenInputTarget(target) {
     return target instanceof Element && target.matches(`#${TOKEN_MODAL_ID} input`);
@@ -60,24 +57,6 @@
       this.status = status;
       this.body = body;
     }
-  }
-
-  function getMindMapNamespace() {
-    const namespace = globalThis.simpleMindMap || unsafeWindow.simpleMindMap;
-    return namespace || null;
-  }
-
-  function getMindMapConstructor() {
-    const namespace = getMindMapNamespace();
-    const ctor = namespace?.default || namespace;
-    return typeof ctor === 'function' ? ctor : null;
-  }
-
-  function injectLibraryCss() {
-    if (libraryCssInjected) return;
-    const css = GM_getResourceText('simpleMindMapCss');
-    if (css) GM_addStyle(css);
-    libraryCssInjected = true;
   }
 
   function injectStyle() {
@@ -112,7 +91,7 @@
         height: min(85vh, 1040px);
         min-width: 720px;
         min-height: 520px;
-        overflow: hidden;
+        overflow: visible;
         border: 1px solid rgba(15, 23, 42, 0.15);
         border-radius: 14px;
         background: #fff;
@@ -122,12 +101,15 @@
       }
 
       #${MODAL_ID} .tm-nmm-header {
+        position: relative;
+        z-index: 3;
         display: flex;
         align-items: center;
         min-height: 48px;
-        gap: 12px;
+        gap: 10px;
         padding: 0 14px 0 16px;
         border-bottom: 1px solid #e5e7eb;
+        border-radius: 14px 14px 0 0;
         background: #fff;
       }
 
@@ -151,6 +133,7 @@
         color: #15803d;
       }
 
+      #${MODAL_ID} .tm-nmm-status[data-state="dirty"],
       #${MODAL_ID} .tm-nmm-status[data-state="saving"] {
         color: #a16207;
       }
@@ -159,8 +142,9 @@
         color: #b91c1c;
       }
 
+      #${MODAL_ID} .tm-nmm-save,
       #${MODAL_ID} .tm-nmm-close,
-      #${MODAL_ID} .tm-nmm-tool,
+      #${MODAL_ID} .tm-nmm-close-popover button,
       #${TOKEN_MODAL_ID} button {
         border: 1px solid #d1d5db;
         border-radius: 7px;
@@ -170,10 +154,28 @@
         font: inherit;
       }
 
+      #${MODAL_ID} .tm-nmm-save:hover,
       #${MODAL_ID} .tm-nmm-close:hover,
-      #${MODAL_ID} .tm-nmm-tool:hover,
+      #${MODAL_ID} .tm-nmm-close-popover button:hover,
       #${TOKEN_MODAL_ID} button:hover {
         background: #f3f4f6;
+      }
+
+      #${MODAL_ID} .tm-nmm-save {
+        min-height: 32px;
+        padding: 5px 12px;
+      }
+
+      #${MODAL_ID} .tm-nmm-save:disabled {
+        cursor: default;
+        opacity: 0.55;
+      }
+
+      #${MODAL_ID} .tm-nmm-close-wrap {
+        position: relative;
+        flex: 0 0 auto;
+        width: 32px;
+        height: 32px;
       }
 
       #${MODAL_ID} .tm-nmm-close {
@@ -184,51 +186,67 @@
         line-height: 28px;
       }
 
-      #${MODAL_ID} .tm-nmm-toolbar {
+      #${MODAL_ID} .tm-nmm-close-popover {
+        position: absolute;
+        top: 32px;
+        right: 32px;
+        z-index: 20;
+        width: 220px;
+        box-sizing: border-box;
+        padding: 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.2);
+      }
+
+      #${MODAL_ID} .tm-nmm-close-popover[hidden] {
+        display: none !important;
+      }
+
+      #${MODAL_ID} .tm-nmm-close-popover-text {
+        margin-bottom: 10px;
+        color: #374151;
+        font-size: 13px;
+      }
+
+      #${MODAL_ID} .tm-nmm-close-popover-actions {
         display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 6px;
-        min-height: 42px;
-        padding: 5px 10px;
-        border-bottom: 1px solid #e5e7eb;
-        background: #f8fafc;
+        justify-content: flex-end;
+        gap: 8px;
       }
 
-      #${MODAL_ID} .tm-nmm-tool {
+      #${MODAL_ID} .tm-nmm-close-popover button {
         min-height: 30px;
-        padding: 4px 9px;
-        white-space: nowrap;
+        padding: 4px 10px;
       }
 
-      #${MODAL_ID} .tm-nmm-tool.tm-nmm-primary {
+      #${MODAL_ID} .tm-nmm-close-popover .tm-nmm-close-save {
         border-color: #4f46e5;
         background: #4f46e5;
         color: #fff;
       }
 
-      #${MODAL_ID} .tm-nmm-tool.tm-nmm-primary:hover {
+      #${MODAL_ID} .tm-nmm-close-popover .tm-nmm-close-save:hover {
         background: #4338ca;
       }
 
-      #${MODAL_ID} .tm-nmm-separator {
-        width: 1px;
-        height: 22px;
-        margin: 0 2px;
-        background: #d1d5db;
-      }
-
-      #${MODAL_ID} .tm-nmm-canvas {
+      #${MODAL_ID} .tm-nmm-frame-wrap {
         position: relative;
         flex: 1;
         min-width: 0;
         min-height: 0;
         overflow: hidden;
+        border-radius: 0 0 14px 14px;
         background: #fff;
       }
 
-      #${MODAL_ID} .tm-nmm-canvas * {
-        box-sizing: border-box;
+      #${MODAL_ID} .tm-nmm-frame {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: #fff;
       }
 
       #${MODAL_ID} .tm-nmm-loading,
@@ -608,8 +626,14 @@
     };
   }
 
+  function buildMindMapIframeUrl() {
+    const url = new URL(MINDMAP_WEB_URL);
+    url.searchParams.set('embed', '1');
+    url.searchParams.set('parentOrigin', unsafeWindow.location.origin);
+    return url.toString();
+  }
+
   function createModalShell(recordId) {
-    injectLibraryCss();
     injectStyle();
 
     const overlay = document.createElement('div');
@@ -619,25 +643,21 @@
         <div class="tm-nmm-header">
           <div class="tm-nmm-title">思维导图 · Record ${escapeHtml(recordId)}</div>
           <div class="tm-nmm-status" data-state="loading">读取中…</div>
-          <button type="button" class="tm-nmm-close" title="关闭" aria-label="关闭">×</button>
+          <button type="button" class="tm-nmm-save" title="保存到 NocoDB">保存</button>
+          <div class="tm-nmm-close-wrap">
+            <button type="button" class="tm-nmm-close" title="关闭" aria-label="关闭">×</button>
+            <div class="tm-nmm-close-popover" hidden>
+              <div class="tm-nmm-close-popover-text">有未保存修改</div>
+              <div class="tm-nmm-close-popover-actions">
+                <button type="button" class="tm-nmm-close-discard">放弃</button>
+                <button type="button" class="tm-nmm-close-save">保存</button>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="tm-nmm-toolbar">
-          <button type="button" class="tm-nmm-tool tm-nmm-primary" data-action="child">+ 子节点</button>
-          <button type="button" class="tm-nmm-tool" data-action="sibling">+ 同级节点</button>
-          <button type="button" class="tm-nmm-tool" data-action="delete">删除节点</button>
-          <span class="tm-nmm-separator" aria-hidden="true"></span>
-          <button type="button" class="tm-nmm-tool" data-action="undo">撤销</button>
-          <button type="button" class="tm-nmm-tool" data-action="redo">重做</button>
-          <button type="button" class="tm-nmm-tool" data-action="tidy">整理布局</button>
-          <span class="tm-nmm-separator" aria-hidden="true"></span>
-          <button type="button" class="tm-nmm-tool" data-action="zoom-out">−</button>
-          <button type="button" class="tm-nmm-tool" data-action="fit">适应画布</button>
-          <button type="button" class="tm-nmm-tool" data-action="zoom-in">+</button>
-          <span class="tm-nmm-separator" aria-hidden="true"></span>
-          <button type="button" class="tm-nmm-tool" data-action="save">立即保存</button>
-        </div>
-        <div class="tm-nmm-canvas">
-          <div class="tm-nmm-loading">正在读取 NocoDB 记录…</div>
+        <div class="tm-nmm-frame-wrap">
+          <iframe class="tm-nmm-frame" title="MindMap WebUI" src="${escapeHtml(buildMindMapIframeUrl())}"></iframe>
+          <div class="tm-nmm-loading">正在读取 NocoDB 记录并加载 MindMap WebUI…</div>
         </div>
       </div>
     `;
@@ -667,17 +687,17 @@
     if (title) title.textContent = text;
   }
 
-  function setCanvasMessage(type, text) {
-    const canvas = modalState?.overlay?.querySelector('.tm-nmm-canvas');
-    if (!canvas) return;
-    canvas.querySelector('.tm-nmm-loading, .tm-nmm-error')?.remove();
+  function setFrameMessage(type, text) {
+    const frameWrap = modalState?.overlay?.querySelector('.tm-nmm-frame-wrap');
+    if (!frameWrap) return;
+    frameWrap.querySelector('.tm-nmm-loading, .tm-nmm-error')?.remove();
     const message = document.createElement('div');
     message.className = type === 'error' ? 'tm-nmm-error' : 'tm-nmm-loading';
     message.textContent = text;
-    canvas.appendChild(message);
+    frameWrap.appendChild(message);
   }
 
-  function clearCanvasMessage() {
+  function clearFrameMessage() {
     modalState?.overlay?.querySelector('.tm-nmm-loading, .tm-nmm-error')?.remove();
   }
 
@@ -693,154 +713,163 @@
     return firstText ? firstText[1].trim() : `Record ${recordId}`;
   }
 
-  function scheduleSave() {
-    if (!modalState || modalState.closing) return;
-    modalState.dirty = true;
-    setModalStatus('saving', '有未保存修改');
-    window.clearTimeout(modalState.saveTimer);
-    modalState.saveTimer = window.setTimeout(() => {
-      void saveCurrentMindMap();
-    }, SAVE_DELAY_MS);
+  function postToMindMap(state, type, payload = {}) {
+    const target = state?.iframe?.contentWindow;
+    if (!target) return false;
+    target.postMessage({
+      source: 'nocodb-mindmap',
+      type,
+      ...payload,
+    }, MINDMAP_WEB_ORIGIN);
+    return true;
   }
 
-  async function saveCurrentMindMap({ force = false } = {}) {
-    const state = modalState;
-    if (!state || !state.mindMap) return true;
+  function sendInitIfReady(state) {
+    if (!state || state !== modalState || state.initSent || !state.iframeReady || !state.initialData) return;
+    state.initSent = true;
+    postToMindMap(state, 'mindmap:init', { data: state.initialData });
+    setModalStatus('loading', '初始化编辑器…');
+  }
 
-    if (!force && !state.dirty) return true;
+  function showClosePopover(state) {
+    if (!state || state !== modalState) return;
+    state.overlay.querySelector('.tm-nmm-close-popover')?.removeAttribute('hidden');
+  }
+
+  function hideClosePopover(state) {
+    if (!state || state !== modalState) return;
+    state.overlay.querySelector('.tm-nmm-close-popover')?.setAttribute('hidden', '');
+  }
+
+  function destroyMindMapModal(state) {
+    if (!state || state !== modalState) return;
+    if (state.saveRequestTimer) window.clearTimeout(state.saveRequestTimer);
+    state.overlay.remove();
+    modalState = null;
+  }
+
+  async function saveMindMapPayload(state, data, requestId = null) {
+    if (!state || state !== modalState || !data || typeof data !== 'object') return false;
+
     if (state.savePromise) {
-      state.saveAgain = state.saveAgain || state.dirty || force;
-      return state.savePromise;
+      await state.savePromise;
+      if (state !== modalState) return false;
     }
 
-    window.clearTimeout(state.saveTimer);
-    state.saveTimer = 0;
-    state.dirty = false;
+    state.saving = true;
     setModalStatus('saving', '保存中…');
-
-    const fullData = state.mindMap.getData(true);
-    const payload = wrapMindMapData(fullData);
+    const payload = wrapMindMapData(data);
 
     state.savePromise = (async () => {
       try {
         await updateMindMapData(state.context, state.recordId, payload);
         state.lastSavedPayload = payload;
+        if (requestId !== null) {
+          postToMindMap(state, 'mindmap:save-result', { requestId, ok: true });
+        }
         setModalStatus('saved', '✓ 已保存');
         return true;
       } catch (error) {
-        state.dirty = true;
         console.error('[NocoDB 思维导图] 保存失败:', error);
         const message = error instanceof ApiError && [401, 403].includes(error.status)
-          ? '保存失败：API Token 无效或权限不足'
-          : '保存失败';
-        setModalStatus('error', message);
+          ? 'API Token 无效或权限不足'
+          : (error?.message || '保存失败');
+        if (requestId !== null) {
+          postToMindMap(state, 'mindmap:save-result', { requestId, ok: false, error: message });
+        }
+        setModalStatus('error', `保存失败：${message}`);
         return false;
       } finally {
+        state.saving = false;
         state.savePromise = null;
       }
     })();
 
-    const ok = await state.savePromise;
+    return state.savePromise;
+  }
 
-    if (state === modalState && state.saveAgain) {
-      state.saveAgain = false;
-      return saveCurrentMindMap({ force: true });
+  function finishSaveRequest(state, ok) {
+    if (!state || !state.saveRequestResolve) return;
+    const resolve = state.saveRequestResolve;
+    state.saveRequestResolve = null;
+    if (state.saveRequestTimer) {
+      window.clearTimeout(state.saveRequestTimer);
+      state.saveRequestTimer = 0;
+    }
+    resolve(Boolean(ok));
+  }
+
+  async function requestIframeSave(state) {
+    if (!state || state !== modalState) return false;
+    if (!state.appReady) {
+      setModalStatus('error', '编辑器尚未就绪');
+      return false;
     }
 
-    return ok;
-  }
+    if (state.savePromise) {
+      const previousOk = await state.savePromise;
+      if (!previousOk || state !== modalState) return false;
+      if (!state.dirty) return true;
+    }
 
-  function bindMindMapEvents(mindMap) {
-    const markDirty = () => scheduleSave();
-    mindMap.on('data_change', markDirty);
-    mindMap.on('view_data_change', markDirty);
-    mindMap.on('layout_change', markDirty);
-  }
+    if (!state.dirty) {
+      setModalStatus('saved', '✓ 无需保存');
+      return true;
+    }
 
-  function bindToolbar() {
-    const toolbar = modalState?.overlay?.querySelector('.tm-nmm-toolbar');
-    if (!toolbar) return;
+    if (state.saveRequestPromise) return state.saveRequestPromise;
 
-    toolbar.addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-action]');
-      if (!button || !modalState?.mindMap) return;
-
-      const mindMap = modalState.mindMap;
-      switch (button.dataset.action) {
-        case 'child':
-          mindMap.execCommand('INSERT_CHILD_NODE');
-          break;
-        case 'sibling':
-          mindMap.execCommand('INSERT_NODE');
-          break;
-        case 'delete':
-          mindMap.execCommand('REMOVE_NODE');
-          break;
-        case 'undo':
-          mindMap.execCommand('BACK');
-          break;
-        case 'redo':
-          mindMap.execCommand('FORWARD');
-          break;
-        case 'tidy':
-          mindMap.execCommand('RESET_LAYOUT');
-          break;
-        case 'zoom-out':
-          mindMap.view.narrow();
-          break;
-        case 'fit':
-          mindMap.view.fit();
-          break;
-        case 'zoom-in':
-          mindMap.view.enlarge();
-          break;
-        case 'save':
-          modalState.dirty = true;
-          await saveCurrentMindMap({ force: true });
-          break;
-        default:
-          break;
-      }
+    state.saveRequestPromise = new Promise((resolve) => {
+      state.saveRequestResolve = resolve;
+      state.saveRequestTimer = window.setTimeout(() => {
+        state.saveRequestTimer = 0;
+        state.saveRequestResolve = null;
+        state.saveRequestPromise = null;
+        setModalStatus('error', '保存请求超时');
+        resolve(false);
+      }, SAVE_REQUEST_TIMEOUT_MS);
     });
+
+    setModalStatus('saving', '请求保存…');
+    postToMindMap(state, 'mindmap:request-save');
+
+    const result = await state.saveRequestPromise;
+    if (state === modalState) state.saveRequestPromise = null;
+    return result;
   }
 
-  async function closeMindMapModal() {
+  async function requestCloseMindMapModal({ discard = false } = {}) {
     const state = modalState;
-    if (!state || state.closing) return;
-    state.closing = true;
+    if (!state) return;
 
-    window.clearTimeout(state.saveTimer);
-    const needsSave = state.dirty || Boolean(state.savePromise);
-    let saved = true;
+    hideClosePopover(state);
 
-    if (needsSave) {
-      if (state.savePromise) await state.savePromise;
-      if (state.dirty) saved = await saveCurrentMindMap({ force: true });
+    if (discard || !state.dirty) {
+      destroyMindMapModal(state);
+      return;
     }
 
-    if (!saved) {
-      const closeAnyway = unsafeWindow.confirm('思维导图尚未成功保存。仍然关闭弹窗吗？');
-      if (!closeAnyway) {
-        state.closing = false;
-        return;
-      }
+    showClosePopover(state);
+  }
+
+  async function saveAndCloseMindMapModal() {
+    const state = modalState;
+    if (!state) return;
+
+    hideClosePopover(state);
+    const ok = await requestIframeSave(state);
+    if (!ok || state !== modalState) return;
+
+    if (state.dirty) {
+      showClosePopover(state);
+      return;
     }
 
-    try {
-      state.mindMap?.destroy?.();
-    } catch (error) {
-      console.warn('[NocoDB 思维导图] destroy failed:', error);
-    }
-
-    state.overlay.remove();
-    if (modalState === state) modalState = null;
+    destroyMindMapModal(state);
   }
 
   async function initializeMindMap(state) {
     try {
-      const MindMap = getMindMapConstructor();
-      if (!MindMap) throw new Error('SimpleMindMap 未成功加载。');
-
       const record = await readRecord(state.context, state.recordId);
       if (state !== modalState) return;
 
@@ -849,53 +878,87 @@
       }
 
       const storedData = unwrapMindMapData(record.fields[DATA_FIELD]);
-      const fullData = storedData || makeInitialFullData(record);
-      const title = inferRecordTitle(record, state.recordId);
-      setModalTitle(`思维导图 · ${title}`);
-
-      const canvas = state.overlay.querySelector('.tm-nmm-canvas');
-      clearCanvasMessage();
-
-      const mindMap = new MindMap({
-        el: canvas,
-        data: fullData.root,
-        layout: fullData.layout || 'mindMap',
-        theme: fullData.theme?.template || 'default',
-        themeConfig: fullData.theme?.config || {},
-        viewData: fullData.view || null,
-        fit: !fullData.view,
-        customInnerElsAppendTo: state.overlay.querySelector('.tm-nmm-dialog'),
-      });
-
-      state.mindMap = mindMap;
-      state.dirty = !storedData;
-      bindMindMapEvents(mindMap);
-      bindToolbar();
-
-      mindMap.on('node_tree_render_end', () => {
-        if (!storedData && state === modalState) mindMap.view.fit();
-      });
-
-      setModalStatus(storedData ? 'saved' : 'saving', storedData ? '✓ 已加载' : '新建脑图，待保存');
-      if (!storedData) scheduleSave();
+      state.initialData = storedData || makeInitialFullData(record);
+      state.hadStoredData = Boolean(storedData);
+      setModalTitle(`思维导图 · ${inferRecordTitle(record, state.recordId)}`);
+      setModalStatus('loading', '等待编辑器…');
+      sendInitIfReady(state);
     } catch (error) {
       console.error('[NocoDB 思维导图] 初始化失败:', error);
       const suffix = error instanceof ApiError && [401, 403].includes(error.status)
         ? ' 请重新点击 MindMap Button 并设置可用的 API Token。'
         : '';
-      const text = `${error.message || '初始化失败。'}${suffix}`;
-      setCanvasMessage('error', text);
+      setFrameMessage('error', `${error.message || '初始化失败。'}${suffix}`);
       setModalStatus('error', '打开失败');
     }
   }
+
+  function handleMindMapMessage(event) {
+    const state = modalState;
+    if (!state) return;
+    if (event.origin !== MINDMAP_WEB_ORIGIN) return;
+    if (event.source !== state.iframe?.contentWindow) return;
+
+    const message = event.data;
+    if (!message || message.source !== 'mind-map-web') return;
+
+    switch (message.type) {
+      case 'mindmap:ready':
+        state.iframeReady = true;
+        sendInitIfReady(state);
+        break;
+      case 'mindmap:app-ready':
+        state.appReady = true;
+        clearFrameMessage();
+        setModalStatus('saved', state.hadStoredData ? '✓ 已加载' : '新建脑图，尚未保存');
+        break;
+      case 'mindmap:dirty':
+        state.dirty = Boolean(message.dirty);
+        if (state.dirty) {
+          setModalStatus('dirty', '有未保存修改');
+        } else if (!state.saving) {
+          setModalStatus('saved', '✓ 已保存');
+        }
+        break;
+      case 'mindmap:save':
+        if (!message.data || typeof message.data !== 'object') {
+          if (message.requestId) {
+            postToMindMap(state, 'mindmap:save-result', {
+              requestId: message.requestId,
+              ok: false,
+              error: 'MindMap WebUI 未提供可保存的数据。',
+            });
+          }
+          finishSaveRequest(state, false);
+          break;
+        }
+        void (async () => {
+          const ok = await saveMindMapPayload(state, message.data, message.requestId ?? null);
+          if (state === modalState) finishSaveRequest(state, ok);
+        })();
+        break;
+      case 'mindmap:save-status':
+        if (!message.ok && message.error) {
+          setModalStatus('error', `保存失败：${message.error}`);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  window.addEventListener('message', handleMindMapMessage);
 
   async function openMindMap(recordId) {
     await ensureDocumentReady();
 
     if (modalState) {
       if (modalState.recordId === recordId) return;
-      await closeMindMapModal();
-      if (modalState) return;
+      if (modalState.dirty) {
+        showClosePopover(modalState);
+        return;
+      }
+      destroyMindMapModal(modalState);
     }
 
     let context;
@@ -907,41 +970,66 @@
     }
 
     const overlay = createModalShell(recordId);
+    const iframe = overlay.querySelector('.tm-nmm-frame');
     modalState = {
       overlay,
+      iframe,
       recordId,
       context,
-      mindMap: null,
+      initialData: null,
+      hadStoredData: false,
+      iframeReady: false,
+      appReady: false,
+      initSent: false,
       dirty: false,
-      saveTimer: 0,
+      saving: false,
       savePromise: null,
-      saveAgain: false,
-      closing: false,
+      saveRequestPromise: null,
+      saveRequestResolve: null,
+      saveRequestTimer: 0,
       lastSavedPayload: null,
     };
 
+    overlay.querySelector('.tm-nmm-save').addEventListener('click', () => {
+      void requestIframeSave(modalState);
+    });
+
     overlay.querySelector('.tm-nmm-close').addEventListener('click', () => {
-      void closeMindMapModal();
+      void requestCloseMindMapModal();
+    });
+
+    overlay.querySelector('.tm-nmm-close-discard').addEventListener('click', () => {
+      void requestCloseMindMapModal({ discard: true });
+    });
+
+    overlay.querySelector('.tm-nmm-close-save').addEventListener('click', () => {
+      void saveAndCloseMindMapModal();
     });
 
     overlay.addEventListener('mousedown', (event) => {
-      if (event.target === overlay) void closeMindMapModal();
+      if (event.target === overlay) void requestCloseMindMapModal();
+    });
+
+    iframe.addEventListener('error', () => {
+      if (modalState?.iframe !== iframe) return;
+      setFrameMessage('error', `MindMap WebUI 加载失败：${MINDMAP_WEB_URL}`);
+      setModalStatus('error', 'WebUI 加载失败');
     });
 
     await initializeMindMap(modalState);
   }
 
   document.addEventListener('keydown', (event) => {
-    if (!modalState) return;
-    if (event.key !== 'Escape') return;
+    if (!modalState || event.key !== 'Escape') return;
+    if (document.activeElement === modalState.iframe) return;
 
     const active = document.activeElement;
-    const textEditing = active?.matches?.('input, textarea, [contenteditable="true"], .ProseMirror');
+    const textEditing = active?.matches?.('input, textarea, [contenteditable="true"]');
     if (textEditing) return;
 
     event.preventDefault();
     event.stopPropagation();
-    void closeMindMapModal();
+    void requestCloseMindMapModal();
   }, true);
 
   document.addEventListener('click', (event) => {
