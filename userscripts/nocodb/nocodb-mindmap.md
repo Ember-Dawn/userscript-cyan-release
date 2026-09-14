@@ -79,6 +79,8 @@ tm-nocodb-mindmap-api-token-v1
 
 如果 NocoDB API 返回 `401` 或 `403`，脚本会认为当前 Token 已失效或权限不足，自动弹出 Token 设置窗口；保存新 Token 后自动重试刚才的 API 请求一次。普通网络异常或 `5xx` 服务端错误不会触发 Token 重设，也不会覆盖本地已保存 Token。
 
+Token 输入框会对 `Ctrl/Cmd + V`、`Ctrl/Cmd + C`、`Ctrl/Cmd + X`、`Ctrl/Cmd + A` 以及粘贴/复制/剪切事件做隔离，只阻止 NocoDB 或页面级快捷键继续处理，不阻止浏览器原生编辑行为，以避免全局快捷键导致 Token 输入框无法正常粘贴。
+
 ## 读取与写回
 
 点击某条记录的 `MindMap` Button 后：
@@ -210,10 +212,11 @@ SimpleMindMap 自身快捷键仍可使用，例如 `Tab` 新增子节点、`Ente
 
 1. 在包含 `MindMapData` JSON 和 `MindMap` Button 的 Grid 中点击 Button，确认不会打开新页。
 2. 清空该脚本的 Tampermonkey 本地存储后点击 Button，确认仅此时要求输入 API Token，且脚本菜单中没有新增 Token 选项。
-3. 对空 `MindMapData` 记录创建节点，等待约 1.5 秒，确认显示 `✓ 已保存`。
-4. 关闭并重新打开同一记录，确认节点、布局和画布视图可以恢复。
-5. 修改节点后立刻关闭，确认关闭前会执行最后一次保存。
-6. 使用错误 Token，确认 `401/403` 会弹出 Token 设置窗口；保存新 Token 后自动重试当前请求一次。
-7. 模拟网络错误或 `5xx`，确认不会弹出 Token 设置窗口，也不会覆盖已有 Token。
-8. 在没有 `MindMapData` 字段的表点击 Button，确认明确提示字段缺失。
-9. 点击其他普通 Open URL Button，确认仍保持 NocoDB 原生行为。
+3. 在 Token 输入框中测试 `Ctrl/Cmd + V` 粘贴，并顺带确认 `Ctrl/Cmd + A/C/X` 保持浏览器原生行为。
+4. 对空 `MindMapData` 记录创建节点，等待约 1.5 秒，确认显示 `✓ 已保存`。
+5. 关闭并重新打开同一记录，确认节点、布局和画布视图可以恢复。
+6. 修改节点后立刻关闭，确认关闭前会执行最后一次保存。
+7. 使用错误 Token，确认 `401/403` 会弹出 Token 设置窗口；保存新 Token 后自动重试当前请求一次。
+8. 模拟网络错误或 `5xx`，确认不会弹出 Token 设置窗口，也不会覆盖已有 Token。
+9. 在没有 `MindMapData` 字段的表点击 Button，确认明确提示字段缺失。
+10. 点击其他普通 Open URL Button，确认仍保持 NocoDB 原生行为。

@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.1.1
+// @version      0.1.2
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中使用 SimpleMindMap 编辑 MindMapData JSON，并通过 NocoDB v3 API 自动保存。
 // @match        https://nocodb.380782744.xyz/*
 // @require      https://unpkg.com/simple-mind-map@0.14.0-fix.3/dist/simpleMindMap.umd.min.js
@@ -37,6 +37,21 @@
   let modalState = null;
   let tokenDialogState = null;
   let libraryCssInjected = false;
+
+  function isTokenInputTarget(target) {
+    return target instanceof Element && target.matches(`#${TOKEN_MODAL_ID} input`);
+  }
+
+  function protectTokenInputKeyboard(event) {
+    if (!isTokenInputTarget(event.target)) return;
+    const key = String(event.key || '').toLowerCase();
+    if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(key)) {
+      // Keep the browser's native edit action, but prevent NocoDB/global shortcuts from handling it.
+      event.stopImmediatePropagation();
+    }
+  }
+
+  document.addEventListener('keydown', protectTokenInputKeyboard, true);
 
   class ApiError extends Error {
     constructor(message, status = 0, body = '') {
@@ -434,14 +449,28 @@
       if (event.target === overlay) finish('');
     });
     input.addEventListener('keydown', (event) => {
+      const key = String(event.key || '').toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x'].includes(key)) {
+        event.stopPropagation();
+        return;
+      }
+
       if (event.key === 'Enter') {
         event.preventDefault();
+        event.stopPropagation();
         save();
       } else if (event.key === 'Escape') {
         event.preventDefault();
+        event.stopPropagation();
         finish('');
       }
     });
+
+    for (const type of ['paste', 'copy', 'cut']) {
+      input.addEventListener(type, (event) => {
+        event.stopPropagation();
+      });
+    }
 
     tokenDialogState = { overlay, promise };
     requestAnimationFrame(() => input.focus());
