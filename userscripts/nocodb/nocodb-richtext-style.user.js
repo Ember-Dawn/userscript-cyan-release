@@ -1,12 +1,12 @@
 // ==UserScript==
-// @name         NocoDB LongText 字体改色
+// @name         NocoDB Rich Text 视觉样式增强
 // @namespace    http://tampermonkey.net/
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
-// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-longtext-color.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-longtext-color.user.js
-// @version      2.2.0
-// @description  NocoDB LongText 富文本字体改色：加粗文字 CSS 改色；【xxx】和「xxx」使用 CSS Custom Highlight 改色，不修改原文内容。
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
+// @version      1.0.0
+// @description  NocoDB Rich Text 视觉样式增强：H1-H6 彩虹标题、加粗文字改色，以及【xxx】和「xxx」CSS Custom Highlight 改色；不修改原文内容。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
 // @run-at       document-idle
@@ -16,31 +16,25 @@
   'use strict';
 
   /**
-   * NocoDB LongText 字体改色
+   * NocoDB Rich Text 视觉样式增强
+   *
+   * 合并自：
+   * 1. NocoDB 彩虹标题 v1.0.2
+   * 2. NocoDB LongText 字体改色 v2.2.0
    *
    * 作用：
-   * 1. 将 NocoDB LongText 富文本编辑器里的加粗文本 strong 改成 #cc6566。
-   * 2. 将形如 【xxx】 的文本显示为 #3366ff。
-   * 3. 将形如 「xxx」 的文本显示为 #c88445。
+   * 1. 为 LongText Rich Text 弹窗编辑器正文中的 H1-H6 添加彩虹标题颜色。
+   * 2. 将 Rich Text 编辑器里的加粗文本 strong 改成 #cc6566。
+   * 3. 将形如 【xxx】 的文本显示为 #3366ff。
+   * 4. 将形如 「xxx」 的文本显示为 #c88445。
    *
    * 技术路线：
-   * 1. 加粗文本改色：
-   *    - 使用普通 CSS 选择器 `.nc-rich-text-content .ProseMirror strong`。
-   *    - 这是纯样式层处理，性能风险最低。
-   *
-   * 2. 【xxx】/「xxx」改色：
-   *    - 使用 Chromium 已支持的 CSS Custom Highlight API。
-   *    - 脚本只为匹配文本创建 Range，并注册到 CSS.highlights；不向 ProseMirror 正文插入 span，
-   *      也不再动态 registerPlugin / reconfigure 编辑器。
-   *    - 这样可以避免依赖 NocoDB 打包后的 ProseMirror Decoration 构造器，同时不会改变
-   *      编辑器 state、selection、保存内容或撤销栈。
-   *
-   * 稳定性与安全性：
-   * 1. 不使用 innerHTML 替换编辑器内容。
-   * 2. 不手动拆文本节点，不向正文 DOM 真实包裹 span。
-   * 3. 不修改 ProseMirror 文档内容模型，因此颜色不会写入 NocoDB 原文。
-   * 4. 不注册 ProseMirror 插件，不触发编辑器重配置。
-   * 5. MutationObserver 只做防抖后的显示层重算；不会改写正文 DOM。
+   * 1. 标题和加粗文字使用普通 CSS，只改变显示层。
+   * 2. 【xxx】/「xxx」使用 Chromium 的 CSS Custom Highlight API：
+   *    - 只创建 Range 并注册到 CSS.highlights；
+   *    - 不向 ProseMirror 正文插入 span；
+   *    - 不修改 editor state、selection、保存内容或撤销栈。
+   * 3. MutationObserver 只负责防抖后的 Custom Highlight 重算，不改写正文 DOM。
    *
    * 性能策略：
    * 1. 只扫描当前 LongText Rich Text 编辑器中的 Text 节点。
@@ -50,14 +44,14 @@
    * 5. 多次 DOM 变化合并到一次 requestAnimationFrame / 短延迟重算。
    */
 
-  const STYLE_ID = 'tm-nocodb-longtext-font-color-style-v22';
+  const STYLE_ID = 'tm-nocodb-richtext-visual-style-v1';
 
   const COLOR_BOLD = '#cc6566';
   const COLOR_BRACKET_BLUE = '#3366ff';
   const COLOR_QUOTE_BROWN = '#c88445';
 
-  const HIGHLIGHT_BRACKET = 'tm-nc-bracket-blue-v22';
-  const HIGHLIGHT_QUOTE = 'tm-nc-quote-brown-v22';
+  const HIGHLIGHT_BRACKET = 'tm-nc-richtext-bracket-blue-v1';
+  const HIGHLIGHT_QUOTE = 'tm-nc-richtext-quote-brown-v1';
   const EDITOR_SELECTOR = '.nc-rich-text-content .ProseMirror';
 
   const MAX_PAIR_CHARS = 500;
@@ -72,6 +66,46 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
+      :root {
+        --tm-rainbow-h1: #d65d0d;
+        --tm-rainbow-h2: #d79920;
+        --tm-rainbow-h3: #989719;
+        --tm-rainbow-h4: #689d6a;
+        --tm-rainbow-h5: #458488;
+        --tm-rainbow-h6: #b16286;
+      }
+
+      /* 仅作用于弹窗编辑器正文，不作用于 TOC，不作用于普通页面正文 */
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h1,
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h1 * {
+        color: var(--tm-rainbow-h1) !important;
+      }
+
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h2,
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h2 * {
+        color: var(--tm-rainbow-h2) !important;
+      }
+
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h3,
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h3 * {
+        color: var(--tm-rainbow-h3) !important;
+      }
+
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h4,
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h4 * {
+        color: var(--tm-rainbow-h4) !important;
+      }
+
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h5,
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h5 * {
+        color: var(--tm-rainbow-h5) !important;
+      }
+
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h6,
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror h6 * {
+        color: var(--tm-rainbow-h6) !important;
+      }
+
       .nc-rich-text-content .ProseMirror strong {
         color: ${COLOR_BOLD} !important;
       }
