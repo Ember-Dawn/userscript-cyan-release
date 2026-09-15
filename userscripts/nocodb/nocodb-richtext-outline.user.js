@@ -52,7 +52,7 @@
     panelMaxWidth: 360,
     panelResizeHandleWidth: 8,
     panelLeftInset: 13,
-    contentInsetExtra: -6,
+    contentInsetExtra: -3,
     panelInsetY: 1,
     panelBottomGap: 2,
     buttonGap: 8,
