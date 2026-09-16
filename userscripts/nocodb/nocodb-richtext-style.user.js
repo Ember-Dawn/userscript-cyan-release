@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
-// @version      1.1.0
-// @description  NocoDB Rich Text 视觉样式增强：H1-H6 彩虹标题、加粗与特定符号文本改色，并增大普通顶层段落间距；不修改原文内容。
+// @version      0.1.2
+// @description  NocoDB Rich Text 视觉样式增强：H1-H6 彩虹标题、加粗与特定符号文本改色，并将普通顶层段落间距放宽到接近空一行；不修改原文内容。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
 // @run-at       document-idle
@@ -27,7 +27,7 @@
    * 2. 将 Rich Text 编辑器里的加粗文本 strong 改成 #cc6566。
    * 3. 将形如 【xxx】 的文本显示为 #3366ff。
    * 4. 将形如 「xxx」 的文本显示为 #c88445。
-   * 5. 增大弹窗编辑器普通顶层段落之间的间距，同时不额外放大纯空段落。
+   * 5. 将弹窗编辑器普通顶层段落之间的间距放宽到接近空一行，同时不额外放大纯空段落。
    *
    * 技术路线：
    * 1. 标题、加粗文字和段落间距使用普通 CSS，只改变显示层。
@@ -115,8 +115,8 @@
 
       /* 只放宽弹窗编辑器的普通顶层段落，不影响列表、引用块等嵌套段落。 */
       .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror > p {
-        margin-top: 0.45em !important;
-        margin-bottom: 0.45em !important;
+        margin-top: 0 !important;
+        margin-bottom: 1.4em !important;
       }
 
       /* 手动空行仍按原本高度显示，避免连续空行被额外放大。 */
