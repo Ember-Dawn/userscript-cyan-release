@@ -9,8 +9,8 @@
 | NocoDB 音频播放器 | `nocodb-audio-player.user.js` | 接管指定 Media Manager MP3 的原生 Button openURL，在页面右下角提供深色悬浮播放器；对 8 位 `corpus_id.mp3` 的 Batch TTS 音频在实际播放请求中追加时间戳以规避旧缓存。参见[详细说明](./nocodb-audio-player.md)。 |
 | NocoDB 思维导图 | `nocodb-mindmap.user.js` | 接管携带 Record ID 的 MindMap Button，在当前 NocoDB 页面的大弹窗中编辑 SimpleMindMap，并通过 v3 Data API 自动保存到 `MindMapData` JSON 字段。参见[详细说明](./nocodb-mindmap.md)。 |
 | NocoDB 代码块工具 | `nocodb-code-tools.user.js` | 为 Rich Text 代码块提供悬浮复制和带确认的安全清空功能。参见[详细说明](./nocodb-code-tools.md)。 |
-| NocoDB 彩虹标题 | `nocodb-rainbow-headings.user.js` | 为 H1-H6 标题应用不同颜色。 |
-| NocoDB LongText 字体改色 | `nocodb-longtext-color.user.js` | 为特定富文本内容应用颜色。 |
+| NocoDB Rich Text 视觉样式增强 | `nocodb-richtext-style.user.js` | 合并原“彩虹标题”和“LongText 字体改色”：为 H1-H6、加粗文字、`【xxx】` 和 `「xxx」` 提供显示层颜色增强，不修改原文内容。 |
+| NocoDB Rich Text 图片查看器 | `nocodb-richtext-image.user.js` | 调整 Rich Text 正文图片宽度并居中；双击图片可在独立查看器中缩放、拖拽和查看原始尺寸。 |
 | NocoDB Markdown 表格 | `nocodb-markdown-table.user.js` | 将粘贴的 Markdown 表格转换为可显示、可编辑的表格。 |
 | NocoDB Rich Text Markdown 导出 | `nocodb-richtext-markdown-export.user.js` | 复制或下载当前 Rich Text 编辑器的全部内容为普通 Markdown。 |
 | NocoDB Rich Text 大纲 | `nocodb-richtext-outline.user.js` | 以纯 DOM 旁路方式显示可滚动、可调整宽度的 H1-H6 TOC。参见[详细说明](./nocodb-richtext-outline.md)。 |
@@ -119,6 +119,8 @@ NocoDB LongText Rich Text 弹窗的右下角带有原生尺寸调整手柄，可
 
 - 不要直接向 ProseMirror 管理的普通正文节点中插入无关 DOM。
 - `nocodb-code-tools.user.js` 的悬浮工具栏和确认弹窗必须继续放在 `.nc-rich-text-content` 外部 overlay 中；普通代码清空不得直接改写 `pre/code` 的 `textContent` 或 `innerHTML`。详细规则见 [`nocodb-code-tools.md`](./nocodb-code-tools.md)。
+- `nocodb-richtext-style.user.js` 只应修改显示层：标题/加粗使用 CSS，`【xxx】` / `「xxx」` 使用 CSS Custom Highlight；不要向 ProseMirror 正文插入包装节点，也不要注册 ProseMirror plugin。
+- `nocodb-richtext-image.user.js` 的正文尺寸调整只通过 CSS 完成，查看器挂载在 `document.body`，不得向 ProseMirror 正文插入查看器 DOM。
 - 表格显示应继续通过 NodeView 完成，持久化仍由专用代码块承载。
 - 导出只在用户点击按钮时遍历正文，不要在 `input`、`scroll` 或 MutationObserver 热路径中持续转换 Markdown。
 - 修改跨脚本接口时，应同时检查表格脚本、导出脚本和本说明。
