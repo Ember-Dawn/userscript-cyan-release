@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.6.5
-// @description  ChatGPT 普通聊天文件夹管理：v0.6.5；文件夹拖拽移动不再改变当前选中状态，并保留 hydration-safe 挂载与多端同步。
+// @version      0.6.6
+// @description  ChatGPT 普通聊天文件夹管理：v0.6.6；拖拽聊天或文件夹时保持目标文件夹原有折叠状态，并保留选中状态语义与多端同步。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.6.5';
+  const VERSION = '0.6.6';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1924,7 +1924,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     source.parentId = targetId;
     source.updatedAt = nowIso();
     if (!target.childFolderIds.includes(sourceId)) target.childFolderIds.push(sourceId);
-    if (targetId !== ROOT_ID) target.collapsed = false;
     sortFolderChildren(p, oldParent.id);
     sortFolderChildren(p, targetId);
     // Moving a folder changes hierarchy only. Do not implicitly select it; preserve
@@ -1951,7 +1950,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       updatedAt: nowIso()
     });
     if (!f.chatIds.includes(chat.id)) f.chatIds.push(chat.id);
-    f.collapsed = false;
     queueRender();
     schedulePersist('add-chat');
     toast('聊天已加入文件夹。');
