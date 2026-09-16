@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js
-// @version      0.3.1
+// @version      0.3.2
 // @description  拦截 NocoDB MindMap Button，在当前页面的大弹窗中嵌入自部署 MindMap WebUI，通过 NocoDB v3 API 保存 MindMapData，并可向 WebUI 注入 EasyImages2.0 图床配置。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_getValue
@@ -20,7 +20,7 @@
   const MINDMAP_PATH = '/__mindmap__';
   const MINDMAP_WEB_URL = 'https://mindmap.380782744.xyz/';
   const MINDMAP_WEB_ORIGIN = new URL(MINDMAP_WEB_URL).origin;
-  const MINDMAP_WEB_BUILD = '20260914-3';
+  const MINDMAP_WEB_BUILD = '20260915-1';
   const DATA_FIELD = 'MindMapData';
   const ENGINE_NAME = 'simple-mind-map';
   const ENGINE_VERSION = '0.14.0-fix.3';
@@ -30,7 +30,6 @@
   const STYLE_ID = 'tm-nocodb-mindmap-style';
   const MODAL_ID = 'tm-nocodb-mindmap-modal';
   const SETTINGS_MODAL_ID = 'tm-nocodb-mindmap-settings-modal';
-  const PREWARM_ID = 'tm-nocodb-mindmap-prewarm';
   const SAVE_REQUEST_TIMEOUT_MS = 30000;
   const IFRAME_READY_TIMEOUT_MS = 8000;
   const APP_READY_TIMEOUT_MS = 12000;
@@ -40,7 +39,6 @@
 
   let modalState = null;
   let settingsDialogState = null;
-  let prewarmState = null;
 
   function isSettingsInputTarget(target) {
     return target instanceof Element && target.matches(`#${SETTINGS_MODAL_ID} input, #${SETTINGS_MODAL_ID} select`);
@@ -991,18 +989,14 @@
     state.appReady = false;
     state.initSent = false;
 
-    const iframe = document.createElement('iframe');
-    iframe.className = 'tm-nmm-frame';
-    iframe.title = 'MindMap WebUI';
-    iframe.allow = 'clipboard-read; clipboard-write';
-    state.iframe.replaceWith(iframe);
+    const oldIframe = state.iframe;
+    const iframe = createMindMapIframe(state);
+    oldIframe.replaceWith(iframe);
     state.iframe = iframe;
 
     setFrameMessage('loading', `${reason}，正在自动重试…`);
     setModalStatus('loading', '重新连接编辑器…');
-    bindMindMapIframe(state, iframe);
     iframe.src = buildMindMapIframeUrl();
-    armIframeReadyTimeout(state);
   }
 
   function armIframeReadyTimeout(state) {
@@ -1042,6 +1036,15 @@
     });
   }
 
+  function createMindMapIframe(state) {
+    const iframe = document.createElement('iframe');
+    iframe.className = 'tm-nmm-frame';
+    iframe.title = 'MindMap WebUI';
+    iframe.allow = 'clipboard-read; clipboard-write';
+    bindMindMapIframe(state, iframe);
+    return iframe;
+  }
+
   function sendInitIfReady(state) {
     if (!state || state !== modalState || state.initSent || !state.iframeReady || !state.initialData) return;
     state.initSent = true;
@@ -1064,13 +1067,43 @@
     state.overlay.querySelector('.tm-nmm-close-popover')?.setAttribute('hidden', '');
   }
 
-  function destroyMindMapModal(state) {
+  function hideMindMapModal(state) {
     if (!state || state !== modalState) return;
-    if (state.saveRequestTimer) window.clearTimeout(state.saveRequestTimer);
-    clearIframeTimers(state);
-    state.overlay.remove();
-    modalState = null;
-    scheduleMindMapPrewarm();
+    hideClosePopover(state);
+    state.overlay.hidden = true;
+    state.isOpen = false;
+  }
+
+  function prepareRecordState(state, recordId, context) {
+    if (!state || state !== modalState) return;
+    if (state.saveRequestTimer) {
+      window.clearTimeout(state.saveRequestTimer);
+      state.saveRequestTimer = 0;
+    }
+    if (state.saveRequestResolve) {
+      const resolve = state.saveRequestResolve;
+      state.saveRequestResolve = null;
+      resolve(false);
+    }
+    state.saveRequestPromise = null;
+    clearIframeTimer(state, 'appReadyTimer');
+    state.recordLoadId += 1;
+    state.recordId = recordId;
+    state.context = context;
+    state.initialData = null;
+    state.hadStoredData = false;
+    state.appReady = false;
+    state.initSent = false;
+    state.dirty = false;
+    state.saving = false;
+    state.lastSavedPayload = null;
+    state.iframeRetryCount = 0;
+    state.isOpen = true;
+    state.overlay.hidden = false;
+    hideClosePopover(state);
+    setModalTitle(`思维导图 · Record ${recordId}`);
+    setModalStatus('loading', '读取中…');
+    setFrameMessage('loading', '正在读取 NocoDB 记录…');
   }
 
   async function saveMindMapPayload(state, data, requestId = null) {
@@ -1088,6 +1121,7 @@
     state.savePromise = (async () => {
       try {
         await updateMindMapData(state.context, state.recordId, payload);
+        state.initialData = data;
         state.lastSavedPayload = payload;
         if (requestId !== null) {
           postToMindMap(state, 'mindmap:save-result', { requestId, ok: true });
@@ -1163,8 +1197,19 @@
 
     hideClosePopover(state);
 
-    if (discard || !state.dirty) {
-      destroyMindMapModal(state);
+    if (discard) {
+      if (state.dirty && state.initialData && state.iframeReady) {
+        state.dirty = false;
+        state.appReady = false;
+        state.initSent = false;
+        sendInitIfReady(state);
+      }
+      hideMindMapModal(state);
+      return;
+    }
+
+    if (!state.dirty) {
+      hideMindMapModal(state);
       return;
     }
 
@@ -1184,7 +1229,7 @@
       return;
     }
 
-    destroyMindMapModal(state);
+    hideMindMapModal(state);
   }
 
   async function verifyApiToken(state) {
@@ -1197,9 +1242,12 @@
   }
 
   async function initializeMindMap(state) {
+    const loadId = state?.recordLoadId;
+    const recordId = state?.recordId;
+    const context = state?.context;
     try {
-      const record = await readRecord(state.context, state.recordId);
-      if (state !== modalState) return;
+      const record = await readRecord(context, recordId);
+      if (state !== modalState || loadId !== state.recordLoadId) return;
 
       if (!record?.fields || !Object.prototype.hasOwnProperty.call(record.fields, DATA_FIELD)) {
         throw new Error(`当前表中没有 ${DATA_FIELD} 字段，请先新增 JSON 类型字段。`);
@@ -1208,10 +1256,11 @@
       const storedData = unwrapMindMapData(record.fields[DATA_FIELD]);
       state.initialData = storedData || makeInitialFullData(record);
       state.hadStoredData = Boolean(storedData);
-      setModalTitle(`思维导图 · ${inferRecordTitle(record, state.recordId)}`);
+      setModalTitle(`思维导图 · ${inferRecordTitle(record, recordId)}`);
       setModalStatus('loading', '等待编辑器…');
       sendInitIfReady(state);
     } catch (error) {
+      if (state !== modalState || loadId !== state?.recordLoadId) return;
       console.error('[NocoDB 思维导图] 初始化失败:', error);
       const suffix = error instanceof ApiError && [401, 403].includes(error.status)
         ? ' 请重新设置可用的 API Token。'
@@ -1226,11 +1275,6 @@
 
     const message = event.data;
     if (!message || message.source !== 'mind-map-web') return;
-
-    if (prewarmState && event.source === prewarmState.iframe?.contentWindow) {
-      if (message.type === 'mindmap:ready') prewarmState.ready = true;
-      return;
-    }
 
     const state = modalState;
     if (!state || event.source !== state.iframe?.contentWindow) return;
@@ -1285,67 +1329,19 @@
 
   window.addEventListener('message', handleMindMapMessage);
 
-  function scheduleMindMapPrewarm() {
-    if (modalState || prewarmState?.iframe?.isConnected) return;
-
-    if (!document.querySelector('link[data-tm-nmm-preconnect]')) {
-      const preconnect = document.createElement('link');
-      preconnect.rel = 'preconnect';
-      preconnect.href = MINDMAP_WEB_ORIGIN;
-      preconnect.crossOrigin = 'anonymous';
-      preconnect.dataset.tmNmmPreconnect = '1';
-      document.head?.appendChild(preconnect);
-    }
-
-    const warm = () => {
-      if (modalState || prewarmState?.iframe?.isConnected) return;
-      const iframe = document.createElement('iframe');
-      iframe.id = PREWARM_ID;
-      iframe.allow = 'clipboard-read; clipboard-write';
-      iframe.src = buildMindMapIframeUrl();
-      iframe.tabIndex = -1;
-      iframe.setAttribute('aria-hidden', 'true');
-      iframe.style.cssText = 'position:fixed;width:1px;height:1px;left:-9999px;top:-9999px;border:0;opacity:0;pointer-events:none;';
-      prewarmState = { iframe, ready: false };
-      document.body?.appendChild(iframe);
-    };
-
-    if ('requestIdleCallback' in window) {
-      window.requestIdleCallback(warm, { timeout: 3000 });
-    } else {
-      window.setTimeout(warm, 1500);
-    }
-  }
-
-  function adoptPrewarmedIframe(placeholder) {
-    const warm = prewarmState;
-    if (!warm?.iframe?.isConnected) {
-      return { iframe: placeholder, ready: false, needsNavigation: true };
-    }
-
-    prewarmState = null;
-    const iframe = warm.iframe;
-    iframe.removeAttribute('id');
-    iframe.removeAttribute('aria-hidden');
-    iframe.removeAttribute('tabindex');
-    iframe.removeAttribute('style');
-    iframe.className = 'tm-nmm-frame';
-    iframe.title = 'MindMap WebUI';
-    placeholder.replaceWith(iframe);
-    return { iframe, ready: Boolean(warm.ready), needsNavigation: false };
+  function ensureMindMapPreconnect() {
+    if (document.querySelector('link[data-tm-nmm-preconnect]')) return;
+    const preconnect = document.createElement('link');
+    preconnect.rel = 'preconnect';
+    preconnect.href = MINDMAP_WEB_ORIGIN;
+    preconnect.crossOrigin = 'anonymous';
+    preconnect.dataset.tmNmmPreconnect = '1';
+    (document.head || document.documentElement).appendChild(preconnect);
   }
 
   async function openMindMap(recordId) {
     await ensureDocumentReady();
-
-    if (modalState) {
-      if (modalState.recordId === recordId) return;
-      if (modalState.dirty) {
-        showClosePopover(modalState);
-        return;
-      }
-      destroyMindMapModal(modalState);
-    }
+    ensureMindMapPreconnect();
 
     let context;
     try {
@@ -1355,23 +1351,48 @@
       return;
     }
 
+    if (modalState) {
+      if (modalState.isOpen) {
+        if (modalState.recordId === recordId) return;
+        if (modalState.dirty) {
+          showClosePopover(modalState);
+          return;
+        }
+      }
+
+      if (modalState.recordId === recordId) {
+        modalState.isOpen = true;
+        modalState.overlay.hidden = false;
+        hideClosePopover(modalState);
+        if (modalState.appReady) {
+          clearFrameMessage();
+          setModalStatus(modalState.dirty ? 'dirty' : 'saved', modalState.dirty ? '有未保存修改' : '✓ 已加载');
+        }
+        return;
+      }
+
+      prepareRecordState(modalState, recordId, context);
+      await initializeMindMap(modalState);
+      return;
+    }
+
     const overlay = createModalShell(recordId);
     const placeholder = overlay.querySelector('.tm-nmm-frame');
-    const adopted = adoptPrewarmedIframe(placeholder);
-    const iframe = adopted.iframe;
     modalState = {
       overlay,
-      iframe,
+      iframe: placeholder,
       recordId,
       context,
       initialData: null,
       hadStoredData: false,
-      iframeReady: adopted.ready,
+      iframeReady: false,
       appReady: false,
       initSent: false,
       iframeReadyTimer: 0,
       appReadyTimer: 0,
       iframeRetryCount: 0,
+      recordLoadId: 1,
+      isOpen: true,
       dirty: false,
       saving: false,
       savePromise: null,
@@ -1410,13 +1431,10 @@
       if (event.target === overlay) void requestCloseMindMapModal();
     });
 
-    bindMindMapIframe(modalState, iframe);
-    if (adopted.needsNavigation) {
-      iframe.src = buildMindMapIframeUrl();
-    }
-    if (!modalState.iframeReady) {
-      armIframeReadyTimeout(modalState);
-    }
+    const iframe = createMindMapIframe(modalState);
+    placeholder.replaceWith(iframe);
+    modalState.iframe = iframe;
+    iframe.src = buildMindMapIframeUrl();
 
     await initializeMindMap(modalState);
   }
@@ -1451,5 +1469,5 @@
     return nativeOpen(url, target, features);
   };
 
-  void ensureDocumentReady().then(scheduleMindMapPrewarm);
+  void ensureDocumentReady().then(ensureMindMapPreconnect);
 })();
