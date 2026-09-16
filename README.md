@@ -62,7 +62,7 @@ ChatGPT 长对话优化助手的轮数定义、Fetch Proxy、悬浮设置和维�
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
 | NocoDB 代码块工具 | [`nocodb-code-tools.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-code-tools.user.js) | 为 Rich Text 代码块提供悬浮复制和带确认的安全清空功能。 |
-| NocoDB Rich Text 视觉样式增强 | [`nocodb-richtext-style.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js) | 合并原“彩虹标题”和“LongText 字体改色”，为 H1-H6、加粗文字、`【xxx】` 和 `「xxx」` 提供显示层颜色增强。 |
+| NocoDB Rich Text 视觉样式增强 | [`nocodb-richtext-style.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js) | 为 H1-H6、加粗文字、`【xxx】` 和 `「xxx」` 提供显示层颜色增强，并增大普通顶层段落间距且保持纯空段落紧凑。 |
 | NocoDB Rich Text 图片查看器 | [`nocodb-richtext-image.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-image.user.js) | 调整 Rich Text 正文图片宽度并居中；双击图片可缩放、拖拽和查看原始尺寸。 |
 | NocoDB 音频播放器 | [`nocodb-audio-player.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js) | 接管指定 Media Manager MP3 Button，在 NocoDB 页面内显示可拖动的深色悬浮播放器，并提供进度、倍速和快捷键控制。 |
 | NocoDB 思维导图 | [`nocodb-mindmap.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-mindmap.user.js) | 接管携带 Record ID 的原生 Button，在当前页面的大弹窗中编辑思维导图，并通过 NocoDB v3 API 自动保存到 `MindMapData` JSON 字段。 |
