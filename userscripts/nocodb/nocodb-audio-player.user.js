@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @version      0.4.1
+// @version      0.4.2
 // @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -368,6 +368,10 @@
       draggingProgress = false;
     });
 
+    player.addEventListener('pointerdown', isolatePlayerEventFromVisibleModal);
+    player.addEventListener('mousedown', isolatePlayerEventFromVisibleModal);
+    player.addEventListener('click', isolatePlayerEventFromVisibleModal);
+
     audio.addEventListener('loadedmetadata', updateTimeline);
     audio.addEventListener('durationchange', updateTimeline);
     audio.addEventListener('timeupdate', updateTimeline);
@@ -520,6 +524,11 @@
       if (style.display === 'none' || style.visibility === 'hidden') return false;
       return modal.getClientRects().length > 0;
     });
+  }
+
+  function isolatePlayerEventFromVisibleModal(event) {
+    if (!hasVisibleNocoDbModal()) return;
+    event.stopPropagation();
   }
 
   document.addEventListener('keydown', (event) => {
