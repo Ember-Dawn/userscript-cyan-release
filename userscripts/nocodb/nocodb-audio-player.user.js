@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @version      0.4.2
+// @version      0.4.3
 // @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -348,9 +348,10 @@
     player.querySelector('.tm-nap-close').addEventListener('click', closePlayer);
     playButton.addEventListener('click', togglePlayback);
 
-    progress.addEventListener('pointerdown', () => {
-      draggingProgress = true;
-    });
+    progress.addEventListener('pointerdown', handleProgressPointerDown);
+    progress.addEventListener('pointermove', handleProtectedProgressPointerMove);
+    progress.addEventListener('pointerup', handleProtectedProgressPointerUp);
+    progress.addEventListener('pointercancel', handleProtectedProgressPointerUp);
 
     progress.addEventListener('input', () => {
       if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
@@ -363,11 +364,7 @@
       draggingProgress = false;
     });
 
-    progress.addEventListener('pointerup', () => {
-      seekFromProgress();
-      draggingProgress = false;
-    });
-
+    player.addEventListener('mousedown', protectModalEditorFocus);
     player.addEventListener('pointerdown', isolatePlayerEventFromVisibleModal);
     player.addEventListener('mousedown', isolatePlayerEventFromVisibleModal);
     player.addEventListener('click', isolatePlayerEventFromVisibleModal);
@@ -426,6 +423,46 @@
     const ratio = Number(progress.value) / Number(progress.max);
     audio.currentTime = Math.max(0, Math.min(audio.duration, ratio * audio.duration));
     updateTimeline();
+  }
+
+  function setProgressFromPointer(event) {
+    if (!progress) return;
+    const rect = progress.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    progress.value = String(Math.round(ratio * Number(progress.max)));
+    if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
+      currentTimeEl.textContent = formatTime(ratio * audio.duration);
+    }
+  }
+
+  function handleProgressPointerDown(event) {
+    draggingProgress = true;
+    if (!hasVisibleNocoDbModal()) return;
+
+    event.preventDefault();
+    progress.setPointerCapture?.(event.pointerId);
+    setProgressFromPointer(event);
+    seekFromProgress();
+  }
+
+  function handleProtectedProgressPointerMove(event) {
+    if (!draggingProgress || !hasVisibleNocoDbModal()) return;
+    event.preventDefault();
+    setProgressFromPointer(event);
+    seekFromProgress();
+  }
+
+  function handleProtectedProgressPointerUp(event) {
+    if (!draggingProgress) return;
+    if (hasVisibleNocoDbModal()) {
+      event.preventDefault();
+      setProgressFromPointer(event);
+      seekFromProgress();
+    } else {
+      seekFromProgress();
+    }
+    draggingProgress = false;
   }
 
   async function safePlay() {
@@ -524,6 +561,11 @@
       if (style.display === 'none' || style.visibility === 'hidden') return false;
       return modal.getClientRects().length > 0;
     });
+  }
+
+  function protectModalEditorFocus(event) {
+    if (!hasVisibleNocoDbModal()) return;
+    event.preventDefault();
   }
 
   function isolatePlayerEventFromVisibleModal(event) {

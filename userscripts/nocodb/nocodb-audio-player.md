@@ -76,7 +76,7 @@ https://media.380782744.xyz/media/audio/m4q8z2kp.mp3?_t=1788912345678
 7. 播放结束后播放器保留；
 8. 点击关闭按钮后停止播放并隐藏播放器；
 9. 可按住播放器顶部标题区域拖动整个播放器，拖动位置写入浏览器 `localStorage`，刷新页面后继续使用上次位置；窗口尺寸变化时会自动把已保存位置限制在可视区域内；
-10. 打开 LongText 等可见 NocoDB `.ant-modal-content` 弹窗时，点击、拖动或操作悬浮播放器不会把这些操作继续冒泡给 NocoDB，因此不会把播放器操作误判为弹窗外点击；没有可见 modal 时播放器事件传播保持原样。
+10. 打开 LongText 等可见 NocoDB `.ant-modal-content` 弹窗时，点击、拖动或操作悬浮播放器时会阻止播放器抢走当前编辑器焦点，并同时隔离播放器自身的外部点击事件；LongText / ProseMirror 不会因播放器获得焦点而触发 `blur` / `focusout` 关闭。没有可见 modal 时播放器焦点与事件行为保持原样。
 
 当前播放器采用紧凑的两层布局：顶部显示文件名、快捷键提示和当前倍速，底部只显示播放按钮、时间与进度条。倍速是纯状态文本，不再使用按钮样式或鼠标点击切换。快捷键提示保持较高对比度。
 
@@ -158,7 +158,8 @@ docs/media-manager.md
 - 播放器拖动仅由顶部标题区域触发，按钮和进度条不应触发整体拖动。
 - 当前倍速只作为顶部状态文本显示，不提供倍速按钮；倍速由 `↑` / `↓` 按 `0.1×` 增量控制，范围保持在 `0.5×`～`2.0×`。
 - `Esc` 在播放器显示时作为全局关闭快捷键；但如果页面存在可见的 NocoDB `.ant-modal-content` 弹窗，脚本不接管该按键，让 NocoDB 自己处理 Escape。弹窗可见性通过实际布局与 `display` / `visibility` 判断，避免把残留但已隐藏的 modal DOM 误判为打开状态。
-- 只有页面存在可见 NocoDB `.ant-modal-content` 时，播放器根节点才会在冒泡阶段拦截自身的 `pointerdown`、`mousedown` 和 `click`；不得调用 `preventDefault()`，以免破坏播放按钮、进度条、拖动或其他播放器内部交互。没有可见 modal 时这些事件继续按原路径传播。
+- 只有页面存在可见 NocoDB `.ant-modal-content` 时，播放器才会对自身 `mousedown` 调用 `preventDefault()`，阻止按钮、播放器容器等取得焦点，并继续在冒泡阶段隔离 `pointerdown`、`mousedown` 和 `click`，避免 LongText / ProseMirror 因失焦或外部点击而关闭。没有可见 modal 时这些行为不启用。
+- 可见 modal 下的进度条采用脚本自己的 pointer seek：`pointerdown` 时阻止原生聚焦并取得 pointer capture，随后按指针横向位置实时更新进度和 `audio.currentTime`；无 modal 时仍使用浏览器原生 range 行为。这样既保留 seek，也不让 `<input type="range">` 抢走编辑器焦点。
 - 播放器位置使用 `tm-nocodb-audio-player-position-v1` 保存到当前 NocoDB 站点的 `localStorage`；如果存储不可用，播放器仍应可以在当前页面拖动。
 - 修改可执行行为后提升 `@version`。
 - 脚本 metadata 中的 `@updateURL` / `@downloadURL` 保持指向私有开发仓库标准 Raw URL，不写缓存参数。
