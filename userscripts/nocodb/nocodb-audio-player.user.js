@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @version      0.4.3
+// @version      0.4.4
 // @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -46,6 +46,8 @@
   let dragPointerId = null;
   let dragOffsetX = 0;
   let dragOffsetY = 0;
+  let playerHostObserver = null;
+  let playerHostSyncScheduled = false;
 
   const nativeOpen = window.open.bind(window);
 
@@ -365,9 +367,6 @@
     });
 
     player.addEventListener('mousedown', protectModalEditorFocus);
-    player.addEventListener('pointerdown', isolatePlayerEventFromVisibleModal);
-    player.addEventListener('mousedown', isolatePlayerEventFromVisibleModal);
-    player.addEventListener('click', isolatePlayerEventFromVisibleModal);
 
     audio.addEventListener('loadedmetadata', updateTimeline);
     audio.addEventListener('durationchange', updateTimeline);
@@ -387,6 +386,9 @@
       applyPlayerPosition(Number.parseFloat(player.style.left), Number.parseFloat(player.style.top));
       savePlayerPosition();
     });
+
+    startPlayerHostObserver();
+    syncPlayerHost();
   }
 
   function setStatus(text) {
@@ -521,6 +523,7 @@
 
   function openAudio(url) {
     ensurePlayer();
+    syncPlayerHost();
 
     const normalizedUrl = new URL(String(url), location.href).href;
     player.hidden = false;
@@ -554,23 +557,48 @@
     );
   }
 
-  function hasVisibleNocoDbModal() {
-    return Array.from(document.querySelectorAll('.ant-modal-content')).some((modal) => {
+  function findVisibleNocoDbModal() {
+    return Array.from(document.querySelectorAll('.ant-modal-content')).find((modal) => {
       if (!(modal instanceof HTMLElement)) return false;
       const style = window.getComputedStyle(modal);
       if (style.display === 'none' || style.visibility === 'hidden') return false;
       return modal.getClientRects().length > 0;
+    }) || null;
+  }
+
+  function hasVisibleNocoDbModal() {
+    return Boolean(findVisibleNocoDbModal());
+  }
+
+  function syncPlayerHost() {
+    if (!player) return;
+    const host = findVisibleNocoDbModal() || document.documentElement;
+    if (player.parentNode !== host) host.appendChild(player);
+  }
+
+  function schedulePlayerHostSync() {
+    if (playerHostSyncScheduled) return;
+    playerHostSyncScheduled = true;
+    requestAnimationFrame(() => {
+      playerHostSyncScheduled = false;
+      syncPlayerHost();
+    });
+  }
+
+  function startPlayerHostObserver() {
+    if (playerHostObserver || !document.documentElement) return;
+    playerHostObserver = new MutationObserver(schedulePlayerHostSync);
+    playerHostObserver.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden'],
     });
   }
 
   function protectModalEditorFocus(event) {
     if (!hasVisibleNocoDbModal()) return;
     event.preventDefault();
-  }
-
-  function isolatePlayerEventFromVisibleModal(event) {
-    if (!hasVisibleNocoDbModal()) return;
-    event.stopPropagation();
   }
 
   document.addEventListener('keydown', (event) => {
