@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @version      0.4.4
+// @version      0.5.0
 // @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -26,6 +26,8 @@
 
   const PLAYER_ID = 'tm-nocodb-audio-player';
   const STYLE_ID = 'tm-nocodb-audio-player-style';
+  const MINI_PLAYER_CLASS = 'tm-nap-mini-player';
+  const MINI_PLAYER_LEFT = 208;
   const POSITION_STORAGE_KEY = 'tm-nocodb-audio-player-position-v1';
   const DEFAULT_HINT = 'Space 播放/暂停 · ←/→ ±5s · ↑/↓ 倍速';
   const VIEWPORT_MARGIN = 8;
@@ -46,8 +48,8 @@
   let dragPointerId = null;
   let dragOffsetX = 0;
   let dragOffsetY = 0;
-  let playerHostObserver = null;
-  let playerHostSyncScheduled = false;
+  let miniPlayerObserver = null;
+  let miniPlayerSyncScheduled = false;
 
   const nativeOpen = window.open.bind(window);
 
@@ -225,6 +227,90 @@
         cursor: pointer;
       }
 
+      #${PLAYER_ID}.tm-nap-longtext-passive {
+        pointer-events: none;
+      }
+
+      .${MINI_PLAYER_CLASS} {
+        position: absolute;
+        top: 8px;
+        left: ${MINI_PLAYER_LEFT}px;
+        z-index: 2147482999;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: min(420px, calc(100% - ${MINI_PLAYER_LEFT + 16}px));
+        min-width: 280px;
+        height: 32px;
+        box-sizing: border-box;
+        padding: 2px 7px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 8px;
+        background: rgba(248, 250, 252, 0.96);
+        color: #334155;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+        font: 11.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .dark .${MINI_PLAYER_CLASS} {
+        border-color: rgba(148, 163, 184, 0.22);
+        background: rgba(30, 41, 59, 0.96);
+        color: #e2e8f0;
+      }
+
+      .${MINI_PLAYER_CLASS} .tm-nap-mini-button {
+        flex: 0 0 auto;
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        border: 0;
+        border-radius: 7px;
+        background: rgba(148, 163, 184, 0.16);
+        color: inherit;
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 26px;
+      }
+
+      .${MINI_PLAYER_CLASS} .tm-nap-mini-button:hover {
+        background: rgba(148, 163, 184, 0.26);
+      }
+
+      .${MINI_PLAYER_CLASS} .tm-nap-mini-time {
+        flex: 0 0 auto;
+        min-width: 74px;
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+        white-space: nowrap;
+      }
+
+      .${MINI_PLAYER_CLASS} .tm-nap-mini-progress {
+        flex: 1 1 auto;
+        min-width: 80px;
+        accent-color: #6366f1;
+        cursor: pointer;
+      }
+
+      .${MINI_PLAYER_CLASS} .tm-nap-mini-speed {
+        flex: 0 0 auto;
+        min-width: 34px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      @media (max-width: 980px) {
+        .${MINI_PLAYER_CLASS} {
+          width: 300px;
+        }
+
+        .${MINI_PLAYER_CLASS} .tm-nap-mini-time {
+          min-width: 62px;
+          font-size: 10.5px;
+        }
+      }
+
     `;
     document.head.appendChild(style);
   }
@@ -387,8 +473,8 @@
       savePlayerPosition();
     });
 
-    startPlayerHostObserver();
-    syncPlayerHost();
+    startMiniPlayerObserver();
+    syncMiniPlayers();
   }
 
   function setStatus(text) {
@@ -406,18 +492,23 @@
     playButton.title = audio.paused ? '播放' : '暂停';
 
     if (audio.ended || (audio.paused && currentUrl)) restoreHint();
+    updateMiniPlayerState();
   }
 
   function updateTimeline() {
-    if (!audio || !progress || draggingProgress) return;
+    if (!audio) return;
 
-    currentTimeEl.textContent = formatTime(audio.currentTime);
-    durationEl.textContent = formatTime(audio.duration);
+    if (progress && !draggingProgress) {
+      currentTimeEl.textContent = formatTime(audio.currentTime);
+      durationEl.textContent = formatTime(audio.duration);
 
-    const ratio = Number.isFinite(audio.duration) && audio.duration > 0
-      ? audio.currentTime / audio.duration
-      : 0;
-    progress.value = String(Math.round(ratio * Number(progress.max)));
+      const ratio = Number.isFinite(audio.duration) && audio.duration > 0
+        ? audio.currentTime / audio.duration
+        : 0;
+      progress.value = String(Math.round(ratio * Number(progress.max)));
+    }
+
+    updateMiniPlayerState();
   }
 
   function seekFromProgress() {
@@ -498,6 +589,7 @@
     audio.playbackRate = currentSpeed;
     speedDisplay.textContent = `${currentSpeed.toFixed(1)}×`;
     restoreHint();
+    updateMiniPlayerState();
   }
 
   function seekBy(seconds) {
@@ -519,11 +611,11 @@
     durationEl.textContent = '00:00';
     progress.value = '0';
     updatePlayState();
+    syncMiniPlayers();
   }
 
   function openAudio(url) {
     ensurePlayer();
-    syncPlayerHost();
 
     const normalizedUrl = new URL(String(url), location.href).href;
     player.hidden = false;
@@ -542,6 +634,7 @@
     currentSpeed = DEFAULT_SPEED;
     speedDisplay.textContent = '1.0×';
     setStatus('Loading…');
+    syncMiniPlayers();
 
     audio.pause();
     audio.src = buildPlaybackUrl(normalizedUrl);
@@ -552,6 +645,7 @@
 
   function isEditableTarget(target) {
     if (!(target instanceof Element)) return false;
+    if (target.closest(`.${MINI_PLAYER_CLASS}`)) return false;
     return Boolean(
       target.closest('input, textarea, select, [contenteditable="true"], .ProseMirror, .monaco-editor')
     );
@@ -570,25 +664,128 @@
     return Boolean(findVisibleNocoDbModal());
   }
 
-  function syncPlayerHost() {
-    if (!player) return;
-    const host = findVisibleNocoDbModal() || document.documentElement;
-    if (player.parentNode !== host) host.appendChild(player);
+  function isVisibleElement(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    return element.getClientRects().length > 0;
   }
 
-  function schedulePlayerHostSync() {
-    if (playerHostSyncScheduled) return;
-    playerHostSyncScheduled = true;
-    requestAnimationFrame(() => {
-      playerHostSyncScheduled = false;
-      syncPlayerHost();
+  function findVisibleLongTextRoots() {
+    return Array.from(document.querySelectorAll('.ant-modal-content .expanded-cell-input')).filter((root) => {
+      if (!isVisibleElement(root)) return false;
+      return Boolean(root.querySelector('.nc-rich-text-content .ProseMirror'));
     });
   }
 
-  function startPlayerHostObserver() {
-    if (playerHostObserver || !document.documentElement) return;
-    playerHostObserver = new MutationObserver(schedulePlayerHostSync);
-    playerHostObserver.observe(document.documentElement, {
+  function hasActiveAudio() {
+    return Boolean(currentUrl && player && !player.hidden);
+  }
+
+  function seekFromMiniProgress(range) {
+    if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    const ratio = Number(range.value) / Number(range.max);
+    audio.currentTime = Math.max(0, Math.min(audio.duration, ratio * audio.duration));
+    updateTimeline();
+  }
+
+  function createMiniPlayer(root) {
+    const mini = document.createElement('div');
+    mini.className = MINI_PLAYER_CLASS;
+    mini.setAttribute('role', 'group');
+    mini.setAttribute('aria-label', '音频播放器');
+    mini.innerHTML = `
+      <button type="button" class="tm-nap-mini-button" title="播放 / 暂停" aria-label="播放 / 暂停">▶</button>
+      <span class="tm-nap-mini-time">00:00 / 00:00</span>
+      <input class="tm-nap-mini-progress" type="range" min="0" max="1000" value="0" step="1" aria-label="播放进度">
+      <span class="tm-nap-mini-speed" aria-label="当前倍速">1.0×</span>
+    `;
+
+    ['pointerdown', 'mousedown', 'click'].forEach((type) => {
+      mini.addEventListener(type, (event) => {
+        event.stopPropagation();
+      });
+    });
+
+    mini.querySelector('.tm-nap-mini-button').addEventListener('click', () => {
+      togglePlayback();
+    });
+
+    const miniProgress = mini.querySelector('.tm-nap-mini-progress');
+    miniProgress.addEventListener('input', () => {
+      seekFromMiniProgress(miniProgress);
+    });
+    miniProgress.addEventListener('change', () => {
+      seekFromMiniProgress(miniProgress);
+    });
+
+    root.appendChild(mini);
+    return mini;
+  }
+
+  function updateMiniPlayerState() {
+    if (!audio) return;
+
+    const ratio = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.currentTime / audio.duration
+      : 0;
+
+    document.querySelectorAll(`.${MINI_PLAYER_CLASS}`).forEach((mini) => {
+      const miniButton = mini.querySelector('.tm-nap-mini-button');
+      const miniTime = mini.querySelector('.tm-nap-mini-time');
+      const miniProgress = mini.querySelector('.tm-nap-mini-progress');
+      const miniSpeed = mini.querySelector('.tm-nap-mini-speed');
+
+      if (miniButton) {
+        miniButton.textContent = audio.paused ? '▶' : '❚❚';
+        miniButton.setAttribute('aria-label', audio.paused ? '播放' : '暂停');
+        miniButton.title = audio.paused ? '播放' : '暂停';
+      }
+      if (miniTime) {
+        miniTime.textContent = `${formatTime(audio.currentTime)} / ${formatTime(audio.duration)}`;
+      }
+      if (miniProgress && document.activeElement !== miniProgress) {
+        miniProgress.value = String(Math.round(ratio * Number(miniProgress.max)));
+      }
+      if (miniSpeed) miniSpeed.textContent = `${currentSpeed.toFixed(1)}×`;
+    });
+  }
+
+  function syncMiniPlayers() {
+    if (!player) return;
+
+    const roots = findVisibleLongTextRoots();
+    const active = hasActiveAudio();
+    const visibleRoots = new Set(roots);
+
+    document.querySelectorAll(`.${MINI_PLAYER_CLASS}`).forEach((mini) => {
+      if (!active || !visibleRoots.has(mini.parentElement)) mini.remove();
+    });
+
+    if (active) {
+      roots.forEach((root) => {
+        if (!root.querySelector(`:scope > .${MINI_PLAYER_CLASS}`)) createMiniPlayer(root);
+      });
+    }
+
+    const hasLongTextMini = active && roots.length > 0;
+    player.classList.toggle('tm-nap-longtext-passive', hasLongTextMini);
+    updateMiniPlayerState();
+  }
+
+  function scheduleMiniPlayerSync() {
+    if (miniPlayerSyncScheduled) return;
+    miniPlayerSyncScheduled = true;
+    requestAnimationFrame(() => {
+      miniPlayerSyncScheduled = false;
+      syncMiniPlayers();
+    });
+  }
+
+  function startMiniPlayerObserver() {
+    if (miniPlayerObserver || !document.documentElement) return;
+    miniPlayerObserver = new MutationObserver(scheduleMiniPlayerSync);
+    miniPlayerObserver.observe(document.documentElement, {
       subtree: true,
       childList: true,
       attributes: true,

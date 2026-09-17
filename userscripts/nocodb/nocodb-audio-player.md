@@ -76,7 +76,8 @@ https://media.380782744.xyz/media/audio/m4q8z2kp.mp3?_t=1788912345678
 7. 播放结束后播放器保留；
 8. 点击关闭按钮后停止播放并隐藏播放器；
 9. 可按住播放器顶部标题区域拖动整个播放器，拖动位置写入浏览器 `localStorage`，刷新页面后继续使用上次位置；窗口尺寸变化时会自动把已保存位置限制在可视区域内；
-10. 打开 LongText 等可见 NocoDB `.ant-modal-content` 弹窗时，脚本会把现有播放器 DOM 临时移动到该 modal 内部，使 NocoDB 从 DOM 结构上把播放器交互视为 modal 内部点击；同时继续阻止播放器抢走当前编辑器焦点。modal 关闭或卸载后，播放器会自动移回 `document.documentElement`。播放器节点只移动、不重建，因此当前音频、进度、监听器和拖动状态保持不变。没有可见 modal 时播放器仍使用原来的页面根节点宿主。
+10. 已经打开音频播放器时，如果进入 LongText Rich Text 编辑器，脚本会在编辑器顶部插入一条 mini player，显示播放 / 暂停、当前时间 / 总时长、进度条和当前倍速；mini player 与右下角播放器共享同一个 `<audio>`、`currentUrl`、播放进度和倍速状态，不创建第二份音频。没有已打开音频时进入 LongText，不插入任何播放器 UI。
+11. LongText 顶部 mini player 存在期间，右下角悬浮播放器保持显示但禁用鼠标 / 指针操作，避免误点 modal 外播放器导致编辑器关闭；关闭 LongText 后 mini player 自动删除，右下角播放器恢复原有鼠标交互。
 
 当前播放器采用紧凑的两层布局：顶部显示文件名、快捷键提示和当前倍速，底部只显示播放按钮、时间与进度条。倍速是纯状态文本，不再使用按钮样式或鼠标点击切换。快捷键提示保持较高对比度。
 
@@ -87,6 +88,7 @@ https://media.380782744.xyz/media/audio/m4q8z2kp.mp3?_t=1788912345678
 - 可拖动进度条；
 - 倍速状态显示与键盘控制；
 - 可拖动并记忆位置的悬浮播放器；
+- LongText 顶部共享状态的 mini player（播放 / 暂停、时间、进度条、倍速）；
 - 关闭播放器；
 - 加载失败提示。
 
@@ -115,6 +117,8 @@ https://media.380782744.xyz/media/audio/m4q8z2kp.mp3?_t=1788912345678
 - `contenteditable`
 - ProseMirror
 - Monaco Editor
+
+LongText 顶部 mini player 是例外：点击 mini player 的播放按钮、进度条或其他非正文区域后，原来的 `Space`、`←`、`→`、`↑`、`↓` 快捷键继续控制同一个音频；只有焦点仍在 ProseMirror / 正文编辑控件中时，这些按键才保留给文本编辑。
 
 ## 4. 为什么不操作 NocoDB Canvas Grid
 
@@ -158,9 +162,11 @@ docs/media-manager.md
 - 播放器拖动仅由顶部标题区域触发，按钮和进度条不应触发整体拖动。
 - 当前倍速只作为顶部状态文本显示，不提供倍速按钮；倍速由 `↑` / `↓` 按 `0.1×` 增量控制，范围保持在 `0.5×`～`2.0×`。
 - `Esc` 在播放器显示时作为全局关闭快捷键；但如果页面存在可见的 NocoDB `.ant-modal-content` 弹窗，脚本不接管该按键，让 NocoDB 自己处理 Escape。弹窗可见性通过实际布局与 `display` / `visibility` 判断，避免把残留但已隐藏的 modal DOM 误判为打开状态。
-- 播放器创建后会观察页面 modal 的挂载、卸载和显隐变化：存在可见 `.ant-modal-content` 时，把同一个 `#tm-nocodb-audio-player` 节点移动到该 modal 内；没有可见 modal 时移回 `document.documentElement`。这是 DOM reparent，不创建第二个播放器，也不重建 `<audio>` 状态。
-- reparent 期间仍保留 modal 下的焦点保护：播放器自身 `mousedown` 会 `preventDefault()`，避免按钮、播放器容器等取得焦点；进度条继续使用脚本自己的 pointer seek，在不抢走 ProseMirror 焦点的前提下保持拖动和 seek。无 modal 时仍使用浏览器原生 range 行为。
-- 不再依赖播放器冒泡阶段的 `stopPropagation()` 来伪装 modal 内点击；outside-click 兼容性由真实的 DOM 包含关系负责。
+- 播放器创建后会观察 LongText Rich Text 编辑器的挂载、卸载和显隐变化。只有 `currentUrl` 存在且右下角播放器处于显示状态时，才在可见 `.ant-modal-content .expanded-cell-input` 中创建 `.tm-nap-mini-player`；没有活动音频时不要向 LongText 顶部插入任何播放器 UI。
+- mini player 只是第二套控制 UI，不创建第二个 `<audio>`。播放 / 暂停、时间、进度与倍速都直接读写现有 `audio`、`currentUrl` 和 `currentSpeed`，因此右下角播放器与 LongText 顶部始终保持同步。
+- mini player 默认定位在现有 TOC / Markdown 导出按钮之后（当前 `left: 208px; top: 8px`），并挂在 `.expanded-cell-input` 根节点下，不向 ProseMirror 正文插入任何节点。
+- LongText mini player 存在时给右下角 `#tm-nocodb-audio-player` 增加 `tm-nap-longtext-passive`，仅禁用其 pointer events；LongText 关闭后自动恢复。不要再尝试通过 reparent 右下角播放器来规避 modal 关闭。
+- mini player 自身不是正文编辑区，所以用户点击它使 ProseMirror 失焦后，现有 `Space` / 方向键快捷键仍然可用；`isEditableTarget()` 仍应优先保护真正的正文输入区域。
 - 播放器位置使用 `tm-nocodb-audio-player-position-v1` 保存到当前 NocoDB 站点的 `localStorage`；如果存储不可用，播放器仍应可以在当前页面拖动。
 - 修改可执行行为后提升 `@version`。
 - 脚本 metadata 中的 `@updateURL` / `@downloadURL` 保持指向私有开发仓库标准 Raw URL，不写缓存参数。
@@ -183,11 +189,13 @@ docs/media-manager.md
 11. 拖动后刷新页面，播放器再次出现时恢复上次位置；窗口尺寸变化后播放器不会停留在屏幕外；
 12. 不存在的 MP3 显示错误状态而不影响页面；
 13. 播放器显示且页面没有可见 NocoDB modal 时，无论当前焦点在哪里，按 `Esc` 都会关闭播放器；打开 LongText 等 `.ant-modal-content` 弹窗时，`Esc` 不被脚本接管并继续由 NocoDB 处理；
-14. 播放器已显示时再打开 LongText 等可见 `.ant-modal-content`，确认 `#tm-nocodb-audio-player` 会自动成为该 modal 的后代；点击播放 / 暂停、拖动进度条、拖动播放器和点击关闭按钮都不会关闭该 modal；
-15. 关闭或卸载 LongText modal 后，确认播放器节点自动移回 `document.documentElement`，当前播放状态、进度和已保存位置不丢失；
-16. 先打开 LongText 再触发音频播放时，播放器也会直接挂入当前可见 modal，交互不导致 modal 关闭；
-17. 没有可见 NocoDB modal 时，播放器继续挂在 `document.documentElement`，普通鼠标 / 指针交互保持原样；
-18. NocoDB 其他普通 URL Button 仍按原行为打开。
+14. 没有已打开音频时进入 LongText，顶部不出现 mini player；
+15. 已有音频时进入 LongText，顶部出现 mini player，包含播放 / 暂停、当前时间 / 总时长、进度条和倍速，且与右下角播放器状态实时同步；
+16. LongText 顶部 mini player 显示期间，右下角播放器鼠标 / 指针操作被禁用；点击 mini player 的播放按钮和拖动进度条不会关闭 LongText；
+17. 在 ProseMirror 正文内编辑时 `Space` / 方向键仍用于文字输入与光标移动；点击 mini player 或其他非编辑区域使正文失焦后，同一套 `Space`、`←`、`→`、`↑`、`↓` 快捷键继续控制播放器；
+18. 关闭 LongText 后 mini player 自动删除，右下角播放器恢复鼠标 / 指针交互，当前音频、进度和倍速状态不丢失；
+19. LongText 已经打开时再触发音频播放，mini player 会动态出现；关闭播放器后 mini player 会同步消失；
+20. NocoDB 其他普通 URL Button 仍按原行为打开。
 
 语法检查：
 
