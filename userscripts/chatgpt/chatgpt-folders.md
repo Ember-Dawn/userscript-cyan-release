@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.7.3  
+> 当前说明版本：v0.7.4  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -27,7 +27,7 @@
 4. 首次挂载必须避开 React hydration；`document-idle` 不代表 hydration 已完成。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 sidebar/document，不给最近聊天逐项注入常驻 UI。
-7. 新版原生 conversation row 拖入文件夹使用 capture drag bridge：pointerdown 缓存 conversation，document capture 的 `dragover`/`drop` 按坐标命中文件夹并负责 hover/提交；旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
+7. 新版原生 conversation row 拖入文件夹使用低开销 pointer-capture 自定义拖拽：pointerdown 建立一次性手势，超过阈值后取消 ChatGPT 本次 native drag，并用 `requestAnimationFrame` 限流的坐标命中负责 hover/提交；旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
 8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
 10. WebDAV 使用 schema 3、基准快照、对象级 operation log、墓碑和有限 412 重试实现多端合并。
@@ -39,7 +39,7 @@
 ```text
 ChatGPT 原生 sidebar / conversation list / menu
           │
-          ├─ 新版 conversation capture drag bridge / legacy drag-drop / 三点菜单入口
+          ├─ 新版 conversation pointer-capture drag / legacy drag-drop / 三点菜单入口
           │
           ▼
       #cgfm-root UI
@@ -100,7 +100,7 @@ WebDAV 请求优先使用 `GM_xmlhttpRequest`，并兼容部分脚本管理器�
 4. UI 样式与 icon；
 5. sidebar host 探测、首次 mount、remount 与文件夹树 render；
 6. 文件夹创建、重命名、颜色、删除与折叠；
-7. 新版 conversation row 的 capture drag bridge 与 legacy anchor 的聊天 drag/drop；
+7. 新版 conversation row 的 pointer-capture 自定义拖拽与 legacy anchor 的聊天 drag/drop；
 8. 文件夹拖拽移动；
 9. ChatGPT 原生聊天三点菜单“移至文件夹”；
 10. 聊天标题提取、清洗与刷新；
@@ -392,22 +392,30 @@ payload：
 { kind: "chat", id, title, url }
 ```
 
-新版 conversation row 拖入文件夹使用 capture drag bridge：
+新版 conversation row 拖入文件夹使用**一次性 pointer-capture 自定义拖拽**：
 
-1. pointerdown 直接从 `data-sidebar-chatgpt-conversation-key` row 缓存 conversation id/title/url；
-2. 不再使用 pointermove/pointerup 自定义追踪，也不强制新版 row `draggable=true`；
-3. 浏览器进入拖拽后，由 document capture `dragover` 在 ChatGPT 外层 handler 之前读取事件坐标；
-4. 使用 `document.elementsFromPoint()`（必要时回退 `elementFromPoint()` / event target）从坐标下方元素中寻找 `#cgfm-root` 内的 `.cgfm-folder-row`；
-5. 命中文件夹时 `preventDefault()` 并显示脚本自己的 drop highlight，从而允许后续 `drop`；
-6. document capture `drop` 再次按坐标确认目标，优先使用 pointerdown 缓存 conversation 并调用既有 `addChatToFolder()`；
-7. 只有落点位于脚本文件夹时才停止事件继续传播，不影响 ChatGPT 自己的 Projects/Recents 拖拽区域。
+1. pointerdown 从 `data-sidebar-chatgpt-conversation-key` row 读取 conversation id/title/url，并建立只针对当前 pointerId 的临时手势状态；
+2. pointerdown 不阻止普通点击，并尝试对当前 row 调用 `setPointerCapture()`，保证鼠标离开聊天行后仍能收到该次 pointer 事件；
+3. 移动距离未超过 6px 时什么都不做；超过阈值后才进入自定义拖拽模式并阻止这次手势继续交给 ChatGPT；
+4. 如果 ChatGPT 在阈值附近先触发 native `dragstart`，脚本只对这条已缓存的新版 conversation row 取消该次 native drag，并立即切入自定义拖拽；
+5. 拖拽期间 window capture 的 `pointermove` 只在存在活动手势时工作，可先于 ChatGPT 的 document/root handler 接管已激活手势，并通过 `requestAnimationFrame` 限流到每帧最多一次 hit-test；
+6. 每次 hit-test 使用 `document.elementsFromPoint()` / `elementFromPoint()` 从坐标下方寻找 `#cgfm-root` 内的 `.cgfm-folder-row`，命中后显示脚本自己的 hover；
+7. pointerup 时按最终坐标重新确认目标，命中文件夹则直接调用既有 `addChatToFolder()`；随后释放 pointer capture、清理 hover 和临时状态；
+8. 一旦真正进入拖拽，会短暂屏蔽源 conversation row 随后的 click，避免松手时误打开聊天；未超过阈值的普通点击不受影响。
+
+性能约束：
+
+- 不给每条 Recent conversation 注入常驻监听器；只使用少量 document/window 级事件委托；
+- 无活动拖拽时 `pointermove` 第一时间 return，不执行 DOM 查询；
+- 只有用户实际拖动的短时间窗口执行坐标 hit-test，而且每动画帧最多一次；
+- 不增加长期 MutationObserver、轮询或持续 sidebar 扫描。
 
 兼容路径仍保留 HTML5 drag/drop：
 
 - 脚本自身“文件夹 → 文件夹”拖拽继续使用现有 HTML5 DnD；
 - 旧版 `/c/` anchor 仍可按需临时设置 `draggable=true`；
-- 新版 button-based conversation row 不再强制设置 `draggable=true`；
-- root-level dragover/drop 与 dragend fallback 继续保留，作为 legacy/浏览器兼容路径。
+- 新版 button-based conversation row 不设置 `draggable=true`；
+- root-level dragover/drop 与 dragend fallback 只服务脚本文件夹拖拽和 legacy/浏览器兼容路径。
 
 拖入聊天只改变聊天归属，不主动修改目标文件夹的 `collapsed`：目标原本折叠则继续折叠，原本展开则继续展开。通过原生三点菜单“移至文件夹”添加聊天时也复用同一 `addChatToFolder()` 语义。
 
@@ -953,7 +961,7 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 ### v0.3.x：交互与性能路线稳定
 
 - 放弃为 Recent 每项注入气泡/常驻按钮；
-- 不恢复 mousemove/pointermove 驱动的完整自定义拖拽系统；新版 button-based conversation row 只缓存 pointerdown payload，拖拽期间依赖 capture `dragover`/`drop` 桥接。
+- 不使用长期运行或逐行绑定的 mousemove 拖拽系统；v0.7.4 起仅在用户实际按下并拖动新版 conversation row 的短暂手势窗口中启用 window-capture pointermove，并用 `requestAnimationFrame` 限流。
 - 放弃长期 sidebar/document observer；
 - 放弃 `history.pushState()` 模拟路由；
 - 支持 draggable=false Recent link 的按需临时启用；
@@ -1050,6 +1058,17 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 只有落点位于 `#cgfm-root` 文件夹时才 `preventDefault()` / `stopPropagation()`，不改变 ChatGPT Projects/Recents 自身拖拽行为；
 - 三点菜单、profile、WebDAV、cross-tab 与业务数据模型保持不变。
 
+### v0.7.4：pointer-capture custom drag
+
+- 保持 `#cgfm-root` 位于整个 `Recents` wrapper 之前；
+- 放弃依赖 ChatGPT native drag 的 `dragover`/`drop` bridge；新版 conversation row 改为一次性 pointer-capture 手势；
+- pointerdown 只建立临时 drag candidate，移动超过 6px 才激活，普通点击不受影响；
+- 激活后取消该 conversation 的 native `dragstart`，避免 ChatGPT sortable 抢走后续 pointer 事件；
+- 活动拖拽期间由 window capture 先于 ChatGPT document/root handler 接管 pointermove，并用 `requestAnimationFrame` 将 `elementsFromPoint()` 命中限制为每帧最多一次，实现文件夹 hover；
+- pointerup 直接按最终坐标调用 `addChatToFolder()`，并释放 capture、清除 hover、短暂抑制源聊天 click；
+- 无活动拖拽时 pointermove 不做 DOM 工作；没有新增轮询或长期 observer；
+- 脚本自身文件夹 DnD、legacy `/c/` anchor、三点菜单、profile、WebDAV、cross-tab 与业务数据模型保持不变。
+
 ## 31. 不建议重新引入的方案
 
 - 自动迁移 v1/v2 单 profile；
@@ -1062,7 +1081,7 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 页面隐藏时持续频繁 GET；
 - 长期观察整个 DOM；
 - Recent 每项常驻按钮；
-- 自定义 pointer drag；
+- 长期运行、逐聊天项绑定或不做帧限流的自定义 pointer drag；
 - 强行 `history.pushState()`；
 - hydration 阶段一发现 nav 就立即注入脚本 DOM；
 - 在 mount fallback 中使用未排除脚本自身 DOM 的全局 `/c/` selector。
