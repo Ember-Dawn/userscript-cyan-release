@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.7.0
-// @description  ChatGPT 普通聊天文件夹管理：v0.7.0；适配新版侧边栏 conversation row 与 Radix 聊天菜单，并保留拖拽、账号隔离和多端同步。
+// @version      0.7.1
+// @description  ChatGPT 普通聊天文件夹管理：v0.7.1；文件夹固定在“最近”区块之前，并修复新版侧边栏聊天拖入文件夹。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -25,10 +25,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
 - 作用：在 ChatGPT 原生侧边栏中增加本地“文件夹”索引；只保存聊天引用、文件夹结构和非敏感设置，不修改 ChatGPT 后端，也不保存完整聊天正文。
 - 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
-- DOM：#cgfm-root 必须挂在 ChatGPT 原生聊天列表所在侧边栏中，并与脚本自身 DOM 严格隔离。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
+- DOM：#cgfm-root 必须挂在 ChatGPT 原生侧边栏中，并位于整个 Recents 区块之前；不得嵌入 ChatGPT 自己的 conversation/project drop target。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
 - Hydration：document-idle 不代表 React hydration 已结束。首次挂载必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS；稳定前不要注入脚本样式、宽度覆盖或根节点。首次成功后，React 重建/休眠恢复可继续快速 remount。
 - 性能：禁止长期观察 document/sidebar 的 MutationObserver、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。仅原生三点菜单允许短时 observer，捕捉成功或超时立即断开。
-- 交互：聊天拖拽继续使用浏览器原生 drag/drop；新版 conversation row 在按下时仅临时启用 draggable。聊天跳转优先点击原生 conversation button，找不到时才回退 /c/ URL。
+- 交互：聊天拖拽继续使用浏览器原生 drag/drop；pointerdown 预缓存 conversation payload，drop 在 document capture 阶段优先消费缓存，避免与 ChatGPT 原生 drop system 冲突。聊天跳转优先点击原生 conversation button，找不到时才回退 /c/ URL。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
 */
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.7.0';
+  const VERSION = '0.7.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -51,6 +51,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const DRAG_MIME = 'application/x-chatgpt-folder-manager';
   const SIDEBAR_CONVERSATION_PREFIX = 'chatgpt:conversation:';
   const NATIVE_CHAT_ROW_SELECTOR = '[data-sidebar-chatgpt-conversation-key^="' + SIDEBAR_CONVERSATION_PREFIX + '"][role="listitem"]';
+  const RECENTS_SECTION_SELECTOR = 'section[data-app-action-sidebar-section-heading="Recents"]';
   const DEFAULT_FOLDER_COLOR = '#6b7280';
   const DEFAULT_DEBOUNCE_MS = 12000;
   const DEFAULT_INTERVAL_MS = 15 * 60 * 1000; // legacy setting fallback
@@ -1165,7 +1166,15 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return link && !(rootEl && rootEl.contains(link)) ? link : null;
   }
 
-  function findHistorySection() {
+  function findNativeRecentsAnchor() {
+    const recentsSection = document.querySelector(RECENTS_SECTION_SELECTOR);
+    if (recentsSection && !(rootEl && rootEl.contains(recentsSection))) {
+      // ChatGPT 2026-09 wraps Recents in its own conversation/project drop target.
+      // Mount before that wrapper so the "最近" heading stays with its chats and
+      // our folder drop zone is not nested inside ChatGPT's native drop handler.
+      return recentsSection.closest('[data-chatgpt-project-conversation-drop-target]') || recentsSection;
+    }
+
     const nativeRow = findNativeChatRow(document);
     if (nativeRow) {
       const list = nativeRow.closest('[role="list"]');
@@ -1227,8 +1236,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function mount() {
     ensureActiveProfile();
-    const recent = findHistorySection();
-    const parent = (recent && recent.parentElement) || findSidebarParent();
+    const recentAnchor = findNativeRecentsAnchor();
+    const parent = (recentAnchor && recentAnchor.parentElement) || findSidebarParent();
     // The first mount must not mutate React-managed DOM until the same native host has
     // remained connected for a short stability window. Later remounts stay immediate.
     if (!isSafeMountParent(parent) || !initialMountHostStable(parent)) return false;
@@ -1243,7 +1252,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       bindRootEvents(rootEl);
     }
     if (!document.body.contains(rootEl) || rootEl.parentElement !== parent) {
-      if (recent && recent.parentElement === parent) parent.insertBefore(rootEl, recent);
+      if (recentAnchor && recentAnchor.parentElement === parent) parent.insertBefore(rootEl, recentAnchor);
       else parent.appendChild(rootEl);
     }
     render();
@@ -1699,6 +1708,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     document.addEventListener('mousedown', onNativeHistoryPointerDown, true);
     document.addEventListener('dragstart', onNativeHistoryDragStart, true);
     document.addEventListener('dragend', onNativeHistoryDragEnd, true);
+    document.addEventListener('drop', onDocumentDropCapture, true);
     document.addEventListener('mouseup', restoreTransientNativeChatDrag, true);
     document.addEventListener('click', restoreTransientNativeChatDrag, true);
   }
@@ -1830,6 +1840,27 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     resetNativeDragState();
   }
 
+  function onDocumentDropCapture(event) {
+    if (!rootEl || !event || !(event.target instanceof Element) || !rootEl.contains(event.target)) return;
+    const target = resolveFolderDropTarget(event, true);
+    if (!target) return;
+
+    // Capture the drop before ChatGPT's outer Recents/project drop system can consume it.
+    // The pointerdown-cached conversation is authoritative for the new button-based rows.
+    event.preventDefault();
+    event.stopPropagation();
+    clearDropHighlight();
+    if (dropCommitted) return;
+
+    const payload = pointerPayload || dragPayload || dragStartPayload || getDragPayload(event, true);
+    if (!payload) {
+      toast('没有识别到被拖动的聊天或文件夹。');
+      return;
+    }
+    commitDropPayload(payload, target.folderId);
+    dropCommitted = true;
+  }
+
   function onRootDragOver(event) {
     const target = resolveFolderDropTarget(event, true);
     if (!target) return;
@@ -1856,7 +1887,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     clearDropHighlight();
     if (!target) return;
     event.preventDefault();
-    const payload = getDragPayload(event, true);
+    if (dropCommitted) return;
+    const payload = pointerPayload || getDragPayload(event, true);
     if (!payload) {
       toast('没有识别到被拖动的聊天或文件夹。');
       return;
@@ -3484,8 +3516,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       const beforeAccount = currentAccount && currentAccount.id;
       ensureActiveProfile();
       const afterAccount = currentAccount && currentAccount.id;
-      const recent = findHistorySection();
-      const expectedParent = (recent && recent.parentElement) || findSidebarParent();
+      const recentAnchor = findNativeRecentsAnchor();
+      const expectedParent = (recentAnchor && recentAnchor.parentElement) || findSidebarParent();
       const rootMissing = !rootEl || !document.body.contains(rootEl);
       const parentChanged = !!(rootEl && isSafeMountParent(expectedParent) && rootEl.parentElement !== expectedParent);
 

@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.7.0  
+> 当前说明版本：v0.7.1  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -23,11 +23,11 @@
 
 1. `state` 是当前 ChatGPT 账号的内存单一数据源。
 2. 本地 profile 按 ChatGPT 账号隔离，不再自动迁移旧 v1/v2 单 profile。
-3. `#cgfm-root` 是脚本唯一主 UI 根节点，必须挂在 ChatGPT 原生聊天列表所在侧边栏内部。
+3. `#cgfm-root` 是脚本唯一主 UI 根节点；新版 UI 中必须挂在整个 `Recents` 区块之前，且不能嵌进 ChatGPT 自己的 conversation/project drop target。
 4. 首次挂载必须避开 React hydration；`document-idle` 不代表 hydration 已完成。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 sidebar/document，不给最近聊天逐项注入常驻 UI。
-7. 原生聊天拖入文件夹继续使用浏览器原生 drag/drop；新版优先识别 `data-sidebar-chatgpt-conversation-key` conversation row，并尽量不干扰 ChatGPT Projects。
+7. 原生聊天拖入文件夹继续使用浏览器原生 drag/drop；pointerdown 预缓存 conversation payload，drop 在 document capture 阶段优先消费缓存，并尽量不干扰 ChatGPT Projects。
 8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
 10. WebDAV 使用 schema 3、基准快照、对象级 operation log、墓碑和有限 412 重试实现多端合并。
@@ -216,18 +216,22 @@ initialMountCandidateSince
 
 ### 7.1 目标挂载位置
 
-目标是 ChatGPT 原生聊天列表所在侧边栏内部，并把脚本根节点作为原生 conversation list 的相邻节点插入。新版主路径为：
+新版 ChatGPT 将“最近”包装为独立 section，并在其外层挂了官方 conversation/project drop target。脚本必须把文件夹放在**整个 Recents wrapper 之前**，而不是插入 Recents section 的标题和聊天列表之间：
 
 ```text
-#app-shell-sidebar / 原生 sidebar host
-  ├─ #cgfm-root        ← 脚本
-  └─ [role="list"]
-      └─ [data-sidebar-chatgpt-conversation-key="chatgpt:conversation:<id>"][role="listitem"]
-          ├─ [role="button"][aria-label="<聊天标题>"]
-          └─ button[aria-label="聊天操作"][aria-haspopup="menu"]
+[data-app-action-sidebar-scroll]
+  ├─ Projects section
+  ├─ #cgfm-root                              ← 脚本
+  └─ [data-chatgpt-project-conversation-drop-target]
+      └─ [data-sidebar-project-container-id="chats"]
+          └─ section[data-app-action-sidebar-section-heading="Recents"]
+              ├─ “最近”标题
+              └─ conversation list
 ```
 
-旧版 `#stage-slideover-sidebar` / `#history` / `/c/<id>` anchor 仍作为兼容回退，但不再作为新版主路径。不要把根节点挂到 sidebar 过外层的位置，否则官方布局切换时脚本可能残留或继续占宽度。
+这样“最近”标题仍与原生聊天保持一个整体，同时 `#cgfm-root` 不会落进 ChatGPT 官方 drop zone，避免官方 drop handler 抢走拖入文件夹的 `drop`。
+
+旧 UI 仍保留 `#history` / `/c/` anchor 回退。不要把根节点挂到 `#stage-slideover-sidebar` 过外层的位置，否则官方 sidebar 收起时脚本可能残留或继续占宽度。
 
 ### 7.2 原生宿主探测
 
@@ -390,13 +394,13 @@ payload：
 
 原生 drag/drop 识别路径：
 
-1. pointerdown / mousedown 预缓存；
-2. 新版优先从 `event.composedPath()` 找 conversation row；旧版 `/c/` anchor 仅作回退；
-3. conversation row 在用户实际按下时才临时启用 `draggable=true`，拖拽结束后恢复原属性；
-4. 不清空 ChatGPT 原生 `dataTransfer`；
-5. 追加脚本 MIME；
-6. drop 优先读脚本缓存，再尝试 URI/plain/html；
-7. dragend 只做有限兜底。
+1. pointerdown / mousedown 直接从新版 `data-sidebar-chatgpt-conversation-key` row 缓存 conversation id/title/url；
+2. dragstart 若可用则继续补充 `dragPayload`，并兼容旧 `/c/` anchor；
+3. conversation row 仍只在用户实际按下时临时启用 `draggable=true`，拖拽结束后恢复原属性；
+4. 不清空 ChatGPT 原生 `dataTransfer`，必要时追加脚本 MIME；
+5. 文件夹 `dragover` 只负责目标高亮和记录最近目标；
+6. `document` capture 阶段的 `drop` 若落在 `#cgfm-root` 内，优先使用 pointerdown 缓存并阻止外层 ChatGPT drop handler 接管；
+7. 根节点自己的 `drop` 与 dragend 保留为兼容兜底；只有所有缓存都不可用时才尝试 URI/plain/html。
 
 所有 `composedPath()` 项在传给 `Node.contains()` 前必须确认是 `Node`，避免 Firefox 类型错误。
 
@@ -569,7 +573,7 @@ user_at_example_com-5a54db9a.json
 ```json
 {
   "app": "ChatGPT文件夹",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "schema": 3,
   "exportedAt": "ISO time",
   "account": {
@@ -939,7 +943,7 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 3. operation log 会增加远端 JSON 大小，目前通过条数上限控制；
 4. 极端跨设备父子移动冲突经过 normalize 后结果稳定，但未必符合所有主观意图；
 5. 运行旧版本脚本的设备可能不理解新同步语义，应尽量保证活跃设备版本一致；
-6. ChatGPT DOM 是外部依赖；当前新版依赖 `data-sidebar-chatgpt-conversation-key`、`role=listitem`、聊天 `role=button` 和 Radix `role=menu/menuitem`，旧 `#history` / `/c/` anchor 仅作兼容回退；修改 selector 时必须继续保留 native-only 和 hydration-safe 两条原则。
+6. ChatGPT DOM 是外部依赖；当前新版依赖 `data-app-action-sidebar-section-heading="Recents"`、`data-sidebar-chatgpt-conversation-key`、聊天 `role=button` 和 Radix `role=menu/menuitem`，旧 `#history` / `/c/` anchor 仅作兼容回退；修改 selector 时必须继续保留 native-only 和 hydration-safe 两条原则。
 
 ## 30. 历史决策与版本演进
 
@@ -1018,6 +1022,13 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 账号 fallback 增加新版“打开个人资料菜单”按钮，`#client-bootstrap` 仍保持首选；
 - 普通聊天 URL 继续使用 `/c/<conversation-id>`，本地 profile、WebDAV schema 和同步数据模型不变；
 - 旧 `#history`、旧 `/c/` anchor 与旧 menu trigger 仅保留为兼容回退。
+
+### v0.7.1：Recents 挂载位置与拖拽提交修复
+
+- `#cgfm-root` 改为插在整个 `Recents` 官方 wrapper 之前，不再插入“最近”标题和聊天列表之间；
+- 文件夹因此脱离 ChatGPT 自己的 `data-chatgpt-project-conversation-drop-target`，避免官方 drop handler 抢占拖入文件夹事件；
+- 新增 document capture `drop`：落点在脚本文件夹内时，优先使用 pointerdown 缓存的 conversation payload，并阻止外层官方 drop handler 接管；
+- 根节点 `drop` 与 dragend 继续作为兼容兜底，旧 `/c/` anchor 拖拽路径继续保留。
 
 ## 31. 不建议重新引入的方案
 
