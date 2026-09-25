@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.2.1
+// @version      0.2.2
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.2.1';
+    const VERSION = '0.2.2';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -55,10 +55,8 @@ html:not(.dark) body {
     }
 }
 
-/* 临时对话：浅色和深色模式统一使用 #0891B2 描边，并混入 10% 同色背景。 */
-html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-body] {
-    border: 2px solid #0891B2 !important;
-    border-radius: 26px !important;
+/* 临时对话：直接标记当前 Composer，并混入 10% #0891B2 背景。 */
+[data-composer-body][${TEMPORARY_CHAT_ATTRIBUTE}="true"] {
     background-color: color-mix(in srgb, var(--composer-surface-primary) 90%, #0891B2 10%) !important;
 }
 
@@ -95,16 +93,32 @@ html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-body] {
         }
     }
 
-    function syncTemporaryChatState() {
-        const root = document.documentElement;
-        if (!root) {
-            return;
+    function collectComposerBodies(root = document) {
+        const bodies = new Set();
+        const scope = root?.nodeType === Node.TEXT_NODE ? root.parentElement : root;
+        if (!scope) return bodies;
+
+        if (scope instanceof Element && scope.matches('[data-composer-body]')) {
+            bodies.add(scope);
         }
 
-        if (isTemporaryChat()) {
-            root.setAttribute(TEMPORARY_CHAT_ATTRIBUTE, 'true');
-        } else {
-            root.removeAttribute(TEMPORARY_CHAT_ATTRIBUTE);
+        if (typeof scope.querySelectorAll === 'function') {
+            for (const body of scope.querySelectorAll('[data-composer-body]')) {
+                bodies.add(body);
+            }
+        }
+
+        return bodies;
+    }
+
+    function syncTemporaryChatState(root = document) {
+        const temporary = isTemporaryChat();
+        for (const body of collectComposerBodies(root)) {
+            if (temporary) {
+                body.setAttribute(TEMPORARY_CHAT_ATTRIBUTE, 'true');
+            } else {
+                body.removeAttribute(TEMPORARY_CHAT_ATTRIBUTE);
+            }
         }
     }
 
@@ -247,7 +261,7 @@ html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-body] {
         });
     }
 
-    function observeFileControls() {
+    function observePageChanges() {
         const observer = new MutationObserver((mutations) => {
             for (const mutation of mutations) {
                 if (mutation.type === 'characterData') {
@@ -256,6 +270,7 @@ html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-body] {
                 }
 
                 for (const node of mutation.addedNodes) {
+                    syncTemporaryChatState(node);
                     scheduleFileScan(node);
                 }
             }
@@ -269,22 +284,20 @@ html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-body] {
     }
 
     injectStyle();
-    syncTemporaryChatState();
+    syncTemporaryChatState(document);
 
     patchHistoryMethod('pushState');
     patchHistoryMethod('replaceState');
 
-    document.addEventListener('DOMContentLoaded', syncTemporaryChatState, { once: true });
-    window.addEventListener('load', syncTemporaryChatState, { once: true });
-    window.addEventListener('popstate', syncTemporaryChatState);
-    window.addEventListener(LOCATION_CHANGE_EVENT, syncTemporaryChatState);
+    window.addEventListener('popstate', () => syncTemporaryChatState(document));
+    window.addEventListener(LOCATION_CHANGE_EVENT, () => syncTemporaryChatState(document));
     window.addEventListener('load', () => scheduleFileScan(document));
     window.addEventListener('focus', () => scheduleFileScan(document));
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) scheduleFileScan(document);
     });
 
-    observeFileControls();
+    observePageChanges();
     scheduleFileScan(document);
 
     window.__cgVisualEnhancer = {

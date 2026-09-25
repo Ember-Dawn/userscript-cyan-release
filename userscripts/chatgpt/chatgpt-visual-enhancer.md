@@ -10,7 +10,7 @@
 - 在桌面端放宽对话正文区域，便于阅读长文本、表格和代码；
 - 保持底部 Composer 的官方默认宽度和响应式行为，不再随正文一起放宽；
 - 高亮助手回答中的文件引用、文件链接和官方“下载 / Download”入口；
-- 临时对话使用 `#0891B2` 青色描边，并在原 Composer 背景中混入 10% 同色提示，浅色和深色模式均生效。
+- 临时对话在原 Composer 背景中混入 10% `#0891B2` 青色，浅色和深色模式均生效。
 
 ## 对话正文宽屏
 
@@ -52,9 +52,7 @@
 
 ## 临时对话提示
 
-脚本只根据 URL 查询参数 `temporary-chat=true` 判断临时对话，并在页面根元素维护内部状态属性。
-
-由于脚本在 `document-start` 阶段启动，除首次立即同步外，还会在 `DOMContentLoaded` 和 `load` 后各补一次状态同步，避免浏览器刷新时页面根节点尚未就绪导致临时对话标记缺失。SPA 路由切换仍通过 `pushState`、`replaceState` 和 `popstate` 同步状态。
+脚本只根据 URL 查询参数 `temporary-chat=true` 判断临时对话，不读取页面标题或其他文案。
 
 新版 Composer 的视觉主体使用：
 
@@ -62,13 +60,11 @@
 [data-composer-body]
 ```
 
-临时对话时仅增加：
+临时状态直接标记在当前 Composer 节点上，而不再依赖页面根元素。这样浏览器刷新后，即使 ChatGPT 在初始化过程中重新创建 Composer，脚本现有的 MutationObserver 也会在新节点插入时重新同步临时状态。
 
-- `2px solid #0891B2` 描边；
-- `26px` 圆角匹配当前 Composer；
-- 在原 Composer 背景中混入 10% `#0891B2`。
+临时对话仅在原 Composer 背景中混入 10% `#0891B2`，浅色和深色模式采用相同混合比例；不增加边框、外环或阴影。
 
-浅色和深色模式采用相同的 10% 青色混合比例，不使用额外外环或阴影。
+SPA 路由通过 `pushState`、`replaceState` 和 `popstate` 变化时，脚本会重新同步当前 Composer 状态。
 
 ## 白天模式柔化
 
@@ -108,5 +104,6 @@ archive/userscripts/chatgpt-temporary-chat-highlighter-v0.1.0.user.js
 - 优先使用 `data-*`、ARIA 和语义结构，不依赖 ChatGPT 的 hash class；
 - 宽屏功能只修改正文，不改变 Composer 官方布局；
 - 文件高亮 MutationObserver 只扫描新增或变化的局部节点；
+- 临时对话状态只根据 URL 判断，并直接同步到当前 Composer 节点；
 - 不修改对话正文、输入内容、发送行为、模型选择或下载行为；
 - ChatGPT DOM 变化后，优先重新采集实际 outerHTML 再调整选择器。
