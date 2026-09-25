@@ -164,6 +164,10 @@ cyan_chatgpt_conversation_round_counter_cache_v1
 
 完成后只保留最终 `totalRounds`、`latestUserMessageId` 等必要字段，并清空分页去重列表以减少存储体积。
 
+从 v0.1.4 起，已经完成的 GM cache 作为高可信持久基线：刷新或强制刷新后，如果当前首屏分页响应暂时没有包含缓存中的 `latestUserMessageId`，脚本不会因此删除完成缓存或重新抓取完整历史，而是继续显示已保存的 `totalRounds`。只有当接口明确返回 `has_previous_page=false`、能够确认当前响应已经覆盖完整会话时，才使用当前完整 user message 列表校正完成缓存。若首屏仍能找到缓存锚点，则继续按锚点后的新增 user message 增量更新。
+
+因此普通刷新、强制刷新、浏览器重启，以及只清理 `chatgpt.com` 的 Cookie / Local Storage / IndexedDB / Cache Storage，都不应删除这份轮数缓存；缓存属于 Tampermonkey GM storage。删除脚本、清除 Tampermonkey/扩展数据、卸载扩展或删除整个浏览器配置文件时则可能丢失。
+
 新脚本使用独立的 Tampermonkey 存储空间和新缓存键，不尝试迁移已归档长对话优化助手中的旧缓存；首次进入已有长对话时可能需要重新完成一次统计。
 
 ## DOM 与性能策略
@@ -211,5 +215,6 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 12. 旧 `mapping + current_node` 响应仍可只读计算 user 轮数，不改写 response。
 13. 与其他包装 `window.fetch` / History 的 userscript 共存时，不应覆盖对方的独立 patch flag。
 14. 状态 badge 应挂载到当前 thread Composer 的 `data-above-composer-portal`，紧贴输入框上边框右侧；Composer 重建后能自动重新挂载，且 `1`、`99`、`999` 显示宽度保持不变。
-15. 打开 Performance / Console 验证页面静止和正常输入时不会出现 badge 自触发的 MutationObserver 循环；无状态变化时 `renderUiState()` 不应反复写 DOM。
-16. Composer 已稳定挂载后，不应存在持续轮询 timer；UI observer 仅监听 portal、composer form 及直属父节点的 `childList`，不得恢复到 `document.documentElement + subtree` 的 UI 检查路径。
+15. 对已完成统计的会话执行 F5、Ctrl+Shift+R 或重新打开页面时，如果首屏分页暂时不含缓存的 `latestUserMessageId`，应继续显示 GM cache 中的总轮数且不启动完整历史重抓；只有 `has_previous_page=false` 明确证明当前响应覆盖完整会话时才允许校正完成缓存。
+16. 打开 Performance / Console 验证页面静止和正常输入时不会出现 badge 自触发的 MutationObserver 循环；无状态变化时 `renderUiState()` 不应反复写 DOM。
+17. Composer 已稳定挂载后，不应存在持续轮询 timer；UI observer 仅监听 portal、composer form 及直属父节点的 `childList`，不得恢复到 `document.documentElement + subtree` 的 UI 检查路径。

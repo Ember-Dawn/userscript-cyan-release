@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.1.3
+// @version      0.1.4
 // @description  统计并缓存 ChatGPT 当前对话的完整用户轮数，支持分页补齐、断点续跑和新建对话实时计数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -417,7 +417,22 @@
                 applyRoundCountEntryToState(entry, paged);
                 return entry;
             }
-            entry = null;
+
+            // A paged initial response may temporarily omit the cached latest user message after reload.
+            // Keep a completed GM cache as the trusted baseline instead of discarding it and crawling history again.
+            if (paged.hasEarlierHistory !== false) {
+                applyRoundCountEntryToState(entry, paged);
+                return entry;
+            }
+
+            // When the response explicitly says there is no earlier page, currentIds represent the full
+            // conversation and provide strong evidence that the cached completed count should be replaced.
+            entry.totalRounds = currentIds.length;
+            entry.countedRounds = currentIds.length;
+            entry.latestUserMessageId = currentLatestId;
+            setRoundCountEntry(conversationId, entry);
+            applyRoundCountEntryToState(entry, paged);
+            return entry;
         }
 
         if (entry && !entry.completed) {
