@@ -38,11 +38,11 @@ userscript-cyan-release/
 | ChatGPT 文件夹 | [`chatgpt-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js) | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。 |
 | ChatGPT 顺序任务助手 | [`chatgpt-sequential-task-queue.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js) | 每个非空行作为一轮命令，按对话独立保存并顺序发送；提供面板内确认弹窗和绿黄分段进度。 |
 | ChatGPT 界面视觉增强助手 | [`chatgpt-visual-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js) | 柔化白天模式；仅放宽对话正文并保留 Composer 默认宽度；高亮助手文件下载入口；临时对话在 Composer 背景中混入 10% `#0891B2` 青色提示。 |
-| ChatGPT 长对话优化助手 | [`chatgpt-long-chat-optimizer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js) | 在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并用悬浮按钮显示保留轮数与总轮数。 |
+| ChatGPT 对话轮数统计 | [`chatgpt-conversation-round-counter.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js) | 精确统计当前对话的完整用户轮数，支持后台分页补齐、断点续跑、持久缓存和新建对话实时计数。 |
 
 ChatGPT 界面视觉增强助手的正文宽屏、文件入口高亮、临时对话提示和浅色主题说明见 [`userscripts/chatgpt/chatgpt-visual-enhancer.md`](./userscripts/chatgpt/chatgpt-visual-enhancer.md)。
 
-ChatGPT 长对话优化助手的轮数定义、Fetch Proxy、悬浮设置和维护说明见 [`userscripts/chatgpt/chatgpt-long-chat-optimizer.md`](./userscripts/chatgpt/chatgpt-long-chat-optimizer.md)。
+ChatGPT 对话轮数统计的分页机制、缓存、新建对话绑定和维护说明见 [`userscripts/chatgpt/chatgpt-conversation-round-counter.md`](./userscripts/chatgpt/chatgpt-conversation-round-counter.md)。
 
 
 ### GitHub

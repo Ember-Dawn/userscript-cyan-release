@@ -9,7 +9,16 @@
 | ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。参见[详细说明](./chatgpt-folders.md)。 |
 | ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度；支持后台标签页继续推进。参见[详细说明](./chatgpt-sequential-task-queue.md)。 |
 | ChatGPT 界面视觉增强助手 | `chatgpt-visual-enhancer.user.js` | 柔化白天模式；仅放宽对话正文并保留 Composer 默认宽度；高亮助手文件下载入口；临时对话在 Composer 背景中混入 10% `#0891B2` 青色提示。参见[详细说明](./chatgpt-visual-enhancer.md)。 |
-| ChatGPT 长对话优化助手 | `chatgpt-long-chat-optimizer.user.js` | 通过原生 `num_turns` 控制最近 N 轮历史窗口，并以低速分页、Tampermonkey 持久缓存和断点续跑统计完整总轮数。参见[详细说明](./chatgpt-long-chat-optimizer.md)。 |
+| ChatGPT 对话轮数统计 | `chatgpt-conversation-round-counter.user.js` | 精确统计当前对话的完整用户轮数，支持后台分页补齐、Tampermonkey 持久缓存、断点续跑和新建对话实时计数。参见[详细说明](./chatgpt-conversation-round-counter.md)。 |
+
+ChatGPT 长对话优化助手已停止作为现役脚本维护。最终版本 v0.3.6 与维护说明归档为：
+
+```text
+archive/userscripts/chatgpt-long-chat-optimizer-v0.3.6.user.js
+archive/userscripts/chatgpt-long-chat-optimizer-v0.3.6.md
+```
+
+其中完整轮数统计子系统已提取为现役“ChatGPT 对话轮数统计”；历史窗口限制功能不再作为独立现役脚本维护。
 
 ChatGPT 宽屏已停止作为独立脚本维护，其正文宽屏功能已并入“ChatGPT 界面视觉增强助手”。最终独立版本归档为：
 
