@@ -7,7 +7,7 @@
 | 中文名称 | 文件 | 用途 |
 |---|---|---|
 | ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。参见[详细说明](./chatgpt-folders.md)。 |
-| ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度；支持后台标签页继续推进。 |
+| ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度；支持后台标签页继续推进。参见[详细说明](./chatgpt-sequential-task-queue.md)。 |
 | ChatGPT 界面视觉增强助手 | `chatgpt-visual-enhancer.user.js` | 柔化白天模式；仅放宽对话正文并保留 Composer 默认宽度；高亮助手文件下载入口；临时对话在 Composer 背景中混入 10% `#0891B2` 青色提示。参见[详细说明](./chatgpt-visual-enhancer.md)。 |
 | ChatGPT 长对话优化助手 | `chatgpt-long-chat-optimizer.user.js` | 通过原生 `num_turns` 控制最近 N 轮历史窗口，并以低速分页、Tampermonkey 持久缓存和断点续跑统计完整总轮数。参见[详细说明](./chatgpt-long-chat-optimizer.md)。 |
 
