@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.7.6  
+> 当前说明版本：v0.7.7  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -233,6 +233,8 @@ initialMountCandidateSince
 
 旧 UI 仍保留 `#history` / `/c/` anchor 回退。不要把根节点挂到 `#stage-slideover-sidebar` 过外层的位置，否则官方 sidebar 收起时脚本可能残留或继续占宽度。
 
+ChatGPT 2026-09 新 UI 中，`#app-shell-sidebar` 是**常驻导航 rail 与可收起 conversation sidebar 的共同外壳**，不是文件夹的合法挂载宿主。新版 fallback 只能使用 `#app-shell-sidebar [data-app-action-sidebar-scroll]` 这类属于可收起 conversation sidebar 的原生内容区；sidebar 收起后若找不到可信宿主，应让本轮 mount 失败并保持/隐藏现有根节点，绝不能把 `#cgfm-root` 搬到常驻账号 rail 下方。
+
 ### 7.2 原生宿主探测
 
 `findHistorySection()` / `findSidebarParent()` 的语义是：**只寻找 ChatGPT 原生宿主**。
@@ -244,6 +246,8 @@ initialMountCandidateSince
 - 脚本自身生成的 `.cgfm-chat-title` `/c/` 链接不能作为 legacy fallback；
 - `findNativeChatLink()` 必须排除 `rootEl` 内链接；
 - 旧版 fallback 应尽量限制在原生 sidebar/nav 语义范围；
+- `#app-shell-sidebar` 以及 `[data-app-navigation-rail]`（含其后代）都不是合法 mount parent；
+- 新版无 Recents/聊天行时，可使用 `[data-app-action-sidebar-scroll]` 作为可收起 conversation sidebar 的可信 fallback；
 - 若找不到可信宿主，宁可本轮不挂载，也不要猜一个脚本内部容器。
 
 ### 7.3 防止自引用挂载
@@ -471,7 +475,7 @@ payload：
 
 官方 sidebar 展开时才应用脚本覆盖；收起时撤销，让 ChatGPT tiny-bar/collapsed 布局接管。
 
-sidebar toggle 后使用少量延迟检查（约 80/220/500/900ms），不要高频监听布局。
+sidebar toggle 后使用少量延迟检查（约 80/220/500/900ms），不要高频监听布局。新版 `aria-controls="app-shell-sidebar"` toggle 也必须纳入监听；每次延迟检查复用 `ensureMountedLight()`，因为收起/展开过程中 ChatGPT 可能直接移除并重建可收起 conversation subtree。
 
 ## 13. 本地存储与账号隔离
 
@@ -1079,6 +1083,15 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 自定义拖拽结束后增加约 350ms release guard，隔离 mouseup/mousemove/延迟 dragstart，并继续短暂抑制源 row click，修复“松手后原生对话才开始跟随鼠标”的残留拖拽；
 - 无候选/活动手势时新增 mouse 监听均立即 return，不执行 hit-test、轮询或 DOM 扫描；
 - 文件夹自身 DnD、legacy `/c/` anchor、三点菜单、profile、WebDAV、cross-tab 和业务数据模型保持不变。
+
+### v0.7.7：app-shell collapsed sidebar host guard
+
+- 适配 ChatGPT 2026-09 的双栏 app-shell：左侧常驻 `[data-app-navigation-rail]` 与右侧可收起 conversation sidebar 同属 `#app-shell-sidebar`；
+- `#app-shell-sidebar` 不再作为 `findSidebarParent()` 的 fallback，并在 `isSafeMountParent()` 中显式拒绝共同外壳、常驻 navigation rail 及其后代；
+- 新版可信 fallback 改为 `[data-app-action-sidebar-scroll]`，因此没有 Recents/聊天行时仍可挂载到可收起内容区；sidebar 收起且内容区被移除时则返回无宿主，不再把 `#cgfm-root` 搬到账号 rail 下方；
+- `officialSidebarExpanded()` 新增 `button[aria-controls="app-shell-sidebar"][aria-expanded]` 与 action-sidebar scroll 可见性判定，修复新 UI 下 `#stage-slideover-sidebar` 不存在时始终误判为展开的问题；
+- sidebar toggle 监听新增 `aria-controls="app-shell-sidebar"`，80/220/500/900ms 延迟检查改为复用 `ensureMountedLight()`，可在 ChatGPT 重建 conversation subtree 后自动 remount；
+- 不新增长期 MutationObserver、轮询或高频 DOM 扫描；拖拽、WebDAV、cross-tab 与业务数据模型保持不变。
 
 ### v0.7.6：floating drag preview
 

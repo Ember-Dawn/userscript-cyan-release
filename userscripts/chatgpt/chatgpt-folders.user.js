@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.7.6
-// @description  ChatGPT 普通聊天文件夹管理：v0.7.6；文件夹固定在“最近”区块之前，新版聊天使用带轻量浮动预览的自定义拖拽。
+// @version      0.7.7
+// @description  ChatGPT 普通聊天文件夹管理：v0.7.7；修复新版双栏侧边栏收起时文件夹误挂到常驻导航栏的问题。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.7.6';
+  const VERSION = '0.7.7';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1210,7 +1210,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function findSidebarParent() {
     const nativeRow = findNativeChatRow(document);
     if (nativeRow) {
-      return nativeRow.closest('#app-shell-sidebar, #stage-slideover-sidebar, nav, aside, [id*="sidebar"]')
+      return nativeRow.closest('[data-app-action-sidebar-scroll]')
+        || nativeRow.closest('#stage-slideover-sidebar, nav, aside, [id*="sidebar"]')
         || nativeRow.closest('[role="list"]')?.parentElement
         || nativeRow.parentElement;
     }
@@ -1218,18 +1219,25 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const history = document.getElementById('history');
     if (history) return history.closest('nav[aria-label], nav, aside, [id*="sidebar"]') || history.parentElement;
 
-    const appShellSidebar = document.getElementById('app-shell-sidebar');
-    if (appShellSidebar) return appShellSidebar;
+    // ChatGPT 2026-09 splits the left shell into a permanent navigation rail and a
+    // separately collapsible conversation sidebar. Only the action-sidebar scroll area
+    // is a valid new-UI mount host; #app-shell-sidebar itself is the shared outer shell.
+    const actionSidebarScroll = document.querySelector('#app-shell-sidebar [data-app-action-sidebar-scroll]');
+    if (actionSidebarScroll && !(rootEl && rootEl.contains(actionSidebarScroll))) return actionSidebarScroll;
 
-    const nav = document.querySelector('#stage-slideover-sidebar nav, nav[aria-label*="Chat"], nav[aria-label*="历史"], nav[aria-label*="sidebar"], aside nav');
-    if (nav) return nav;
+    const nav = document.querySelector('#stage-slideover-sidebar nav, nav[aria-label*="Chat"], nav[aria-label*="历史"], nav[aria-label*="sidebar"]');
+    if (nav && !nav.closest('[data-app-navigation-rail]')) return nav;
 
-    const link = findNativeChatLink(document.getElementById('stage-slideover-sidebar') || document);
+    const legacySidebar = document.getElementById('stage-slideover-sidebar');
+    const link = legacySidebar ? findNativeChatLink(legacySidebar) : null;
     return link ? (link.closest('nav, aside, [id*="sidebar"]') || link.parentElement) : null;
   }
 
   function isSafeMountParent(parent) {
-    return !!(parent && parent instanceof Element && (!rootEl || (parent !== rootEl && !rootEl.contains(parent))));
+    if (!(parent && parent instanceof Element)) return false;
+    if (parent.id === 'app-shell-sidebar') return false;
+    if (parent.matches('[data-app-navigation-rail]') || parent.closest('[data-app-navigation-rail]')) return false;
+    return !rootEl || (parent !== rootEl && !rootEl.contains(parent));
   }
 
   function initialMountHostStable(parent) {
@@ -3724,6 +3732,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function nativeSidebarContentVisible() {
     try {
+      const appShellSidebar = document.getElementById('app-shell-sidebar');
+      const actionSidebarScroll = appShellSidebar && appShellSidebar.querySelector('[data-app-action-sidebar-scroll]');
+      if (actionSidebarScroll && !actionSidebarScroll.closest('[inert]') && isVisibleElement(actionSidebarScroll)) return true;
+
       const sidebar = document.getElementById('stage-slideover-sidebar') || document;
       const history = document.getElementById('history');
       if (history && !history.closest('[inert]') && isVisibleElement(history)) return true;
@@ -3743,13 +3755,26 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function officialSidebarExpanded() {
+    const appShellSidebar = document.getElementById('app-shell-sidebar');
     const sidebar = document.getElementById('stage-slideover-sidebar');
-    if (!sidebar) return true;
 
-    // After Windows/Firefox sleep restore, ChatGPT can briefly show tiny-bar remnants
-    // while the expanded history area is already visible. Prefer visible native history
-    // content / close button over the tiny-bar signal to avoid keeping our root hidden.
+    // After Windows/Firefox sleep restore, ChatGPT can briefly show collapsed controls
+    // while the expanded history area is already visible. Prefer visible native content.
     if (nativeSidebarContentVisible()) return true;
+
+    // ChatGPT 2026-09: app-shell-sidebar contains both the permanent navigation rail and
+    // the collapsible conversation sidebar. The official toggle exposes its state directly.
+    if (appShellSidebar) {
+      const appShellToggle = document.querySelector('button[aria-controls="app-shell-sidebar"][aria-expanded]');
+      if (appShellToggle && !appShellToggle.closest('[inert]') && isVisibleElement(appShellToggle)) {
+        return appShellToggle.getAttribute('aria-expanded') === 'true';
+      }
+      const actionSidebarScroll = appShellSidebar.querySelector('[data-app-action-sidebar-scroll]');
+      if (actionSidebarScroll) return !actionSidebarScroll.closest('[inert]') && isVisibleElement(actionSidebarScroll);
+      return false;
+    }
+
+    if (!sidebar) return true;
 
     const closeBtn = sidebar.querySelector('[data-testid="close-sidebar-button"]');
     if (closeBtn && closeBtn.getAttribute('aria-expanded') === 'true' && isVisibleElement(closeBtn)) return true;
@@ -3771,9 +3796,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function scheduleSidebarVisibilityCheck() {
     // Debounce sidebar animation checks. Firefox may emit multiple resize/click-related
     // events during ChatGPT's sidebar transition; avoid accumulating timer storms.
+    // Re-run the lightweight mount check as well because the new app-shell UI may remove
+    // and recreate the collapsible conversation subtree during a toggle.
     sidebarVisibilityTimers.forEach(timer => clearTimeout(timer));
     sidebarVisibilityTimers = [80, 220, 500, 900].map(delay => setTimeout(() => {
-      try { syncSidebarVisibility(); }
+      try { ensureMountedLight(); }
       finally { /* timers are cleared/replaced on the next schedule */ }
     }, delay));
   }
@@ -3804,7 +3831,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     document.addEventListener('click', event => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      if (target.closest('[aria-controls="stage-slideover-sidebar"], [data-testid="close-sidebar-button"]')) scheduleSidebarVisibilityCheck();
+      if (target.closest('[aria-controls="stage-slideover-sidebar"], [aria-controls="app-shell-sidebar"], [data-testid="close-sidebar-button"]')) scheduleSidebarVisibilityCheck();
     }, true);
     window.addEventListener('resize', scheduleSidebarVisibilityCheck, { passive: true });
   }
