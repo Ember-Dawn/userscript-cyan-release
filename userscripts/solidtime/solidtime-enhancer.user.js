@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.7.0
+// @version      0.7.1
 // @description  优化 solidtime 的计时器与 Project/Task 交互：阻止非必要自动聚焦，并将 Project 和 Task 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
-// @match        *://*/*
+// @match        https://solidtime.380782744.xyz/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
 // @grant        none
