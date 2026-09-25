@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.4.0
+// @version      1.4.1
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、后台标签页推进及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -53,13 +53,14 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.1';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
   const TEMP_STATE_KEY = 'cyan.chatgptSequentialTaskQueue.temporaryState.v2';
   const LOCK_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.lock.v2.';
   const TEMP_LOCK_KEY = 'cyan.chatgptSequentialTaskQueue.temporaryLock.v2';
+  const TEMP_INITIAL_BINDING_KEY = 'cyan.chatgptSequentialTaskQueue.initialBinding.v1';
   const TAB_ID_KEY = 'cyan.chatgptSequentialTaskQueue.tabId.v1';
 
   const PANEL_ID = `${PREFIX}-panel`;
@@ -87,6 +88,7 @@
   const DEFAULT_BETWEEN_TASK_DELAY_MS = 3000;
   const LOCK_STALE_MS = 15000;
   const LOCK_HEARTBEAT_MS = 5000;
+  const INITIAL_BINDING_MAX_AGE_MS = 120000;
 
   const STATUS_LABELS = {
     pending: '待执行',
@@ -122,9 +124,10 @@
   let dialogResolver = null;
 
   const tabId = getOrCreateTabId();
+  let restoredInitialBindingOnLoad = false;
   let currentConversationId = getConversationId();
-  let state = loadStateForContext(currentConversationId);
-  reconcileLoadedState('页面已重新加载');
+  let state = loadInitialStateForContext(currentConversationId);
+  if (!restoredInitialBindingOnLoad) reconcileLoadedState('页面已重新加载');
 
   function createDefaultState(conversationId = currentConversationId) {
     return {
@@ -235,6 +238,72 @@
     return conversationId
       ? `${LOCK_KEY_PREFIX}${encodeURIComponent(conversationId)}`
       : TEMP_LOCK_KEY;
+  }
+
+
+  function markInitialBindingPending() {
+    if (currentConversationId !== null) return;
+
+    try {
+      sessionStorage.setItem(TEMP_INITIAL_BINDING_KEY, JSON.stringify({
+        tabId,
+        createdAt: Date.now(),
+      }));
+    } catch (_) {
+      // sessionStorage 不可用时沿用现有 SPA 迁移逻辑。
+    }
+  }
+
+  function clearInitialBindingPending() {
+    try {
+      sessionStorage.removeItem(TEMP_INITIAL_BINDING_KEY);
+    } catch (_) {
+      // 忽略临时绑定标记清理失败。
+    }
+  }
+
+  function readFreshInitialBindingPending() {
+    try {
+      const pending = JSON.parse(sessionStorage.getItem(TEMP_INITIAL_BINDING_KEY) || 'null');
+      if (!pending || pending.tabId !== tabId) return null;
+      if (Date.now() - Number(pending.createdAt || 0) >= INITIAL_BINDING_MAX_AGE_MS) return null;
+      return pending;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function loadInitialStateForContext(conversationId) {
+    const pending = conversationId ? readFreshInitialBindingPending() : null;
+    if (!conversationId || !pending) return loadStateForContext(conversationId);
+
+    try {
+      const rawTemporaryState = JSON.parse(sessionStorage.getItem(TEMP_STATE_KEY) || 'null');
+      if (rawTemporaryState) {
+        const temporaryState = normalizeState(rawTemporaryState, conversationId);
+        if (hasStateContent(temporaryState) || temporaryState.activeIndex !== null) {
+          const activeTask = temporaryState.activeIndex !== null
+            ? temporaryState.tasks[temporaryState.activeIndex]
+            : null;
+          if (activeTask?.status === 'sending' && !activeTask.submittedAt) {
+            activeTask.status = 'submitted';
+            activeTask.submittedAt = Number(pending.createdAt || Date.now());
+          }
+
+          writeStateForContext(temporaryState, conversationId);
+          sessionStorage.removeItem(TEMP_STATE_KEY);
+          sessionStorage.removeItem(TEMP_LOCK_KEY);
+          clearInitialBindingPending();
+          restoredInitialBindingOnLoad = true;
+          return temporaryState;
+        }
+      }
+    } catch (error) {
+      console.warn('[ChatGPT 顺序任务助手] 新对话首次绑定状态迁移失败。', error);
+    }
+
+    clearInitialBindingPending();
+    return loadStateForContext(conversationId);
   }
 
   function tryLoadLegacyState(conversationId) {
@@ -503,6 +572,7 @@
     } catch (_) {
       // 忽略临时状态清理失败。
     }
+    clearInitialBindingPending();
 
     if (shouldOwnLock()) acquireLock();
     locationSnapshot = location.href;
@@ -856,6 +926,7 @@
       return;
     }
 
+    if (currentConversationId === null) markInitialBindingPending();
     safeClick(submitButton);
     task.status = 'submitted';
     task.submittedAt = Date.now();
