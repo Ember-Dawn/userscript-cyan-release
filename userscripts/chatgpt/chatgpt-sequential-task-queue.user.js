@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.4.2
+// @version      1.4.3
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、后台标签页推进及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -18,7 +18,7 @@
 脚本说明：
 
 1. 任务输入
- - 面板默认收起为右下角圆角矩形进度按钮；点击按钮展开。
+ - 面板默认收起为 Composer 上沿、轮数 badge 左侧的圆角矩形进度按钮；点击后完整面板仍在原来的右下角位置展开。
  - 支持两种输入方式：有单独一行 --- 时按 Prompt 块分隔，每个块可包含多行；没有 --- 时仍按每个非空行作为一轮独立命令。
  - 已有队列时若修改任务文本，进度条保留当前执行进度，并额外显示草稿任务数；确认替换后才重置正式队列。
  - “开始/恢复”会自动载入新任务、恢复现有队列，或通过面板内确认框替换已修改的队列。
@@ -43,7 +43,7 @@
 5. 界面
  - 所有确认和提示均显示在展开面板正中央，不使用浏览器原生弹窗。
  - 已完成进度为绿色，当前执行轮次为黄色，未执行部分为灰色；收起后的圆角矩形按钮以整块背景显示相同进度语义，文字直接覆盖在进度背景上。
- - 收起按钮与 ChatGPT 长对话优化助手右对齐并位于其上方，避免同时启用时重叠。
+ - 收起按钮单独挂载到当前 thread Composer 的 data-above-composer-portal；展开 panel 仍保留原来的右下角 fixed 定位。
  - 展开后只保留“开始/恢复、暂停、刷新状态、清空”四个操作按钮。
 
 6. 调试方法
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.2';
+  const VERSION = '1.4.3';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -64,6 +64,7 @@
   const TAB_ID_KEY = 'cyan.chatgptSequentialTaskQueue.tabId.v1';
 
   const PANEL_ID = `${PREFIX}-panel`;
+  const LAUNCHER_ID = `${PREFIX}-launcher-root`;
   const STYLE_ID = `${PREFIX}-style`;
   const COMPOSER_SELECTOR = 'form[data-chatgpt-composer]';
   const EDITOR_SELECTOR = '[data-composer-markdown][contenteditable="true"][role="textbox"]';
@@ -122,6 +123,10 @@
   let internalEditorExpectedText = '';
   let locationSnapshot = location.href;
   let dialogResolver = null;
+  let launcherPortalObserver = null;
+  let launcherFormObserver = null;
+  let launcherParentObserver = null;
+  let launcherRetryTimers = [];
 
   const tabId = getOrCreateTabId();
   let restoredInitialBindingOnLoad = false;
@@ -1691,26 +1696,31 @@
       }
 
       #${PANEL_ID}[data-collapsed="true"] {
-        width: 92px;
-        height: 24px;
-        max-height: none;
+        width: 0;
+        height: 0;
+        max-height: 0;
         overflow: visible;
         border: 0;
-        border-radius: 6px;
         background: transparent;
         box-shadow: none;
+        pointer-events: none;
       }
 
       #${PANEL_ID} * {
         box-sizing: border-box;
       }
 
-      #${PANEL_ID} .${PREFIX}-launcher {
-        display: none;
-      }
-
-      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher {
-        position: relative;
+      #${LAUNCHER_ID} {
+        --${PREFIX}-accent: #10a37f;
+        --${PREFIX}-progress-complete: #10a37f;
+        --${PREFIX}-progress-active: #f5b700;
+        --${PREFIX}-progress-pending: #6b7280;
+        --${PREFIX}-progress-complete-percent: 0%;
+        --${PREFIX}-progress-active-end-percent: 0%;
+        position: absolute;
+        right: 60px;
+        bottom: -1px;
+        z-index: 21;
         display: grid;
         width: 92px;
         height: 24px;
@@ -1729,28 +1739,34 @@
         color: #ffffff;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
         cursor: pointer;
+        font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         transition: opacity 150ms ease, box-shadow 150ms ease;
       }
 
-      #${PANEL_ID}[data-collapsed="true"] .${PREFIX}-launcher:hover {
+      #${LAUNCHER_ID}[hidden] {
+        display: none !important;
+      }
+
+      #${LAUNCHER_ID}:hover {
         opacity: 0.92;
       }
 
-      #${PANEL_ID}[data-mode="running"][data-collapsed="true"] .${PREFIX}-launcher,
-      #${PANEL_ID}[data-mode="pausing"][data-collapsed="true"] .${PREFIX}-launcher {
+      #${LAUNCHER_ID}[data-mode="running"],
+      #${LAUNCHER_ID}[data-mode="pausing"] {
         animation: ${PREFIX}-pulse 1.8s ease-in-out infinite;
       }
 
-      #${PANEL_ID}[data-mode="error"] {
+      #${PANEL_ID}[data-mode="error"],
+      #${LAUNCHER_ID}[data-mode="error"] {
         --${PREFIX}-accent: #d92d20;
       }
 
-      #${PANEL_ID}[data-mode="error"][data-collapsed="true"] .${PREFIX}-launcher {
+      #${LAUNCHER_ID}[data-mode="error"] {
         outline: 2px solid #d92d20;
         outline-offset: 2px;
       }
 
-      #${PANEL_ID} .${PREFIX}-launcher-text {
+      #${LAUNCHER_ID} .${PREFIX}-launcher-text {
         position: relative;
         z-index: 1;
         max-width: 100%;
@@ -2110,7 +2126,8 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
-        #${PANEL_ID} * {
+        #${PANEL_ID} *,
+        #${LAUNCHER_ID} {
           animation: none !important;
           transition: none !important;
         }
@@ -2135,17 +2152,120 @@
     document.head.appendChild(style);
   }
 
+  function getComposerPortal() {
+    return document.querySelector(
+      'form[data-chatgpt-composer][data-composer-placement="thread"] > [data-above-composer-portal="true"]'
+    ) || document.querySelector(
+      'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
+    );
+  }
+
+  function disconnectLauncherObservers() {
+    launcherPortalObserver?.disconnect();
+    launcherFormObserver?.disconnect();
+    launcherParentObserver?.disconnect();
+    launcherPortalObserver = null;
+    launcherFormObserver = null;
+    launcherParentObserver = null;
+  }
+
+  function clearLauncherRetryTimers() {
+    for (const timer of launcherRetryTimers) window.clearTimeout(timer);
+    launcherRetryTimers = [];
+  }
+
+  function syncLauncherVisibility() {
+    const panel = document.getElementById(PANEL_ID);
+    const launcher = document.getElementById(LAUNCHER_ID);
+    if (!launcher) return;
+    launcher.hidden = !panel || panel.dataset.collapsed !== 'true';
+  }
+
+  function bindLauncherObservers(portal) {
+    disconnectLauncherObservers();
+    const form = portal.closest('form[data-chatgpt-composer]');
+    if (!form) return;
+
+    launcherPortalObserver = new MutationObserver(() => {
+      const launcher = document.getElementById(LAUNCHER_ID);
+      if (!launcher || launcher.parentElement !== portal) scheduleLauncherMountRetries();
+    });
+    launcherPortalObserver.observe(portal, { childList: true });
+
+    launcherFormObserver = new MutationObserver(() => {
+      if (!form.isConnected || getComposerPortal() !== portal) scheduleLauncherMountRetries();
+    });
+    launcherFormObserver.observe(form, { childList: true });
+
+    const parent = form.parentElement;
+    if (parent) {
+      launcherParentObserver = new MutationObserver(() => {
+        if (!form.isConnected || getComposerPortal() !== portal) scheduleLauncherMountRetries();
+      });
+      launcherParentObserver.observe(parent, { childList: true });
+    }
+  }
+
+  function createLauncher() {
+    let launcher = document.getElementById(LAUNCHER_ID);
+    if (launcher) return launcher;
+
+    launcher = document.createElement('button');
+    launcher.id = LAUNCHER_ID;
+    launcher.type = 'button';
+    launcher.className = `${PREFIX}-launcher`;
+    launcher.setAttribute('aria-label', '展开 ChatGPT 顺序任务助手');
+    launcher.title = 'ChatGPT 顺序任务助手';
+    launcher.innerHTML = `<span class="${PREFIX}-launcher-text" data-field="launcher-progress">顺序任务</span>`;
+    launcher.addEventListener('click', () => {
+      const panel = document.getElementById(PANEL_ID);
+      if (!panel) return;
+      panel.dataset.collapsed = 'false';
+      syncLauncherVisibility();
+      renderPanel();
+    });
+    launcher.hidden = true;
+    return launcher;
+  }
+
+  function ensureLauncherMounted() {
+    ensureStyle();
+    const portal = getComposerPortal();
+    if (!portal) {
+      disconnectLauncherObservers();
+      const launcher = document.getElementById(LAUNCHER_ID);
+      if (launcher) launcher.hidden = true;
+      return false;
+    }
+
+    const launcher = createLauncher();
+    if (launcher.parentElement !== portal) portal.appendChild(launcher);
+    syncLauncherVisibility();
+    bindLauncherObservers(portal);
+    return true;
+  }
+
+  function scheduleLauncherMountRetries() {
+    clearLauncherRetryTimers();
+    const delays = [0, 80, 200, 500, 1000, 2000];
+    for (const delay of delays) {
+      launcherRetryTimers.push(window.setTimeout(() => {
+        if (ensureLauncherMounted()) clearLauncherRetryTimers();
+      }, delay));
+    }
+  }
+
   function createPanel() {
-    if (document.getElementById(PANEL_ID)) return;
+    if (document.getElementById(PANEL_ID)) {
+      scheduleLauncherMountRetries();
+      return;
+    }
     ensureStyle();
 
     const panel = document.createElement('section');
     panel.id = PANEL_ID;
     panel.dataset.collapsed = 'true';
     panel.innerHTML = `
-      <button type="button" class="${PREFIX}-launcher" data-action="expand" aria-label="展开 ChatGPT 顺序任务助手" title="ChatGPT 顺序任务助手">
-        <span class="${PREFIX}-launcher-text" data-field="launcher-progress">顺序任务</span>
-      </button>
       <div class="${PREFIX}-header">
         <div class="${PREFIX}-title-group">
           <span class="${PREFIX}-title">ChatGPT 顺序任务助手</span>
@@ -2216,8 +2336,10 @@
       if (action === 'pause') pauseQueue();
       if (action === 'refresh') refreshRuntimeStatus();
       if (action === 'clear') void clearQueue();
-      if (action === 'expand') panel.dataset.collapsed = 'false';
-      if (action === 'collapse') panel.dataset.collapsed = 'true';
+      if (action === 'collapse') {
+        panel.dataset.collapsed = 'true';
+        scheduleLauncherMountRetries();
+      }
       if (action === 'dialog-cancel') closePanelDialog(false);
       if (action === 'dialog-confirm') closePanelDialog(true);
     });
@@ -2244,6 +2366,7 @@
     });
 
     document.body.appendChild(panel);
+    scheduleLauncherMountRetries();
     renderPanel();
   }
 
@@ -2366,6 +2489,14 @@
     panel.style.setProperty(`--${PREFIX}-progress-complete-percent`, `${progress.completedPercent}%`);
     panel.style.setProperty(`--${PREFIX}-progress-active-end-percent`, `${activeEndPercent}%`);
 
+    const launcher = document.getElementById(LAUNCHER_ID);
+    if (launcher) {
+      launcher.dataset.mode = state.mode;
+      launcher.style.setProperty(`--${PREFIX}-progress-complete-percent`, `${progress.completedPercent}%`);
+      launcher.style.setProperty(`--${PREFIX}-progress-active-end-percent`, `${activeEndPercent}%`);
+      syncLauncherVisibility();
+    }
+
     setPanelField(panel, 'mode', MODE_LABELS[state.mode] || state.mode);
     setPanelField(panel, 'launcher-progress', launcherText);
     setPanelField(panel, 'progress', progressText);
@@ -2419,8 +2550,11 @@
       activeFill.style.width = `${progress.activeWidthPercent}%`;
     }
 
-    const launcher = panel.querySelector(`.${PREFIX}-launcher`);
     if (launcher) {
+      const launcherTextElement = launcher.querySelector('[data-field="launcher-progress"]');
+      if (launcherTextElement && launcherTextElement.textContent !== launcherText) {
+        launcherTextElement.textContent = launcherText;
+      }
       launcher.setAttribute(
         'aria-label',
         totalCount > 0
@@ -2471,6 +2605,7 @@
 
     locationSnapshot = newHref;
     switchToConversationContext(newConversationId);
+    scheduleLauncherMountRetries();
   }
 
   function handleTrustedEditorInput(event) {
@@ -2492,6 +2627,7 @@
 
   function recoverRuntime() {
     createPanel();
+    scheduleLauncherMountRetries();
     handleLocationChange();
 
     if (state.activeIndex !== null) {

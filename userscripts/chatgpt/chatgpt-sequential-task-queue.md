@@ -1,7 +1,7 @@
 # ChatGPT 顺序任务助手
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-sequential-task-queue.user.js`  
-> 当前说明版本：v1.4.2
+> 当前说明版本：v1.4.3
 
 ## 1. 当前定位
 
@@ -15,7 +15,23 @@
 - “暂停”只阻止下一轮发送，不会点击 ChatGPT 自带停止按钮。
 - 每轮回答完成后先确认空闲状态，再按照面板中的额外等待秒数发送下一轮。
 
-## 2. v1.4.2 新对话双阶段会话绑定修复
+
+## 2. v1.4.3 收起入口迁移到 Composer 上沿
+
+记录日期：**2026-09-25**。
+
+本版本只移动顺序任务助手的**收起状态入口按钮**，不移动展开面板。
+
+- 收起按钮从原来的页面右下角迁移到当前 thread Composer 的 `data-above-composer-portal`。
+- 按钮保持原有 `92 × 24 px` 尺寸和进度渐变语义，使用 `bottom: -1px` 贴住 Composer 上边框。
+- 当前轮数 badge 为 `40 × 24 px`、右侧偏移 `14px`；顺序任务按钮使用右侧偏移 `60px`，因此位于轮数 badge 左侧并保留约 `6px` 间距。
+- launcher 与 `#cg-stq-panel` 解耦：launcher 单独挂载到 Composer，完整 panel 仍保留在 `document.body` 并继续使用原来的右下角 `position: fixed` 定位。
+- 点击 launcher 只把现有 panel 从收起状态切换为展开状态；点击 panel 内的“−”后再恢复 Composer 上沿 launcher。
+- Composer / portal 被 React 重建时，仅通过当前 portal、form 及其直属父节点的窄范围 `childList` observer 与一组有上限的短时重试恢复 launcher；不新增全局 subtree 扫描或持续轮询。
+
+该改动不触碰任务解析、发送、完成判断、会话状态迁移、运行锁和持久状态逻辑。
+
+## 3. v1.4.2 新对话双阶段会话绑定修复
 
 记录日期：**2026-09-25**。
 
@@ -42,7 +58,7 @@ v1.4.2 将整个双阶段过程视为**同一次普通新对话首次绑定**：
 
 本修复仍**不专门处理临时对话功能本身**；这里的 `local-chatgpt:*` 是普通新对话首次建立过程中实际观察到的中间 conversation id，只用于完成普通新对话的首次绑定。
 
-## 3. v1.4.0 Composer 结构约定
+## 4. v1.4.0 Composer 结构约定
 
 记录日期：**2026-09-25**。
 
@@ -100,7 +116,7 @@ button[aria-label="停止"]
 
 脚本仍保留旧版 `data-testid="stop-button"`、`aria-label="停止回答"`、`aria-label="Stop generating"` 和 `#composer-submit-button` 作为兼容回退。新增维护时不要为了“清理代码”无理由删除这些回退。
 
-## 4. 顺序执行与完成判断
+## 5. 顺序执行与完成判断
 
 每轮发送流程保持原有状态机：
 
@@ -115,7 +131,7 @@ button[aria-label="停止"]
 
 仍保留“超短任务”回退：如果发送后输入框已经清空，但前 8 秒始终没有捕获到停止按钮，则在输入框继续为空且停止按钮持续不存在 3 秒后按完成处理。若发送后 30 秒内既没有捕获停止按钮，也没有满足回退条件，则进入状态待确认/错误流程，而不是猜测任务已经完成。
 
-## 5. ChatGPT Composer DOM 诊断方法
+## 6. ChatGPT Composer DOM 诊断方法
 
 ChatGPT 网页更新后，如果顺序助手再次无法找到输入框、发送按钮或停止按钮，优先从真实页面重新采集 Composer 状态，不要根据旧 class 名或历史 DOM 猜测。
 
@@ -213,7 +229,7 @@ Buttons: (5) [{…}, {…}, {…}, {…}, {…}]
 
 如果只是判断选择器是否失效，优先使用轻量方法；只有需要检查编辑器内部结构时，再使用完整快照。
 
-## 6. 首轮会话路由 / 队列状态诊断方法
+## 7. 首轮会话路由 / 队列状态诊断方法
 
 当现象是“第一轮可以发送，但随后队列突然清空、切到空面板或绑定到错误会话”时，不要只检查 Composer DOM。应优先观察**首轮期间 ChatGPT 的 history 路由、conversation id、顺序助手内部 state 和存储 key 是否同步变化**。
 
@@ -350,7 +366,7 @@ conversationId 不变，但停止按钮始终识别不到
 
 该方法用于定位 ChatGPT 首轮建会话流程变化；未来若 OpenAI 再次调整客户端路由，不应预设只存在一次 URL 变化，应先用自动追踪日志确认真实顺序后再修改迁移逻辑。
 
-## 7. DOM 维护原则
+## 8. DOM 维护原则
 
 - 优先使用 `data-chatgpt-composer`、`data-composer-markdown`、`role`、`type`、`aria-label` 等语义属性。
 - 不依赖 `ComposerLayoutRoot-XCKS7O`、`RichTextInput-j_tVa5` 等构建生成 class，它们可能随部署改变。
@@ -359,7 +375,7 @@ conversationId 不变，但停止按钮始终识别不到
 - 如果未来按钮文案或结构变化，先用上面的三状态 Console 方法重新采集实际 DOM，再修改选择器。
 - 诊断内容可能包含当前 URL、conversation id 和输入框正文；对外分享前应检查并按需要删去敏感或不希望公开的内容。
 
-## 8. 修改后的基本回归测试
+## 9. 修改后的基本回归测试
 
 至少验证：
 
@@ -373,3 +389,6 @@ conversationId 不变，但停止按钮始终识别不到
 8. 当 `local-chatgpt:*` 再变成正式 `/c/<UUID>` 时，队列状态继续迁移到正式 UUID，第一轮完成后能够继续执行第二轮，而不是回到空面板。
 9. 若 `/` → `local-chatgpt:*` 或 `local-chatgpt:*` → 正式 UUID 的任一步伴随页面重新加载，队列仍能从临时/中间状态恢复并完成正式绑定。
 10. 已有稳定 `/c/<UUID>` 的旧对话、真实切换会话、刷新页面、多标签运行锁和现有队列状态不受首次绑定修复影响。
+11. 收起状态按钮应位于 Composer 上边框、轮数 badge 左侧；两个 badge 底边贴齐且互不重叠。
+12. 点击收起按钮后，完整面板仍在原来的右下角位置展开；点击“−”再次收起后 launcher 回到 Composer 上沿。
+13. Composer 被 SPA / React 重建后 launcher 能恢复，但页面空闲时不应出现持续轮询或全局 subtree observer。
