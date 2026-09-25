@@ -166,16 +166,18 @@ cyan_chatgpt_conversation_round_counter_cache_v1
 
 新脚本使用独立的 Tampermonkey 存储空间和新缓存键，不尝试迁移已归档长对话优化助手中的旧缓存；首次进入已有长对话时可能需要重新完成一次统计。
 
-## DOM 观察器
+## DOM 与性能策略
 
-MutationObserver 只处理新增节点，用于：
+轮数消息和 Composer badge 分开维护，避免 UI 逻辑进入全局 DOM 热路径：
 
-- ChatGPT hydration / SPA 重建后，在当前 thread Composer 的 `data-above-composer-portal` 中恢复上沿状态 badge；
-- 捕获新出现的 `[data-message-author-role="user"][data-message-id]`；
-- 在完整统计已经建立后执行本地增量 `+1`；
-- 在新建会话正式 UUID 尚未绑定时维护 pending user message id。
+- 全局消息 MutationObserver 只处理新增节点中的 user message，不再调用 `ensureUi()`。
+- user message 检测先用单次 `querySelector()` 判断新增子树是否包含目标消息，只有命中时才枚举匹配节点，减少无关 DOM 的遍历。
+- badge 首次挂载和 SPA 路由切换后只执行一组有上限的短时重试；挂载成功后立即清理剩余 timer，不做持续轮询。
+- badge 挂载成功后仅观察 `data-above-composer-portal`、对应 composer form 和 form 的直属父节点，且都只监听 `childList`，不监听 subtree；只有 portal / form 实际被替换或 badge 被移除时才重新挂载。
+- `renderUiState()` 对文字、title 和状态属性逐项比较，值没有变化时不写 DOM，避免产生无意义 MutationRecord。
+- 捕获新出现的 `[data-message-author-role="user"][data-message-id]` 后，在完整统计已经建立时执行本地增量 `+1`；新建会话正式 UUID 尚未绑定时则维护 pending user message id。
 
-观察器不会持续遍历整篇对话正文。
+因此页面静止、正常输入和普通 React 更新不会持续触发 badge 查询或重绘；UI 维护只在首次挂载、路由变化或 Composer 结构真正替换时工作。
 
 ## 隐私与安全
 
@@ -209,3 +211,5 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 12. 旧 `mapping + current_node` 响应仍可只读计算 user 轮数，不改写 response。
 13. 与其他包装 `window.fetch` / History 的 userscript 共存时，不应覆盖对方的独立 patch flag。
 14. 状态 badge 应挂载到当前 thread Composer 的 `data-above-composer-portal`，紧贴输入框上边框右侧；Composer 重建后能自动重新挂载，且 `1`、`99`、`999` 显示宽度保持不变。
+15. 打开 Performance / Console 验证页面静止和正常输入时不会出现 badge 自触发的 MutationObserver 循环；无状态变化时 `renderUiState()` 不应反复写 DOM。
+16. Composer 已稳定挂载后，不应存在持续轮询 timer；UI observer 仅监听 portal、composer form 及直属父节点的 `childList`，不得恢复到 `document.documentElement + subtree` 的 UI 检查路径。

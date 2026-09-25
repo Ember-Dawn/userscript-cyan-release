@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.1.1
+// @version      0.1.2
 // @description  统计并缓存 ChatGPT 当前对话的完整用户轮数，支持分页补齐、断点续跑和新建对话实时计数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -59,6 +59,10 @@
 
     let nativePageFetch = null;
     let statusButton = null;
+    let uiPortalObserver = null;
+    let uiFormObserver = null;
+    let uiParentObserver = null;
+    let uiRetryTimers = [];
 
     function diagnosticError(message, error) {
         console.error(`${DIAGNOSTIC_PREFIX} ${message}`, error);
@@ -808,9 +812,18 @@
         if (!state.uiReady || !statusButton) {
             return;
         }
-        statusButton.textContent = getStatusText();
-        statusButton.title = getStatusTitle();
-        statusButton.dataset.status = state.roundCountStatus;
+        const text = getStatusText();
+        const title = getStatusTitle();
+        const status = state.roundCountStatus;
+        if (statusButton.textContent !== text) {
+            statusButton.textContent = text;
+        }
+        if (statusButton.title !== title) {
+            statusButton.title = title;
+        }
+        if (statusButton.dataset.status !== status) {
+            statusButton.dataset.status = status;
+        }
     }
 
     function installStyles() {
@@ -873,21 +886,87 @@
         );
     }
 
-    function installUi() {
-        const portal = getComposerPortal();
-        if (!portal || document.getElementById('cyan-round-counter-root')) {
+    function disconnectUiObservers() {
+        uiPortalObserver?.disconnect();
+        uiFormObserver?.disconnect();
+        uiParentObserver?.disconnect();
+        uiPortalObserver = null;
+        uiFormObserver = null;
+        uiParentObserver = null;
+    }
+
+    function clearUiRetryTimers() {
+        for (const timer of uiRetryTimers) {
+            window.clearTimeout(timer);
+        }
+        uiRetryTimers = [];
+    }
+
+    function bindUiObservers(portal) {
+        disconnectUiObservers();
+        const form = portal.closest('form[data-chatgpt-composer]');
+        if (!form) {
             return;
         }
-        const root = document.createElement('div');
-        root.id = 'cyan-round-counter-root';
-        statusButton = document.createElement('div');
-        statusButton.id = 'cyan-round-counter-status';
-        statusButton.setAttribute('role', 'status');
-        statusButton.setAttribute('aria-live', 'polite');
-        root.appendChild(statusButton);
-        portal.appendChild(root);
+
+        uiPortalObserver = new MutationObserver(() => {
+            const root = document.getElementById('cyan-round-counter-root');
+            if (!root || root.parentElement !== portal) {
+                ensureUi();
+            }
+        });
+        uiPortalObserver.observe(portal, { childList: true });
+
+        uiFormObserver = new MutationObserver(() => {
+            if (!form.isConnected || getComposerPortal() !== portal) {
+                scheduleUiMountRetries();
+            }
+        });
+        uiFormObserver.observe(form, { childList: true });
+
+        const parent = form.parentElement;
+        if (parent) {
+            uiParentObserver = new MutationObserver(() => {
+                if (!form.isConnected) {
+                    scheduleUiMountRetries();
+                }
+            });
+            uiParentObserver.observe(parent, { childList: true });
+        }
+    }
+
+    function installUi(portal) {
+        if (!portal) {
+            return false;
+        }
+        let root = document.getElementById('cyan-round-counter-root');
+        let changed = false;
+        if (!root) {
+            root = document.createElement('div');
+            root.id = 'cyan-round-counter-root';
+            statusButton = document.createElement('div');
+            statusButton.id = 'cyan-round-counter-status';
+            statusButton.setAttribute('role', 'status');
+            statusButton.setAttribute('aria-live', 'polite');
+            root.appendChild(statusButton);
+            changed = true;
+        } else {
+            statusButton = root.querySelector('#cyan-round-counter-status');
+        }
+        if (!statusButton) {
+            return false;
+        }
+        if (root.parentElement !== portal) {
+            portal.appendChild(root);
+            changed = true;
+        }
         state.uiReady = true;
-        renderUiState();
+        if (changed) {
+            renderUiState();
+        }
+        bindUiObservers(portal);
+        clearUiRetryTimers();
+        return true;
     }
 
     function ensureUi() {
@@ -896,22 +975,32 @@
         if (!portal) {
             state.uiReady = false;
             statusButton = null;
-            return;
+            disconnectUiObservers();
+            return false;
         }
 
         const root = document.getElementById('cyan-round-counter-root');
-        if (!root) {
-            state.uiReady = false;
-            installUi();
-            return;
+        if (root?.parentElement === portal) {
+            const currentStatusButton = root.querySelector('#cyan-round-counter-status');
+            if (currentStatusButton) {
+                statusButton = currentStatusButton;
+                state.uiReady = true;
+                bindUiObservers(portal);
+                clearUiRetryTimers();
+                return true;
+            }
         }
+        return installUi(portal);
+    }
 
-        if (root.parentElement !== portal) {
-            portal.appendChild(root);
-        }
-        statusButton = root.querySelector('#cyan-round-counter-status');
-        state.uiReady = Boolean(statusButton);
-        renderUiState();
+    function scheduleUiMountRetries() {
+        clearUiRetryTimers();
+        const delays = [0, 60, 180, 400, 800, 1500, 2500];
+        uiRetryTimers = delays.map((delay) => window.setTimeout(() => {
+            if (ensureUi()) {
+                clearUiRetryTimers();
+            }
+        }, delay));
     }
 
     function getVisibleUserMessageIds() {
@@ -983,12 +1072,15 @@
             return;
         }
 
+        const selector = '[data-message-author-role="user"][data-message-id]';
         const candidates = [];
-        if (node.matches('[data-message-author-role="user"][data-message-id]')) {
+        if (node.matches(selector)) {
             candidates.push(node);
         }
-        for (const child of node.querySelectorAll('[data-message-author-role="user"][data-message-id]')) {
-            candidates.push(child);
+        if (node.querySelector(selector)) {
+            for (const child of node.querySelectorAll(selector)) {
+                candidates.push(child);
+            }
         }
 
         const addedIds = [];
@@ -1024,7 +1116,6 @@
     function installLocalMessageObserver() {
         seedVisibleUserMessageIds();
         const observer = new MutationObserver((mutations) => {
-            ensureUi();
             for (const mutation of mutations) {
                 for (const node of mutation.addedNodes) {
                     processAddedNodeForUserMessages(node);
@@ -1069,6 +1160,7 @@
         state.seenUserMessageIds.clear();
         state.domIncrementReady = false;
         state.domBaselineToken += 1;
+        scheduleUiMountRetries();
 
         if (nextIsTemporary) {
             for (const id of state.pendingNewConversationUserIds) {
@@ -1121,7 +1213,7 @@
 
     function initializeDomFeatures() {
         restorePersistentRoundCountStats();
-        ensureUi();
+        scheduleUiMountRetries();
         installLocalMessageObserver();
         patchHistoryForSpaNavigation();
         document.addEventListener('visibilitychange', () => {
