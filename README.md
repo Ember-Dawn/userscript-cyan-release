@@ -37,19 +37,16 @@ userscript-cyan-release/
 |---|---|---|
 | ChatGPT 宽屏 | [`chatgpt-wide.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-wide.user.js) | 自动放宽 ChatGPT 的对话区和输入区。 |
 | ChatGPT 文件夹 | [`chatgpt-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js) | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。 |
-| ChatGPT 文件链接高亮助手 | [`chatgpt-file-link-highlighter.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-file-link-highlighter.user.js) | 高亮助手回答中的文件链接和 ChatGPT 官方下载入口。 |
 | ChatGPT GitHub 自动允许助手 | [`chatgpt-auto-allow-github.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-auto-allow-github.user.js) | 自动处理 ChatGPT 的 GitHub 权限卡片。 |
 | ChatGPT 顺序任务助手 | [`chatgpt-sequential-task-queue.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js) | 每个非空行作为一轮命令，按对话独立保存并顺序发送；提供面板内确认弹窗和绿黄分段进度。 |
 | ChatGPT 输入框增强助手 | [`chatgpt-composer-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-composer-enhancer.user.js) | 增强 ChatGPT 输入框；当前 Raw Paste Mode 保持短文本粘贴的 Markdown 为原始文本，并保留长文本附件及图片/文件粘贴的原生行为。 |
 | ChatGPT 界面视觉增强助手 | [`chatgpt-visual-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js) | 在白天模式下将主界面与侧边栏统一柔化为中性浅灰，并为临时对话输入框提供琥珀色视觉提示。 |
 | ChatGPT 长对话优化助手 | [`chatgpt-long-chat-optimizer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js) | 在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并用悬浮按钮显示保留轮数与总轮数。 |
-| ChatGPT 朗读增强助手 | [`chatgpt-read-aloud-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-read-aloud-enhancer.user.js) | 为官方朗读增加一级入口、悬浮播放器、消息切换、跳转和倍速控制，并支持在浏览器本地下载 MP3。 |
 
 ChatGPT 输入框增强助手的开发背景、Raw Paste Mode 范围和维护说明见 [`userscripts/chatgpt/chatgpt-composer-enhancer.md`](./userscripts/chatgpt/chatgpt-composer-enhancer.md)。
 
 ChatGPT 长对话优化助手的轮数定义、Fetch Proxy、悬浮设置和维护说明见 [`userscripts/chatgpt/chatgpt-long-chat-optimizer.md`](./userscripts/chatgpt/chatgpt-long-chat-optimizer.md)。
 
-详细功能和使用说明见 [`userscripts/chatgpt/chatgpt-read-aloud-enhancer.md`](./userscripts/chatgpt/chatgpt-read-aloud-enhancer.md)。
 
 ### GitHub
 

@@ -8,18 +8,29 @@
 |---|---|---|
 | ChatGPT 宽屏 | `chatgpt-wide.user.js` | 放宽对话区和输入区，改善长文本与代码阅读。 |
 | ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。参见[详细说明](./chatgpt-folders.md)。 |
-| ChatGPT 文件链接高亮助手 | `chatgpt-file-link-highlighter.user.js` | 高亮助手回答中的文件链接和官方文件入口。 |
 | ChatGPT GitHub 自动允许助手 | `chatgpt-auto-allow-github.user.js` | 自动处理 ChatGPT 中明确指向 GitHub 的授权卡片。 |
 | ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度；支持后台标签页继续推进。 |
 | ChatGPT 输入框增强助手 | `chatgpt-composer-enhancer.user.js` | 增强 ChatGPT 输入框；当前 Raw Paste Mode 保持短文本粘贴的 Markdown 为原始文本，并保留长文本附件及图片/文件粘贴的原生行为。参见[详细说明](./chatgpt-composer-enhancer.md)。 |
 | ChatGPT 界面视觉增强助手 | `chatgpt-visual-enhancer.user.js` | 在白天模式下将主界面与侧边栏统一为中性浅灰，并让输入框保持稍亮层次；临时对话继续使用琥珀色描边、淡色背景和轻微阴影。 |
 | ChatGPT 长对话优化助手 | `chatgpt-long-chat-optimizer.user.js` | 通过原生 `num_turns` 控制最近 N 轮历史窗口，并以低速分页、Tampermonkey 持久缓存和断点续跑统计完整总轮数。参见[详细说明](./chatgpt-long-chat-optimizer.md)。 |
-| ChatGPT 朗读增强助手 | `chatgpt-read-aloud-enhancer.user.js` | 增加一级朗读入口、悬浮播放器、消息切换、快捷键和本地 MP3 下载。参见[详细说明](./chatgpt-read-aloud-enhancer.md)。 |
 
 旧版 `chatgpt-temporary-chat-highlighter.user.js` 已由“ChatGPT 界面视觉增强助手”取代，最终版本归档为：
 
 ```text
 archive/userscripts/chatgpt-temporary-chat-highlighter-v0.1.0.user.js
+```
+
+ChatGPT 文件链接高亮助手已停止维护，最终版本归档为：
+
+```text
+archive/userscripts/chatgpt-file-link-highlighter-v1.0.0.user.js
+```
+
+ChatGPT 朗读增强助手已停止维护，最终脚本与维护说明归档为：
+
+```text
+archive/userscripts/chatgpt-read-aloud-enhancer-v4.0.8.user.js
+archive/userscripts/chatgpt-read-aloud-enhancer-v4.0.8.md
 ```
 
 ## 维护原则
@@ -43,8 +54,3 @@ archive/userscripts/chatgpt-temporary-chat-highlighter-v0.1.0.user.js
 3. 如果仍使用 `chat.openai.com`，也可一并添加。
 
 该设置主要避免 Memory Saver 将页面停用或丢弃，不能取消 Chrome 对所有后台标签页的定时器降频。如果页面被浏览器真正冻结或丢弃，普通 Tampermonkey 用户脚本无法继续操作页面 DOM；恢复页面后，脚本会根据当前状态继续监控或补发已到期的下一轮。
-
-
-## MP3 下载排错
-
-朗读增强助手的 MP3 下载失败时，会在浏览器本地保存最近一次脱敏诊断日志。通过 Tampermonkey 菜单中的“导出最近一次 MP3 诊断日志”可导出 JSON 文件。

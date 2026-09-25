@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-wide.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-wide.user.js
-// @version      1.0.2
+// @version      1.0.3
 // @description  仅保留 KeepChatGPT 的“展开大屏”功能：自动放宽 ChatGPT 对话区和输入区宽度。
 // @author       OpenAI
 // @match        *://chat.openai.com/
@@ -23,16 +23,22 @@
 
     const css = `
 @media (min-width: 1024px) {
-    /* 来自 KeepChatGPT“展示大屏”功能的核心逻辑 */
-    section.text-token-text-primary > div > div,
-    #thread-bottom > div > div > div {
+    /* ChatGPT 2026-09 布局：正文和底部输入区共享 thread content 宽度变量。 */
+    [data-app-shell-main-content-layout="thread-edge-scroll"] {
+        --thread-content-expanded-max-width: min(90rem, calc(100vw - 8rem)) !important;
+        --thread-content-compact-max-width: min(90rem, calc(100vw - 8rem)) !important;
+    }
+
+    [data-thread-user-message-navigation-content="true"],
+    [data-thread-scroll-footer="true"] > [data-pip-obstacle="thread-footer"] {
         width: 100% !important;
         max-width: min(90rem, calc(100vw - 8rem)) !important;
     }
 
-    form.w-full {
+    form[data-chatgpt-composer] {
+        width: 100% !important;
         max-width: 100% !important;
-        margin: auto !important;
+        margin-inline: auto !important;
     }
 }
 `;
