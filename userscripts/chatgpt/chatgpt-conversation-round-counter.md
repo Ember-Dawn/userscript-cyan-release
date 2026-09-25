@@ -132,18 +132,19 @@ STABLE   /c/<final-uuid>           最终稳定会话
 - 预期首轮链路为 `1 → 正式 UUID 后仍为 1 → 再发送一轮后为 2`。
 - 从已有稳定 `/c/<uuid>` 打开的旧会话不使用 bootstrap，而是走首屏分页分析与持久缓存恢复。
 
-## 悬浮状态
+## Composer 上沿状态
 
-页面右下角仅显示轮数或统计状态，不再提供设置面板：
+轮数状态挂载在当前 thread Composer 的 `data-above-composer-portal` 中，作为紧贴输入框上边框右侧的轻量 badge；不再使用页面右下角悬浮组件，也不提供设置面板：
 
 ```text
 0   当前尚无 user 轮次
 …   正在后台补齐完整轮数
-+   确认有更早历史，但当前统计处于等待或暂停状态
++   确认有更早历史，等待继续统计
+!   完整轮数统计已暂停
 86  已获得完整总轮数 86
 ```
 
-鼠标悬停可查看更完整的状态说明。
+badge 固定为 40 × 24 px，并启用等宽数字排版，预留 3 位轮数宽度，避免 `9 → 99 → 999` 时横向跳动。外层挂载容器不参与 Composer 交互；badge 本身只保留悬停命中以显示 `title` 状态说明，不可聚焦，也没有点击行为。
 
 ## 持久缓存
 
@@ -169,7 +170,7 @@ cyan_chatgpt_conversation_round_counter_cache_v1
 
 MutationObserver 只处理新增节点，用于：
 
-- ChatGPT hydration / SPA 重建后恢复右下角状态 UI；
+- ChatGPT hydration / SPA 重建后，在当前 thread Composer 的 `data-above-composer-portal` 中恢复上沿状态 badge；
 - 捕获新出现的 `[data-message-author-role="user"][data-message-id]`；
 - 在完整统计已经建立后执行本地增量 `+1`；
 - 在新建会话正式 UUID 尚未绑定时维护 pending user message id。
@@ -207,3 +208,4 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 11. `WEB:*` 临时 ID 仍作为兼容路径，不写正式缓存。
 12. 旧 `mapping + current_node` 响应仍可只读计算 user 轮数，不改写 response。
 13. 与其他包装 `window.fetch` / History 的 userscript 共存时，不应覆盖对方的独立 patch flag。
+14. 状态 badge 应挂载到当前 thread Composer 的 `data-above-composer-portal`，紧贴输入框上边框右侧；Composer 重建后能自动重新挂载，且 `1`、`99`、`999` 显示宽度保持不变。

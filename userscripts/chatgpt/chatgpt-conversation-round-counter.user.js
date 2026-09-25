@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.1.0
+// @version      0.1.1
 // @description  统计并缓存 ChatGPT 当前对话的完整用户轮数，支持分页补齐、断点续跑和新建对话实时计数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -776,7 +776,10 @@
         if (state.roundCountStatus === 'counting') {
             return '…';
         }
-        if (state.roundCountStatus === 'paused' || (state.loadedRounds !== null && state.hasEarlierHistory === true)) {
+        if (state.roundCountStatus === 'paused') {
+            return '!';
+        }
+        if (state.loadedRounds !== null && state.hasEarlierHistory === true) {
             return '+';
         }
         if (state.currentConversationId === null && state.pendingNewConversationUserIds.size === 0) {
@@ -818,26 +821,37 @@
         style.id = 'cyan-round-counter-style';
         style.textContent = `
 #cyan-round-counter-root {
-    position: fixed;
-    right: 18px;
-    bottom: 18px;
-    z-index: 2147483000;
+    position: absolute;
+    right: 8px;
+    bottom: 4px;
+    z-index: 20;
+    pointer-events: none;
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 #cyan-round-counter-status {
     appearance: none;
+    box-sizing: border-box;
+    width: 40px;
+    height: 24px;
     border: 0;
     border-radius: 6px;
-    min-width: 30px;
-    padding: 6px 8px;
+    padding: 0 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     white-space: nowrap;
+    overflow: hidden;
     background: #10a37f;
     color: #fff;
     font-size: 12px;
     font-weight: 650;
+    font-variant-numeric: tabular-nums;
     line-height: 1;
     text-align: center;
     box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
+    pointer-events: auto;
+    cursor: default;
+    user-select: none;
 }
 #cyan-round-counter-status[data-status="paused"] {
     background: #6b7280;
@@ -851,8 +865,17 @@
         (document.head || document.documentElement).appendChild(style);
     }
 
+    function getComposerPortal() {
+        return document.querySelector(
+            'form[data-chatgpt-composer][data-composer-placement="thread"] > [data-above-composer-portal="true"]'
+        ) ?? document.querySelector(
+            'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
+        );
+    }
+
     function installUi() {
-        if (!document.body || document.getElementById('cyan-round-counter-root')) {
+        const portal = getComposerPortal();
+        if (!portal || document.getElementById('cyan-round-counter-root')) {
             return;
         }
         const root = document.createElement('div');
@@ -862,20 +885,33 @@
         statusButton.setAttribute('role', 'status');
         statusButton.setAttribute('aria-live', 'polite');
         root.appendChild(statusButton);
-        document.body.appendChild(root);
+        portal.appendChild(root);
         state.uiReady = true;
         renderUiState();
     }
 
     function ensureUi() {
         installStyles();
-        if (!document.body) {
+        const portal = getComposerPortal();
+        if (!portal) {
+            state.uiReady = false;
+            statusButton = null;
             return;
         }
-        if (!document.getElementById('cyan-round-counter-root')) {
+
+        const root = document.getElementById('cyan-round-counter-root');
+        if (!root) {
             state.uiReady = false;
             installUi();
+            return;
         }
+
+        if (root.parentElement !== portal) {
+            portal.appendChild(root);
+        }
+        statusButton = root.querySelector('#cyan-round-counter-status');
+        state.uiReady = Boolean(statusButton);
+        renderUiState();
     }
 
     function getVisibleUserMessageIds() {
