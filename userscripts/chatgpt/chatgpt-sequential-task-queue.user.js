@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.4.1
+// @version      1.4.2
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、后台标签页推进及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -37,7 +37,7 @@
 4. 会话隔离
  - 每个 /c/会话ID 拥有独立的任务文本、进度、等待时间和运行锁。
  - 同一标签页切换对话时，面板自动切换到对应对话的状态。
- - 新对话尚无 ID 时使用当前标签页的临时状态；首次消息创建 ID 后自动迁移并绑定。
+ - 新对话尚无 ID 时使用当前标签页的临时状态；普通新对话若经历 / → local-chatgpt:* → 正式 UUID，会把两次路由都视为同一次首次绑定并连续迁移状态。
  - 不同对话可以分别运行；同一对话在多个标签页中只允许一个标签页实际发送。
 
 5. 界面
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -241,17 +241,27 @@
   }
 
 
+  function isLocalConversationId(conversationId) {
+    return typeof conversationId === 'string' && conversationId.startsWith('local-chatgpt:');
+  }
+
+  function writeInitialBindingPending(pending) {
+    try {
+      sessionStorage.setItem(TEMP_INITIAL_BINDING_KEY, JSON.stringify(pending));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   function markInitialBindingPending() {
     if (currentConversationId !== null) return;
 
-    try {
-      sessionStorage.setItem(TEMP_INITIAL_BINDING_KEY, JSON.stringify({
-        tabId,
-        createdAt: Date.now(),
-      }));
-    } catch (_) {
-      // sessionStorage 不可用时沿用现有 SPA 迁移逻辑。
-    }
+    writeInitialBindingPending({
+      tabId,
+      createdAt: Date.now(),
+      intermediateConversationId: null,
+    });
   }
 
   function clearInitialBindingPending() {
@@ -273,6 +283,43 @@
     }
   }
 
+  function rememberInitialBindingIntermediate(conversationId) {
+    if (!isLocalConversationId(conversationId)) return;
+
+    const pending = readFreshInitialBindingPending();
+    if (!pending) return;
+
+    writeInitialBindingPending({
+      ...pending,
+      intermediateConversationId: conversationId,
+    });
+  }
+
+  function normalizeInitialBindingRestoreState(rawState, conversationId, pending) {
+    const restored = normalizeState(rawState, conversationId);
+    const activeTask = restored.activeIndex !== null
+      ? restored.tasks[restored.activeIndex]
+      : null;
+
+    if (activeTask?.status === 'sending' && !activeTask.submittedAt) {
+      activeTask.status = 'submitted';
+      activeTask.submittedAt = Number(pending?.createdAt || Date.now());
+    }
+
+    return restored;
+  }
+
+  function removeConversationStateAndLock(conversationId) {
+    if (!conversationId) return;
+
+    try {
+      localStorage.removeItem(getStateStorageKey(conversationId));
+      localStorage.removeItem(getLockStorageKey(conversationId));
+    } catch (_) {
+      // 清理失败不会影响正式会话继续运行。
+    }
+  }
+
   function loadInitialStateForContext(conversationId) {
     const pending = conversationId ? readFreshInitialBindingPending() : null;
     if (!conversationId || !pending) return loadStateForContext(conversationId);
@@ -280,22 +327,52 @@
     try {
       const rawTemporaryState = JSON.parse(sessionStorage.getItem(TEMP_STATE_KEY) || 'null');
       if (rawTemporaryState) {
-        const temporaryState = normalizeState(rawTemporaryState, conversationId);
+        const temporaryState = normalizeInitialBindingRestoreState(
+          rawTemporaryState,
+          conversationId,
+          pending
+        );
         if (hasStateContent(temporaryState) || temporaryState.activeIndex !== null) {
-          const activeTask = temporaryState.activeIndex !== null
-            ? temporaryState.tasks[temporaryState.activeIndex]
-            : null;
-          if (activeTask?.status === 'sending' && !activeTask.submittedAt) {
-            activeTask.status = 'submitted';
-            activeTask.submittedAt = Number(pending.createdAt || Date.now());
-          }
-
           writeStateForContext(temporaryState, conversationId);
           sessionStorage.removeItem(TEMP_STATE_KEY);
           sessionStorage.removeItem(TEMP_LOCK_KEY);
-          clearInitialBindingPending();
+
+          if (isLocalConversationId(conversationId)) {
+            rememberInitialBindingIntermediate(conversationId);
+          } else {
+            clearInitialBindingPending();
+          }
+
           restoredInitialBindingOnLoad = true;
           return temporaryState;
+        }
+      }
+
+      if (isLocalConversationId(conversationId)) {
+        const localState = loadStateForContext(conversationId);
+        if (hasStateContent(localState) || localState.activeIndex !== null) {
+          rememberInitialBindingIntermediate(conversationId);
+          restoredInitialBindingOnLoad = true;
+        }
+        return localState;
+      }
+
+      const intermediateConversationId = typeof pending.intermediateConversationId === 'string'
+        ? pending.intermediateConversationId
+        : null;
+      if (isLocalConversationId(intermediateConversationId)) {
+        const intermediateState = loadStateForContext(intermediateConversationId);
+        if (hasStateContent(intermediateState) || intermediateState.activeIndex !== null) {
+          const restoredState = normalizeInitialBindingRestoreState(
+            intermediateState,
+            conversationId,
+            pending
+          );
+          writeStateForContext(restoredState, conversationId);
+          removeConversationStateAndLock(intermediateConversationId);
+          clearInitialBindingPending();
+          restoredInitialBindingOnLoad = true;
+          return restoredState;
         }
       }
     } catch (error) {
@@ -572,6 +649,38 @@
     } catch (_) {
       // 忽略临时状态清理失败。
     }
+
+    if (isLocalConversationId(newConversationId)) {
+      rememberInitialBindingIntermediate(newConversationId);
+    } else {
+      clearInitialBindingPending();
+    }
+
+    if (shouldOwnLock()) acquireLock();
+    locationSnapshot = location.href;
+    resetPanelForContext();
+    renderPanel();
+    return true;
+  }
+
+  function migrateInitialBindingIntermediateToFinal(newConversationId) {
+    if (!newConversationId || isLocalConversationId(newConversationId)) return false;
+    if (!isLocalConversationId(currentConversationId)) return false;
+
+    const pending = readFreshInitialBindingPending();
+    if (!pending) return false;
+
+    const intermediateConversationId = currentConversationId;
+    const migratedState = normalizeState(state, newConversationId);
+
+    releaseLock();
+    currentConversationId = newConversationId;
+    state = migratedState;
+    state.notice = state.activeIndex !== null
+      ? state.notice
+      : '新对话已完成正式会话绑定，任务状态已继续保留。';
+    writeStateForContext(state, newConversationId);
+    removeConversationStateAndLock(intermediateConversationId);
     clearInitialBindingPending();
 
     if (shouldOwnLock()) acquireLock();
@@ -602,6 +711,8 @@
     if (currentConversationId === null && newConversationId) {
       if (migrateTemporaryStateToConversation(newConversationId)) return;
     }
+
+    if (migrateInitialBindingIntermediateToFinal(newConversationId)) return;
 
     pauseCurrentContextBeforeLeaving();
     sendingEpoch += 1;

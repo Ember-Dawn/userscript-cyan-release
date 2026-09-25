@@ -1,7 +1,7 @@
 # ChatGPT 顺序任务助手
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-sequential-task-queue.user.js`  
-> 当前说明版本：v1.4.1
+> 当前说明版本：v1.4.2
 
 ## 1. 当前定位
 
@@ -15,21 +15,32 @@
 - “暂停”只阻止下一轮发送，不会点击 ChatGPT 自带停止按钮。
 - 每轮回答完成后先确认空闲状态，再按照面板中的额外等待秒数发送下一轮。
 
-## 2. v1.4.1 新对话首次绑定修复
+## 2. v1.4.2 新对话双阶段会话绑定修复
 
 记录日期：**2026-09-25**。
 
-普通新对话最初位于 `https://chatgpt.com/`，第一轮发送后才获得 `/c/<conversation-id>`。如果这个过程伴随页面重新加载，旧版脚本可能在新页面启动时直接读取正式 conversation id 对应的空状态，从而丢失仍保存在当前标签页 `sessionStorage` 中的临时队列；表现为第一轮已经成功执行，但面板随后回到“尚未载入任务”的初始状态。
+实际诊断确认，普通新对话第一轮并不是简单地从 `https://chatgpt.com/` 一次跳到最终 `/c/<conversation-id>`，而是可能经历下面的双阶段路由：
 
-v1.4.1 只针对这一条首次绑定链路增加保护：
+```text
+https://chatgpt.com/
+→ /c/local-chatgpt%3A<local-id>
+→ /c/<正式 UUID>
+```
 
-1. 未绑定新对话在真正点击第一轮发送按钮前，写入一个当前标签页专用的“首次绑定待完成”标记；
-2. 如果随后通过 SPA 路由进入 `/c/<id>`，继续使用原有 `migrateTemporaryStateToConversation()` 迁移逻辑，并清理该标记；
-3. 如果页面在进入 `/c/<id>` 时发生重新加载，新页面初始化会在读取正式会话状态前检查该标记，并优先把 `sessionStorage` 中仍存在的临时队列迁移到新的 conversation id；这类“首次绑定重载”不会按普通页面重载逻辑把运行中的队列强制暂停，随后会重新取得正式会话运行锁并继续监控当前轮；
-4. 标记只在当前标签页有效，并设有 120 秒有效期，避免很久以前残留的临时状态被错误绑定到其他会话；
-5. 已经具有稳定 `/c/<id>` 的旧对话不走这条逻辑，原有会话隔离、运行锁和队列状态机保持不变。
+v1.4.1 只覆盖了“无 conversation id → 第一个 conversation id”的迁移，因此第一阶段 `/` → `local-chatgpt:*` 可以保留队列；但第二阶段 `local-chatgpt:*` → 正式 UUID 会被旧逻辑当成普通“切换会话”，从新的正式 UUID 下读取空状态，表现为第一轮结束附近面板突然回到“尚未载入任务”。
 
-本修复**不专门处理临时对话**；临时对话没有普通新对话的 `/` → `/c/<id>` 首次 URL 绑定过程，不属于本次修复范围。
+v1.4.2 将整个双阶段过程视为**同一次普通新对话首次绑定**：
+
+1. 在 `/` 页面真正点击第一轮发送按钮前，继续写入当前标签页专用的“首次绑定待完成”标记；
+2. `/` → `local-chatgpt:*` 时，把临时队列迁移到该中间 conversation id，但**保留首次绑定标记**，并把 `local-chatgpt:*` 记为中间会话；
+3. 随后 `local-chatgpt:*` → 正式 UUID 时，直接把当前完整队列状态迁移到正式 UUID，同时迁移运行所有权、清理中间会话的状态/锁，并继续当前轮监控；这一步不会走普通 `loadStateForContext(newId)` 空状态路径；
+4. 若双阶段中的任一步伴随页面重新加载，新页面会利用同一标签页的 pending 标记、临时状态或已记录的 `local-chatgpt:*` 中间状态恢复队列，再继续完成正式 UUID 绑定；
+5. 正式 UUID 绑定完成后立即清理 pending 标记；之后 UUID → 其他 UUID 才重新按真实“用户切换会话”处理；
+6. pending 标记仍只在当前标签页有效，并保留 120 秒有效期，防止陈旧首次绑定状态被错误带到其他会话。
+
+已经具有稳定 `/c/<UUID>` 的旧对话不进入这条双阶段迁移路径，原有会话隔离、运行锁和队列状态机保持不变。
+
+本修复仍**不专门处理临时对话功能本身**；这里的 `local-chatgpt:*` 是普通新对话首次建立过程中实际观察到的中间 conversation id，只用于完成普通新对话的首次绑定。
 
 ## 3. v1.4.0 Composer 结构约定
 
@@ -202,7 +213,144 @@ Buttons: (5) [{…}, {…}, {…}, {…}, {…}]
 
 如果只是判断选择器是否失效，优先使用轻量方法；只有需要检查编辑器内部结构时，再使用完整快照。
 
-## 6. DOM 维护原则
+## 6. 首轮会话路由 / 队列状态诊断方法
+
+当现象是“第一轮可以发送，但随后队列突然清空、切到空面板或绑定到错误会话”时，不要只检查 Composer DOM。应优先观察**首轮期间 ChatGPT 的 history 路由、conversation id、顺序助手内部 state 和存储 key 是否同步变化**。
+
+2026-09-25 的双阶段绑定问题就是通过这种方法定位出来的：自动日志显示 URL 先从 `/` 变成 `/c/local-chatgpt%3A...`，此时队列和锁仍在；之后又通过 `replaceState` 变成正式 `/c/<UUID>`，紧接着 `queue.conversationId` 切换到正式 UUID、运行锁丢失，说明真正的问题发生在第二次 conversation id 替换，而不是第一轮生成完成判断。
+
+### 一次执行、自动追踪首轮变化
+
+在普通新对话 `/` 页面、尚未点击顺序助手“开始”之前，在 DevTools Console 中执行一次：
+
+```js
+(() => {
+  const PREFIX = '[STQ-FIRST-TURN]';
+
+  const getSnapshot = (reason) => {
+    let queue = null;
+    try {
+      queue = window.__cgSequentialTaskQueue?.getState?.() ?? null;
+    } catch (error) {
+      queue = { error: String(error) };
+    }
+
+    const state = queue?.state ?? null;
+    const result = {
+      time: new Date().toISOString(),
+      reason,
+      url: location.href,
+      conversationId: queue?.conversationId ?? null,
+      lockOwnedByThisTab: queue?.lockOwnedByThisTab ?? null,
+      mode: state?.mode ?? null,
+      taskCount: state?.tasks?.length ?? null,
+      activeIndex: state?.activeIndex ?? null,
+      nextIndex: state?.nextIndex ?? null,
+      sessionKeys: Object.keys(sessionStorage)
+        .filter((key) => key.includes('chatgptSequentialTaskQueue')),
+      localKeys: Object.keys(localStorage)
+        .filter((key) => key.includes('chatgptSequentialTaskQueue')),
+    };
+
+    console.log(PREFIX, JSON.stringify(result, null, 2));
+  };
+
+  const wrapHistory = (methodName) => {
+    const original = history[methodName];
+    if (typeof original !== 'function') return;
+
+    history[methodName] = function (...args) {
+      const before = location.href;
+      const result = original.apply(this, args);
+      queueMicrotask(() => {
+        console.log(PREFIX, JSON.stringify({
+          time: new Date().toISOString(),
+          reason: methodName,
+          before,
+          after: location.href,
+          target: args[2] ?? null,
+        }, null, 2));
+        getSnapshot(`after ${methodName}`);
+      });
+      return result;
+    };
+  };
+
+  wrapHistory('pushState');
+  wrapHistory('replaceState');
+
+  window.addEventListener('popstate', () => {
+    getSnapshot('after popstate');
+  });
+
+  let lastSummary = '';
+  const timer = setInterval(() => {
+    let data = null;
+    try {
+      data = window.__cgSequentialTaskQueue?.getState?.() ?? null;
+    } catch (_) {
+      data = null;
+    }
+
+    const summary = JSON.stringify({
+      url: location.href,
+      conversationId: data?.conversationId ?? null,
+      lockOwnedByThisTab: data?.lockOwnedByThisTab ?? null,
+      mode: data?.state?.mode ?? null,
+      taskCount: data?.state?.tasks?.length ?? null,
+      activeIndex: data?.state?.activeIndex ?? null,
+      nextIndex: data?.state?.nextIndex ?? null,
+    });
+
+    if (summary !== lastSummary) {
+      lastSummary = summary;
+      getSnapshot('state changed');
+    }
+  }, 250);
+
+  window.__stqFirstTurnDebugStop = () => {
+    clearInterval(timer);
+    console.log(PREFIX, 'debug stopped');
+  };
+
+  getSnapshot('debug started');
+})();
+```
+
+然后只需要正常执行一次多轮队列，等问题出现或第二轮成功开始后，把所有带有 `[STQ-FIRST-TURN]` 的日志复制出来。测试结束可执行：
+
+```js
+window.__stqFirstTurnDebugStop?.();
+```
+
+这个版本使用 `JSON.stringify` 输出关键状态，**不需要手动展开 Console 对象**。如果使用普通 `console.log({ ... })` 版本，复制前必须展开对象，否则复制出来可能只有 `{…}`，会丢掉关键字段。
+
+### 重点看什么
+
+优先按时间顺序检查：
+
+1. `url` 是否只变化一次，还是存在 `/` → `local-chatgpt:*` → 正式 UUID 等多阶段路由；
+2. 每次 `pushState` / `replaceState` 后，`queue.conversationId` 是否与 URL 中的 conversation id 同步；
+3. `taskCount` 是否仍保持原队列数量，还是在某次路由后突然变成 `0`；
+4. `lockOwnedByThisTab` 是否在 conversation id 替换后从 `true` 变成 `false`；
+5. `sessionKeys` / `localKeys` 中状态和运行锁究竟留在临时 key、中间 `local-chatgpt:*` key，还是已经写入正式 UUID key。
+
+判读原则：
+
+```text
+URL / conversationId 变化后 taskCount 立刻归零
+→ 优先查会话状态迁移 / loadStateForContext，而不是 Composer 或完成判断。
+
+队列仍在，但 lockOwnedByThisTab 丢失
+→ 优先查运行锁是否随 conversation id 正确迁移。
+
+conversationId 不变，但停止按钮始终识别不到
+→ 再回到 Composer 三状态 DOM 诊断。
+```
+
+该方法用于定位 ChatGPT 首轮建会话流程变化；未来若 OpenAI 再次调整客户端路由，不应预设只存在一次 URL 变化，应先用自动追踪日志确认真实顺序后再修改迁移逻辑。
+
+## 7. DOM 维护原则
 
 - 优先使用 `data-chatgpt-composer`、`data-composer-markdown`、`role`、`type`、`aria-label` 等语义属性。
 - 不依赖 `ComposerLayoutRoot-XCKS7O`、`RichTextInput-j_tVa5` 等构建生成 class，它们可能随部署改变。
@@ -211,7 +359,7 @@ Buttons: (5) [{…}, {…}, {…}, {…}, {…}]
 - 如果未来按钮文案或结构变化，先用上面的三状态 Console 方法重新采集实际 DOM，再修改选择器。
 - 诊断内容可能包含当前 URL、conversation id 和输入框正文；对外分享前应检查并按需要删去敏感或不希望公开的内容。
 
-## 7. 修改后的基本回归测试
+## 8. 修改后的基本回归测试
 
 至少验证：
 
@@ -221,6 +369,7 @@ Buttons: (5) [{…}, {…}, {…}, {…}, {…}]
 4. 回答结束、停止按钮消失后，不会立即发送下一轮，而是先满足 3 秒稳定窗口和额外等待时间。
 5. 多轮任务能够连续执行。
 6. 用户手动编辑 Composer 时队列仍会暂停，避免覆盖输入。
-7. 在普通新对话 `/` 中启动多轮队列，第一轮发送后 URL 变成 `/c/<id>` 时，队列和进度继续保留并执行第二轮。
-8. 即使首次 `/` → `/c/<id>` 伴随页面重新加载，临时队列也会迁移到正式 conversation id，而不是回到空面板。
-9. 已有 `/c/<id>` 的旧对话、切换会话、刷新页面、多标签运行锁和现有队列状态不受首次绑定修复影响。
+7. 在普通新对话 `/` 中启动多轮队列，确认 `/` → `local-chatgpt:*` 后任务数、当前轮和运行锁仍保留。
+8. 当 `local-chatgpt:*` 再变成正式 `/c/<UUID>` 时，队列状态继续迁移到正式 UUID，第一轮完成后能够继续执行第二轮，而不是回到空面板。
+9. 若 `/` → `local-chatgpt:*` 或 `local-chatgpt:*` → 正式 UUID 的任一步伴随页面重新加载，队列仍能从临时/中间状态恢复并完成正式绑定。
+10. 已有稳定 `/c/<UUID>` 的旧对话、真实切换会话、刷新页面、多标签运行锁和现有队列状态不受首次绑定修复影响。
