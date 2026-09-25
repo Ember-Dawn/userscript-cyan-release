@@ -8,7 +8,6 @@
 |---|---|---|
 | ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。参见[详细说明](./chatgpt-folders.md)。 |
 | ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度；支持后台标签页继续推进。 |
-| ChatGPT 输入框增强助手 | `chatgpt-composer-enhancer.user.js` | 增强 ChatGPT 输入框；当前 Raw Paste Mode 保持短文本粘贴的 Markdown 为原始文本，并保留长文本附件及图片/文件粘贴的原生行为。参见[详细说明](./chatgpt-composer-enhancer.md)。 |
 | ChatGPT 界面视觉增强助手 | `chatgpt-visual-enhancer.user.js` | 柔化白天模式；仅放宽对话正文并保留 Composer 默认宽度；高亮助手文件下载入口；临时对话在 Composer 背景中混入 10% `#0891B2` 青色提示。参见[详细说明](./chatgpt-visual-enhancer.md)。 |
 | ChatGPT 长对话优化助手 | `chatgpt-long-chat-optimizer.user.js` | 通过原生 `num_turns` 控制最近 N 轮历史窗口，并以低速分页、Tampermonkey 持久缓存和断点续跑统计完整总轮数。参见[详细说明](./chatgpt-long-chat-optimizer.md)。 |
 
@@ -28,6 +27,15 @@ ChatGPT GitHub 自动允许助手已停止使用和维护，最终版本归档�
 
 ```text
 archive/userscripts/chatgpt-auto-allow-github-v0.4.0.user.js
+```
+
+ChatGPT 输入框增强助手已停止使用和维护。Raw Paste Mode 最终版 v1.0.4 与后续“粘贴后立即 Enter”缓冲版 v2.0.0 均保留在归档：
+
+```text
+archive/userscripts/chatgpt-composer-enhancer-v1.0.4.user.js
+archive/userscripts/chatgpt-composer-enhancer-v1.0.4.md
+archive/userscripts/chatgpt-composer-enhancer-v2.0.0.user.js
+archive/userscripts/chatgpt-composer-enhancer-v2.0.0.md
 ```
 
 旧版 `chatgpt-temporary-chat-highlighter.user.js` 已由“ChatGPT 界面视觉增强助手”取代，最终版本归档为：
