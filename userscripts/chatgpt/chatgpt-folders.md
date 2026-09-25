@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.6.6  
+> 当前说明版本：v0.7.0  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -23,12 +23,12 @@
 
 1. `state` 是当前 ChatGPT 账号的内存单一数据源。
 2. 本地 profile 按 ChatGPT 账号隔离，不再自动迁移旧 v1/v2 单 profile。
-3. `#cgfm-root` 是脚本唯一主 UI 根节点，必须挂在 ChatGPT 原生历史侧边栏内部。
+3. `#cgfm-root` 是脚本唯一主 UI 根节点，必须挂在 ChatGPT 原生聊天列表所在侧边栏内部。
 4. 首次挂载必须避开 React hydration；`document-idle` 不代表 hydration 已完成。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 sidebar/document，不给最近聊天逐项注入常驻 UI。
-7. 最近聊天拖入文件夹继续使用浏览器原生 drag/drop，并尽量不干扰 ChatGPT Projects。
-8. 最近聊天三点菜单只在用户实际点击后短暂观察 Radix 菜单。
+7. 原生聊天拖入文件夹继续使用浏览器原生 drag/drop；新版优先识别 `data-sidebar-chatgpt-conversation-key` conversation row，并尽量不干扰 ChatGPT Projects。
+8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
 10. WebDAV 使用 schema 3、基准快照、对象级 operation log、墓碑和有限 412 重试实现多端合并。
 11. WebDAV 凭据仅保存在本地；远端/导出数据不得包含密码、token、cookie。
@@ -37,7 +37,7 @@
 ### 1.1 系统数据流
 
 ```text
-ChatGPT 原生 sidebar / Recent / menu
+ChatGPT 原生 sidebar / conversation list / menu
           │
           ├─ 原生 drag/drop / 三点菜单入口
           │
@@ -100,9 +100,9 @@ WebDAV 请求优先使用 `GM_xmlhttpRequest`，并兼容部分脚本管理器�
 4. UI 样式与 icon；
 5. sidebar host 探测、首次 mount、remount 与文件夹树 render；
 6. 文件夹创建、重命名、颜色、删除与折叠；
-7. 原生聊天 drag/drop；
+7. 原生 conversation row / legacy anchor 的聊天 drag/drop；
 8. 文件夹拖拽移动；
-9. ChatGPT 最近聊天三点菜单“移至文件夹”；
+9. ChatGPT 原生聊天三点菜单“移至文件夹”；
 10. 聊天标题提取、清洗与刷新；
 11. 导入、导出与远程 payload；
 12. sidebar width、设置弹窗和同步状态 UI；
@@ -216,21 +216,18 @@ initialMountCandidateSince
 
 ### 7.1 目标挂载位置
 
-目标是 ChatGPT 原生展开历史侧边栏内部，通常在“最近”区域之前：
+目标是 ChatGPT 原生聊天列表所在侧边栏内部，并把脚本根节点作为原生 conversation list 的相邻节点插入。新版主路径为：
 
 ```text
-#stage-slideover-sidebar
-  ├─ #stage-sidebar-tiny-bar
-  └─ 展开历史区域
-      └─ nav[aria-label="历史聊天记录"]
-          ├─ GPT section
-          ├─ Projects section
-          ├─ #cgfm-root        ← 脚本
-          ├─ Recent section
-          └─ account footer
+#app-shell-sidebar / 原生 sidebar host
+  ├─ #cgfm-root        ← 脚本
+  └─ [role="list"]
+      └─ [data-sidebar-chatgpt-conversation-key="chatgpt:conversation:<id>"][role="listitem"]
+          ├─ [role="button"][aria-label="<聊天标题>"]
+          └─ button[aria-label="聊天操作"][aria-haspopup="menu"]
 ```
 
-不要把根节点挂到 `#stage-slideover-sidebar` 过外层的位置，否则官方 sidebar 收起时脚本可能残留或继续占宽度。
+旧版 `#stage-slideover-sidebar` / `#history` / `/c/<id>` anchor 仍作为兼容回退，但不再作为新版主路径。不要把根节点挂到 sidebar 过外层的位置，否则官方布局切换时脚本可能残留或继续占宽度。
 
 ### 7.2 原生宿主探测
 
@@ -238,9 +235,11 @@ initialMountCandidateSince
 
 关键不变量：
 
-- 脚本自身生成的 `.cgfm-chat-title` `/c/` 链接不能作为 Recent/history fallback；
+- 新版优先使用 `[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"][role="listitem"]` 识别原生聊天；
+- conversation id 直接从 `data-sidebar-chatgpt-conversation-key` 提取，标题优先读原生 `role="button"` 的 `aria-label`；
+- 脚本自身生成的 `.cgfm-chat-title` `/c/` 链接不能作为 legacy fallback；
 - `findNativeChatLink()` 必须排除 `rootEl` 内链接；
-- fallback 应尽量限制在 `#stage-slideover-sidebar` / 原生 nav 语义范围；
+- 旧版 fallback 应尽量限制在原生 sidebar/nav 语义范围；
 - 若找不到可信宿主，宁可本轮不挂载，也不要猜一个脚本内部容器。
 
 ### 7.3 防止自引用挂载
@@ -392,28 +391,30 @@ payload：
 原生 drag/drop 识别路径：
 
 1. pointerdown / mousedown 预缓存；
-2. dragstart 从 `event.composedPath()` 找 `/c/` anchor；
-3. 不清空 ChatGPT 原生 `dataTransfer`；
-4. 追加脚本 MIME；
-5. drop 优先读脚本缓存，再尝试 URI/plain/html；
-6. dragend 只做有限兜底。
+2. 新版优先从 `event.composedPath()` 找 conversation row；旧版 `/c/` anchor 仅作回退；
+3. conversation row 在用户实际按下时才临时启用 `draggable=true`，拖拽结束后恢复原属性；
+4. 不清空 ChatGPT 原生 `dataTransfer`；
+5. 追加脚本 MIME；
+6. drop 优先读脚本缓存，再尝试 URI/plain/html；
+7. dragend 只做有限兜底。
 
 所有 `composedPath()` 项在传给 `Node.contains()` 前必须确认是 `Node`，避免 Firefox 类型错误。
 
-某些 Recent 链接为 `draggable="false"` 时，只在用户按下该具体聊天时临时切换为 `true`，并在 dragend/mouseup/click/timeout 后恢复；禁止扫描或永久修改整个列表。
+新版 conversation row 与旧版 `draggable="false"` anchor 都只在用户按下该具体聊天时临时切换为 `draggable=true`，并在 dragend/mouseup/click/timeout 后恢复；禁止扫描或永久修改整个列表。
 
 拖入聊天只改变聊天归属，不主动修改目标文件夹的 `collapsed`：目标原本折叠则继续折叠，原本展开则继续展开。通过原生三点菜单“移至文件夹”添加聊天时也复用同一 `addChatToFolder()` 语义。
 
 ## 10. ChatGPT 原生三点菜单集成
 
-用户点击 Recent 聊天的 options trigger 后：
+用户点击原生聊天的“聊天操作”按钮后：
 
-1. 记录当前 conversation；
-2. 短暂启动 MutationObserver 捕捉 Radix `role="menu"`；
-3. 找到可见聊天菜单后注入“移至文件夹”；
-4. 悬停/focus 时显示脚本自己的多级文件夹浮层；
-5. 选择文件夹后添加聊天引用；
-6. 捕捉成功或约 1.8 秒超时后立即 disconnect。
+1. 新版从所在 conversation row 记录当前 conversation；旧版 `data-conversation-options-trigger` 仍作回退；
+2. 短暂启动 MutationObserver 捕捉 Radix `[role="menu"][data-radix-menu-content]`；
+3. 优先通过菜单的 `aria-labelledby` 与触发按钮 id 绑定，无法绑定时再用“分享 / 重命名 / 归档 / 删除”等 `role="menuitem"` 文案识别聊天菜单；
+4. 复用一个原生 `role="menuitem"` 的 class 作为“移至文件夹”入口样式基底；
+5. 悬停/focus 时显示脚本自己的多级文件夹浮层；
+6. 选择文件夹后添加聊天引用；
+7. 捕捉成功或约 1.8 秒超时后立即 disconnect。
 
 约束：
 
@@ -435,7 +436,7 @@ payload：
 
 点击脚本文件夹中的聊天：
 
-1. 找同 conversation 的 ChatGPT 原生 `/c/<id>` anchor；
+1. 新版先找同 conversation 的原生 conversation row，并点击其主 `role="button"`；旧版再回退 `/c/<id>` anchor；
 2. 优先触发原生 click，让 ChatGPT router 自己处理；
 3. 找不到时才 `location.assign()`；
 4. 不强行 `history.pushState()`。
@@ -492,7 +493,7 @@ cgfm.v2.revision
 - user name
 - `session.account.id` / account id
 
-账号稳定键优先 accountId，其次 email。
+账号稳定键优先 accountId，其次 email。`#client-bootstrap` 仍是首选来源；仅当 bootstrap 不可用时，fallback 才从旧 `[data-testid="accounts-profile-button"]` 或新版 `button[aria-label*="个人资料菜单"]` / 英文 profile-menu 按钮提取标签与头像信息。
 
 账号切换要求：
 
@@ -568,7 +569,7 @@ user_at_example_com-5a54db9a.json
 ```json
 {
   "app": "ChatGPT文件夹",
-  "version": "0.6.6",
+  "version": "0.7.0",
   "schema": 3,
   "exportedAt": "ISO time",
   "account": {
@@ -796,8 +797,8 @@ ETag 只在事务内使用，不作为跨会话长期写凭据。
 
 1. 长期 `MutationObserver` 观察 `document.body` 或整个 sidebar；
 2. 长期 `mousemove` 热路径；
-3. 给 Recent 每一条聊天注入常驻 button/icon/wrapper；
-4. hover Recent 时扫描历史列表；
+3. 给原生 conversation list 每一条聊天注入常驻 button/icon/wrapper；
+4. hover 原生 conversation row 时扫描完整聊天列表；
 5. 每次 render 重新 sort 整棵树；
 6. 折叠/展开触发 WebDAV dirty；
 7. 页面隐藏时继续高频 WebDAV GET；
@@ -810,7 +811,7 @@ ETag 只在事务内使用，不作为跨会话长期写凭据。
 14. 在日志/诊断中输出密码、Authorization、token、cookie、完整 client-bootstrap；
 15. 让 metadata-only cross-tab revision 覆盖本标签未保存业务变化。
 
-允许的 observer：仅用户主动打开 Recent 三点菜单后的短时 Radix 捕捉，成功或超时立即断开。
+允许的 observer：仅用户主动打开原生聊天三点菜单后的短时 Radix 捕捉，成功或超时立即断开。
 
 ## 26. 故障诊断
 
@@ -891,8 +892,8 @@ node --check userscripts/chatgpt/chatgpt-folders.user.js
 4. 创建、重命名、改色、删除、折叠文件夹正常；
 5. Recent 拖入文件夹正常，拖到 Projects 尽量不受影响；
 6. 文件夹移动不会形成循环，且拖拽移动不会无故改变当前选中高亮或目标文件夹折叠状态；
-7. Recent 三点菜单“移至文件夹”正常且 observer 会停止；
-8. 文件夹聊天点击优先走原生 SPA 链接；
+7. 原生聊天三点菜单“移至文件夹”正常且 observer 会停止；
+8. 文件夹聊天点击优先走原生 conversation button / SPA 导航；
 9. 文件夹树无内部滚动条；
 10. sidebar width 收起时释放；
 11. 多标签真实业务更新能同步；
@@ -938,7 +939,7 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 3. operation log 会增加远端 JSON 大小，目前通过条数上限控制；
 4. 极端跨设备父子移动冲突经过 normalize 后结果稳定，但未必符合所有主观意图；
 5. 运行旧版本脚本的设备可能不理解新同步语义，应尽量保证活跃设备版本一致；
-6. ChatGPT DOM 是外部依赖，`#history`、sidebar/nav/menu 结构未来可能变化；修改 selector 时必须继续保留 native-only 和 hydration-safe 两条原则。
+6. ChatGPT DOM 是外部依赖；当前新版依赖 `data-sidebar-chatgpt-conversation-key`、`role=listitem`、聊天 `role=button` 和 Radix `role=menu/menuitem`，旧 `#history` / `/c/` anchor 仅作兼容回退；修改 selector 时必须继续保留 native-only 和 hydration-safe 两条原则。
 
 ## 30. 历史决策与版本演进
 
@@ -1007,6 +1008,16 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - `addChatToFolder()` 不再为了接收聊天而强制展开目标文件夹；
 - 拖拽只改变层级或聊天归属，目标文件夹原本折叠则保持折叠、原本展开则保持展开；
 - 主动“新建子文件夹”仍保留自动展开父文件夹的行为，确保新建内容立即可见。
+
+### v0.7.0：适配新版 ChatGPT sidebar 与聊天菜单
+
+- 原生聊天主识别从旧 `#history` / `/c/<id>` anchor 迁移到 `data-sidebar-chatgpt-conversation-key="chatgpt:conversation:<id>"` + `role="listitem"`；
+- conversation id 直接从 row key 提取，标题优先读取 row 内主 `role="button"` 的 `aria-label`；
+- 聊天拖拽改为 row/anchor 双路径，仅在实际拖拽前临时设置 `draggable=true`；
+- 三点菜单适配新版 `button[aria-label="聊天操作"][aria-haspopup="menu"]` 与 Radix `role="menu"` / `role="menuitem"`；
+- 账号 fallback 增加新版“打开个人资料菜单”按钮，`#client-bootstrap` 仍保持首选；
+- 普通聊天 URL 继续使用 `/c/<conversation-id>`，本地 profile、WebDAV schema 和同步数据模型不变；
+- 旧 `#history`、旧 `/c/` anchor 与旧 menu trigger 仅保留为兼容回退。
 
 ## 31. 不建议重新引入的方案
 

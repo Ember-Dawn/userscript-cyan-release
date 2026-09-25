@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.6.6
-// @description  ChatGPT 普通聊天文件夹管理：v0.6.6；拖拽聊天或文件夹时保持目标文件夹原有折叠状态，并保留选中状态语义与多端同步。
+// @version      0.7.0
+// @description  ChatGPT 普通聊天文件夹管理：v0.7.0；适配新版侧边栏 conversation row 与 Radix 聊天菜单，并保留拖拽、账号隔离和多端同步。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -25,10 +25,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
 - 作用：在 ChatGPT 原生侧边栏中增加本地“文件夹”索引；只保存聊天引用、文件夹结构和非敏感设置，不修改 ChatGPT 后端，也不保存完整聊天正文。
 - 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
-- DOM：#cgfm-root 必须挂在 ChatGPT 原生历史侧边栏中，并与脚本自身 DOM 严格隔离。宿主探测不得把 #cgfm-root 内的 /c/ 链接当作原生聊天，也不得把 root 挂到自身或其后代。
+- DOM：#cgfm-root 必须挂在 ChatGPT 原生聊天列表所在侧边栏中，并与脚本自身 DOM 严格隔离。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
 - Hydration：document-idle 不代表 React hydration 已结束。首次挂载必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS；稳定前不要注入脚本样式、宽度覆盖或根节点。首次成功后，React 重建/休眠恢复可继续快速 remount。
 - 性能：禁止长期观察 document/sidebar 的 MutationObserver、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。仅原生三点菜单允许短时 observer，捕捉成功或超时立即断开。
-- 交互：聊天拖拽优先复用浏览器原生 drag/drop，不破坏 ChatGPT Projects；聊天跳转优先复用原生 /c/ 链接，不强行 history.pushState。
+- 交互：聊天拖拽继续使用浏览器原生 drag/drop；新版 conversation row 在按下时仅临时启用 draggable。聊天跳转优先点击原生 conversation button，找不到时才回退 /c/ URL。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
 */
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.6.6';
+  const VERSION = '0.7.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -49,6 +49,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const CURRENT_PROFILE_ID = 'local_current';
   const ROOT_ID = 'root';
   const DRAG_MIME = 'application/x-chatgpt-folder-manager';
+  const SIDEBAR_CONVERSATION_PREFIX = 'chatgpt:conversation:';
+  const NATIVE_CHAT_ROW_SELECTOR = '[data-sidebar-chatgpt-conversation-key^="' + SIDEBAR_CONVERSATION_PREFIX + '"][role="listitem"]';
   const DEFAULT_FOLDER_COLOR = '#6b7280';
   const DEFAULT_DEBOUNCE_MS = 12000;
   const DEFAULT_INTERVAL_MS = 15 * 60 * 1000; // legacy setting fallback
@@ -817,7 +819,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const boot = getBootstrapAccountInfo();
     if (boot && boot.id) return boot;
 
-    const buttons = Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"]'));
+    const buttons = Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"], button[aria-label*="个人资料菜单"], button[aria-label*="profile menu" i]'));
     if (!buttons.length) return null;
     let best = null;
     for (const btn of buttons) {
@@ -1103,6 +1105,59 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   // 5. Mounting and folder tree rendering
   // ---------------------------------------------------------------------------
 
+  function findNativeChatRow(scope) {
+    const searchRoot = scope && scope.querySelector ? scope : document;
+    const row = searchRoot.querySelector(NATIVE_CHAT_ROW_SELECTOR);
+    return row && !(rootEl && rootEl.contains(row)) ? row : null;
+  }
+
+  function getConversationIdFromRow(row) {
+    if (!(row instanceof Element)) return '';
+    const key = cleanText(row.getAttribute('data-sidebar-chatgpt-conversation-key') || '');
+    return key.startsWith(SIDEBAR_CONVERSATION_PREFIX)
+      ? key.slice(SIDEBAR_CONVERSATION_PREFIX.length)
+      : '';
+  }
+
+  function getNativeChatButton(row) {
+    if (!(row instanceof Element)) return null;
+    return row.querySelector('[role="button"][aria-label]:not([aria-haspopup="menu"])') || null;
+  }
+
+  function extractTitleFromRow(row) {
+    if (!(row instanceof Element)) return '';
+    const button = getNativeChatButton(row);
+    const aria = cleanConversationTitle(button?.getAttribute('aria-label') || '');
+    if (aria) return aria;
+    const clone = row.cloneNode(true);
+    clone.querySelectorAll('button, svg, [aria-hidden="true"]').forEach(node => node.remove());
+    return cleanConversationTitle(clone.textContent || '');
+  }
+
+  function extractChatFromRow(row) {
+    const id = getConversationIdFromRow(row);
+    if (!id) return null;
+    return {
+      kind: 'chat',
+      id,
+      title: extractTitleFromRow(row) || 'Untitled chat',
+      url: '/c/' + id
+    };
+  }
+
+  function findNativeConversationRowById(id) {
+    if (!id) return null;
+    const key = SIDEBAR_CONVERSATION_PREFIX + id;
+    try {
+      const rows = document.querySelectorAll(NATIVE_CHAT_ROW_SELECTOR);
+      for (const row of rows) {
+        if (rootEl && rootEl.contains(row)) continue;
+        if (row.getAttribute('data-sidebar-chatgpt-conversation-key') === key) return row;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   function findNativeChatLink(scope) {
     const searchRoot = scope && scope.querySelector ? scope : document;
     const selector = 'a[href^="/c/"]:not(.cgfm-chat-title), a[href*="/c/"]:not(.cgfm-chat-title)';
@@ -1111,11 +1166,15 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function findHistorySection() {
+    const nativeRow = findNativeChatRow(document);
+    if (nativeRow) {
+      const list = nativeRow.closest('[role="list"]');
+      if (list) return list;
+    }
+
     const history = document.getElementById('history');
-    // In current ChatGPT markup, #history is inside the whole "最近" section.
-    // Returning the section itself lets us insert our root as a sibling before Recent,
-    // instead of mutating inside React's history list section.
     if (history) return (history.parentElement && history.parentElement !== document.body) ? history.parentElement : history;
+
     const firstChat = findNativeChatLink(document.getElementById('stage-slideover-sidebar') || document);
     if (!firstChat) return null;
     let node = firstChat;
@@ -1126,10 +1185,22 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function findSidebarParent() {
+    const nativeRow = findNativeChatRow(document);
+    if (nativeRow) {
+      return nativeRow.closest('#app-shell-sidebar, #stage-slideover-sidebar, nav, aside, [id*="sidebar"]')
+        || nativeRow.closest('[role="list"]')?.parentElement
+        || nativeRow.parentElement;
+    }
+
     const history = document.getElementById('history');
     if (history) return history.closest('nav[aria-label], nav, aside, [id*="sidebar"]') || history.parentElement;
+
+    const appShellSidebar = document.getElementById('app-shell-sidebar');
+    if (appShellSidebar) return appShellSidebar;
+
     const nav = document.querySelector('#stage-slideover-sidebar nav, nav[aria-label*="Chat"], nav[aria-label*="历史"], nav[aria-label*="sidebar"], aside nav');
     if (nav) return nav;
+
     const link = findNativeChatLink(document.getElementById('stage-slideover-sidebar') || document);
     return link ? (link.closest('nav, aside, [id*="sidebar"]') || link.parentElement) : null;
   }
@@ -1685,23 +1756,22 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function maybeEnableTransientNativeChatDrag(event) {
     const target = event && event.target;
     if (!(target instanceof Element)) return null;
-    // Do not alter the trailing three-dot menu click path; that already has its own menu-based add flow.
-    if (target.closest('button,input,textarea,select,[contenteditable="true"],[data-trailing-button],[data-conversation-options-trigger]')) return null;
-    const anchor = target.closest('#history a[href*="/c/"]');
-    if (!anchor || (rootEl && rootEl.contains(anchor))) return null;
-    const chat = extractChatFromAnchor(anchor);
+    if (target.closest('button[aria-haspopup="menu"],input,textarea,select,[contenteditable="true"],[data-trailing-button],[data-conversation-options-trigger]')) return null;
+
+    const row = target.closest(NATIVE_CHAT_ROW_SELECTOR);
+    const anchor = row ? null : target.closest('a[href*="/c/"]');
+    const source = row || anchor;
+    if (!source || (rootEl && rootEl.contains(source))) return null;
+
+    const chat = row ? extractChatFromRow(row) : extractChatFromAnchor(anchor);
     if (!chat) return null;
 
-    // Some GPT-generated conversations in ChatGPT's Recent list are rendered as
-    // draggable="false" even though they are normal /c/<conversation-id> links.
-    // To keep the native Firefox drag/drop route, temporarily enable native dragging
-    // only for the pressed row, then restore it on dragend/mouseup/click/timeout.
-    if (anchor.getAttribute('draggable') === 'false') {
+    if (source.getAttribute('draggable') !== 'true') {
       restoreTransientNativeChatDrag();
-      transientDragAnchor = anchor;
-      transientDragOriginalDraggable = anchor.getAttribute('draggable');
-      anchor.setAttribute('draggable', 'true');
-      anchor.setAttribute('data-cgfm-temp-draggable', '1');
+      transientDragAnchor = source;
+      transientDragOriginalDraggable = source.getAttribute('draggable');
+      source.setAttribute('draggable', 'true');
+      source.setAttribute('data-cgfm-temp-draggable', '1');
       transientDragRestoreTimer = setTimeout(restoreTransientNativeChatDrag, 2500);
     }
     return chat;
@@ -1712,13 +1782,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       clearTimeout(transientDragRestoreTimer);
       transientDragRestoreTimer = null;
     }
-    const anchor = transientDragAnchor;
-    if (anchor) {
+    const source = transientDragAnchor;
+    if (source) {
       try {
-        if (document.contains(anchor) && anchor.getAttribute('data-cgfm-temp-draggable') === '1') {
-          if (transientDragOriginalDraggable === null) anchor.removeAttribute('draggable');
-          else anchor.setAttribute('draggable', transientDragOriginalDraggable);
-          anchor.removeAttribute('data-cgfm-temp-draggable');
+        if (document.contains(source) && source.getAttribute('data-cgfm-temp-draggable') === '1') {
+          if (transientDragOriginalDraggable === null) source.removeAttribute('draggable');
+          else source.setAttribute('draggable', transientDragOriginalDraggable);
+          source.removeAttribute('data-cgfm-temp-draggable');
         }
       } catch (_) {}
     }
@@ -1729,7 +1799,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function onNativeHistoryDragStart(event) {
     if (!event || !(event.target instanceof Element)) return;
     if (rootEl && event.target instanceof Node && rootEl.contains(event.target)) return;
-    if (!event.target.closest('a[href*="/c/"]') && !pointerPayload) return;
+
+    const nativeSource = event.target.closest(NATIVE_CHAT_ROW_SELECTOR) || event.target.closest('a[href*="/c/"]');
+    if (!nativeSource && !pointerPayload) return;
+
     const chat = extractChatFromEvent(event) || pointerPayload;
     if (!chat) { dragPayload = null; dragStartPayload = null; return; }
     chat.kind = 'chat';
@@ -1738,7 +1811,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     dropCommitted = false;
     try {
       if (event.dataTransfer) {
-        // Add our own payload without clearing ChatGPT's original drag data, so native Project drag remains intact.
         event.dataTransfer.setData(DRAG_MIME, JSON.stringify(chat));
         event.dataTransfer.setData('text/uri-list', location.origin + chat.url);
         event.dataTransfer.setData('text/plain', location.origin + chat.url);
@@ -1846,34 +1918,51 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return null;
   }
 
-  function extractChatFromEvent(event) {
-    const anchor = findChatAnchorFromEvent(event);
+  function extractChatFromNativeElement(element) {
+    if (!(element instanceof Element)) return null;
+    if (element.matches(NATIVE_CHAT_ROW_SELECTOR)) return extractChatFromRow(element);
+
+    const row = element.closest(NATIVE_CHAT_ROW_SELECTOR);
+    if (row) return extractChatFromRow(row);
+
+    const anchor = element.matches('a[href*="/c/"]') ? element : element.closest('a[href*="/c/"]');
     return anchor ? extractChatFromAnchor(anchor) : null;
   }
 
-  function findChatAnchorFromEvent(event) {
+  function extractChatFromEvent(event) {
+    const source = findNativeChatElementFromEvent(event);
+    return source ? extractChatFromNativeElement(source) : null;
+  }
+
+  function findNativeChatElementFromEvent(event) {
     if (!event) return null;
     const isElement = node => node && node.nodeType === 1;
-    const isChatAnchor = node => isElement(node) && node.matches && node.matches('a[href*="/c/"]');
     const insideRoot = node => {
       try { return !!(rootEl && node instanceof Node && rootEl.contains(node)); }
       catch (_) { return false; }
     };
+
     const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
     for (const node of path) {
-      // Firefox composedPath() contains Window/Document objects. Never pass them into Node.contains().
       if (!(node instanceof Node)) continue;
       if (insideRoot(node)) return null;
-      if (isChatAnchor(node)) return node;
-      if (isElement(node) && node.closest) {
-        const a = node.closest('a[href*="/c/"]');
-        if (a && !insideRoot(a)) return a;
+      if (!isElement(node)) continue;
+      if (node.matches?.(NATIVE_CHAT_ROW_SELECTOR)) return node;
+      if (node.matches?.('a[href*="/c/"]')) return node;
+      if (node.closest) {
+        const row = node.closest(NATIVE_CHAT_ROW_SELECTOR);
+        if (row && !insideRoot(row)) return row;
+        const anchor = node.closest('a[href*="/c/"]');
+        if (anchor && !insideRoot(anchor)) return anchor;
       }
     }
+
     const target = event.target;
     if (target instanceof Element && target.closest) {
-      const a = target.closest('a[href*="/c/"]');
-      if (a && !insideRoot(a)) return a;
+      const row = target.closest(NATIVE_CHAT_ROW_SELECTOR);
+      if (row && !insideRoot(row)) return row;
+      const anchor = target.closest('a[href*="/c/"]');
+      if (anchor && !insideRoot(anchor)) return anchor;
     }
     return null;
   }
@@ -1881,6 +1970,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function extractChatFromText(text) {
     const id = extractConversationId(text);
     if (!id) return null;
+
+    const row = findNativeConversationRowById(id);
+    if (row) return extractChatFromRow(row);
+
     let title = '';
     try {
       const anchor = document.querySelector('a[href*="/c/' + cssEscape(id) + '"]');
@@ -1978,24 +2071,46 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function rememberNativeConversationMenuTarget(event) {
     const target = event && event.target;
     if (!(target instanceof Element)) return false;
-    const button = target.closest('[data-conversation-options-trigger]');
-    if (!button) return false;
+
+    const button = target.closest('button[aria-haspopup="menu"], [data-conversation-options-trigger]');
+    if (!button || !isNativeConversationOptionsButton(button)) return false;
     if (rootEl && rootEl.contains(button)) return false;
+
     const chat = extractChatFromOptionsButton(button);
     if (!chat) return false;
+
     chat.kind = 'chat';
     nativeMenuChat = chat;
     nativeMenuTriggerId = button.id || '';
     return true;
   }
 
+  function isNativeConversationOptionsButton(button) {
+    if (!(button instanceof Element)) return false;
+    if (button.hasAttribute('data-conversation-options-trigger')) return true;
+    if (!button.closest(NATIVE_CHAT_ROW_SELECTOR)) return false;
+
+    const aria = cleanText(button.getAttribute('aria-label') || '');
+    return aria === '聊天操作'
+      || /(?:chat|conversation).*options?/i.test(aria)
+      || /options?.*(?:chat|conversation)/i.test(aria);
+  }
+
   function extractChatFromOptionsButton(button) {
     if (!button) return null;
+
+    const row = button.closest(NATIVE_CHAT_ROW_SELECTOR);
+    if (row) {
+      const fromRow = extractChatFromRow(row);
+      if (fromRow) return fromRow;
+    }
+
     const id = cleanText(button.getAttribute('data-conversation-options-trigger') || '');
     const anchor = button.closest('a[href*="/c/"]') || (id ? document.querySelector('a[href*="/c/' + cssEscape(id) + '"]') : null);
     const fromAnchor = anchor ? extractChatFromAnchor(anchor) : null;
     if (fromAnchor) return fromAnchor;
     if (!id) return null;
+
     const aria = button.getAttribute('aria-label') || '';
     const title = cleanConversationAriaLabel(aria) || 'Untitled chat';
     return { id, title, url: '/c/' + id };
@@ -2034,11 +2149,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const menus = Array.from(document.querySelectorAll('[role="menu"][data-radix-menu-content]'));
     const visible = menus.filter(isVisibleElement);
     if (!visible.length) return null;
+
     if (nativeMenuTriggerId) {
       const byTrigger = visible.find(menu => menu.getAttribute('aria-labelledby') === nativeMenuTriggerId);
       if (byTrigger) return byTrigger;
     }
-    return visible.find(menu => menu.querySelector('[data-testid="delete-chat-menu-item"], [data-testid="share-chat-menu-item"]') && /分享|Share|重命名|Rename|归档|Archive|删除|Delete/.test(cleanText(menu.textContent || ''))) || null;
+
+    return visible.find(menu => {
+      const labels = Array.from(menu.querySelectorAll('[role="menuitem"]'))
+        .map(item => cleanText(item.textContent || ''))
+        .join(' | ');
+      return /分享|Share|重命名|Rename|归档|Archive|删除|Delete/.test(labels);
+    }) || null;
   }
 
   function injectNativeAddToFolderItem() {
@@ -2047,7 +2169,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (!menu) return false;
     if (menu.querySelector('[data-cgfm-native-add="1"]')) return true;
     const item = document.createElement('div');
-    const firstGroup = menu.querySelector('[role="group"]') || menu.firstElementChild || menu;
+    const firstGroup = menu.querySelector('[role="group"]') || menu;
     const projectItem = Array.from(firstGroup.querySelectorAll('[role="menuitem"]')).find(el => /移至项目|Move to project/i.test(cleanText(el.textContent || '')));
     const projectArrow = projectItem && projectItem.querySelector(':scope > svg');
     const arrowHtml = projectArrow
@@ -2060,7 +2182,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     item.setAttribute('data-has-submenu', '');
     item.setAttribute('aria-haspopup', 'menu');
     item.setAttribute('aria-expanded', 'false');
-    item.className = 'group __menu-item cgfm-native-menu-item';
+    const templateItem = projectItem || firstGroup.querySelector('[role="menuitem"]');
+    item.className = templateItem && typeof templateItem.className === 'string'
+      ? templateItem.className
+      : 'group __menu-item';
+    item.classList.add('cgfm-native-menu-item');
     item.innerHTML = '<div class="flex min-w-0 items-center gap-1.5 cgfm-native-menu-leading"><div class="flex items-center justify-center [opacity:var(--menu-item-icon-opacity,1)] icon">' + icon('folder') + '</div><div class="flex min-w-0 grow items-center gap-2.5 cgfm-native-menu-label">移至文件夹</div></div>' + arrowHtml;
     item.addEventListener('mouseenter', () => showNativeFolderRootMenu(item));
     item.addEventListener('focus', () => showNativeFolderRootMenu(item));
@@ -2196,14 +2322,20 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function findNativeConversationAnchor(id) {
     try {
+      const row = findNativeConversationRowById(id);
+      if (row) {
+        const button = getNativeChatButton(row);
+        if (button && !(rootEl && rootEl.contains(button))) return button;
+      }
+
       const selector = 'a[href*="/c/' + cssEscape(id) + '"]';
       const anchors = Array.from(document.querySelectorAll(selector))
-        .filter(a => !(rootEl && rootEl.contains(a)));
+        .filter(anchor => !(rootEl && rootEl.contains(anchor)));
       if (!anchors.length) return null;
-      // Prefer visible native sidebar/history links. Hidden portal/menu copies or other
-      // framework anchors may contain stale text.
       return anchors.find(isVisibleElement) || anchors[0] || null;
-    } catch (_) { return null; }
+    } catch (_) {
+      return null;
+    }
   }
 
   function extractChatFromAnchor(anchor) {
@@ -3270,6 +3402,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       // sidebar open/close and sleep-resume checks should not scan the whole Recent list.
       const closeBtn = sidebar.querySelector('[data-testid="close-sidebar-button"]');
       if (closeBtn && !closeBtn.closest('[inert]') && isVisibleElement(closeBtn)) return true;
+
+      const oneNativeRow = sidebar.querySelector(NATIVE_CHAT_ROW_SELECTOR);
+      if (oneNativeRow && !(rootEl && rootEl.contains(oneNativeRow)) && !oneNativeRow.closest('[inert]') && isVisibleElement(oneNativeRow)) return true;
 
       const oneNativeChat = sidebar.querySelector('a[href^="/c/"], a[href*="/c/"]');
       if (oneNativeChat && !(rootEl && rootEl.contains(oneNativeChat)) && !oneNativeChat.closest('[inert]') && isVisibleElement(oneNativeChat)) return true;
