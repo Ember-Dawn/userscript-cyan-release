@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.7.1  
+> 当前说明版本：v0.7.2  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -27,7 +27,7 @@
 4. 首次挂载必须避开 React hydration；`document-idle` 不代表 hydration 已完成。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 sidebar/document，不给最近聊天逐项注入常驻 UI。
-7. 原生聊天拖入文件夹继续使用浏览器原生 drag/drop；pointerdown 预缓存 conversation payload，drop 在 document capture 阶段优先消费缓存，并尽量不干扰 ChatGPT Projects。
+7. 新版原生 conversation row 拖入文件夹使用轻量 pointer bridge：pointerdown 缓存 conversation，移动超过阈值后用 `elementFromPoint()` 命中文件夹并显示 hover，pointerup 直接提交；旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
 8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
 10. WebDAV 使用 schema 3、基准快照、对象级 operation log、墓碑和有限 412 重试实现多端合并。
@@ -39,7 +39,7 @@
 ```text
 ChatGPT 原生 sidebar / conversation list / menu
           │
-          ├─ 原生 drag/drop / 三点菜单入口
+          ├─ 新版 conversation pointer bridge / legacy drag-drop / 三点菜单入口
           │
           ▼
       #cgfm-root UI
@@ -100,7 +100,7 @@ WebDAV 请求优先使用 `GM_xmlhttpRequest`，并兼容部分脚本管理器�
 4. UI 样式与 icon；
 5. sidebar host 探测、首次 mount、remount 与文件夹树 render；
 6. 文件夹创建、重命名、颜色、删除与折叠；
-7. 原生 conversation row / legacy anchor 的聊天 drag/drop；
+7. 新版 conversation row 的 pointer bridge 与 legacy anchor 的聊天 drag/drop；
 8. 文件夹拖拽移动；
 9. ChatGPT 原生聊天三点菜单“移至文件夹”；
 10. 聊天标题提取、清洗与刷新；
@@ -392,19 +392,21 @@ payload：
 { kind: "chat", id, title, url }
 ```
 
-原生 drag/drop 识别路径：
+新版 conversation row 拖入文件夹使用 pointer bridge：
 
-1. pointerdown / mousedown 直接从新版 `data-sidebar-chatgpt-conversation-key` row 缓存 conversation id/title/url；
-2. dragstart 若可用则继续补充 `dragPayload`，并兼容旧 `/c/` anchor；
-3. conversation row 仍只在用户实际按下时临时启用 `draggable=true`，拖拽结束后恢复原属性；
-4. 不清空 ChatGPT 原生 `dataTransfer`，必要时追加脚本 MIME；
-5. 文件夹 `dragover` 只负责目标高亮和记录最近目标；
-6. `document` capture 阶段的 `drop` 若落在 `#cgfm-root` 内，优先使用 pointerdown 缓存并阻止外层 ChatGPT drop handler 接管；
-7. 根节点自己的 `drop` 与 dragend 保留为兼容兜底；只有所有缓存都不可用时才尝试 URI/plain/html。
+1. pointerdown 直接从 `data-sidebar-chatgpt-conversation-key` row 缓存 conversation id/title/url 与起点坐标；
+2. 移动距离超过 `POINTER_BRIDGE_THRESHOLD_PX`（当前 6px）后才进入拖拽模式，避免普通点击误触；
+3. pointermove 使用 `document.elementFromPoint()` 判断当前指针是否位于 `.cgfm-folder-row`，并由脚本自行显示/清除 drop highlight；
+4. pointerup 若仍命中文件夹，直接把缓存 conversation 交给 `addChatToFolder()`，不依赖 ChatGPT 的 `dataTransfer`、native dragstart 或官方 drop zone；
+5. 成功提交后短暂抑制一次伴随 click，避免误触目标文件夹；
+6. pointercancel / 未命中文件夹时只清理 bridge 状态，不写入数据。
 
-所有 `composedPath()` 项在传给 `Node.contains()` 前必须确认是 `Node`，避免 Firefox 类型错误。
+兼容路径仍保留 HTML5 drag/drop：
 
-新版 conversation row 与旧版 `draggable="false"` anchor 都只在用户按下该具体聊天时临时切换为 `draggable=true`，并在 dragend/mouseup/click/timeout 后恢复；禁止扫描或永久修改整个列表。
+- 脚本自身“文件夹 → 文件夹”拖拽继续使用现有 HTML5 DnD；
+- 旧版 `/c/` anchor 仍可按需临时设置 `draggable=true`；
+- 不再给新版 button-based conversation row 强制设置 `draggable=true`；
+- 不再使用 document capture `drop` 作为新版 conversation row 的主提交路径。
 
 拖入聊天只改变聊天归属，不主动修改目标文件夹的 `collapsed`：目标原本折叠则继续折叠，原本展开则继续展开。通过原生三点菜单“移至文件夹”添加聊天时也复用同一 `addChatToFolder()` 语义。
 
@@ -573,7 +575,7 @@ user_at_example_com-5a54db9a.json
 ```json
 {
   "app": "ChatGPT文件夹",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "schema": 3,
   "exportedAt": "ISO time",
   "account": {
@@ -950,7 +952,7 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 ### v0.3.x：交互与性能路线稳定
 
 - 放弃为 Recent 每项注入气泡/常驻按钮；
-- 放弃自定义 pointer drag，回到原生 drag/drop；
+- 当时放弃旧式自定义 pointer drag，回到原生 drag/drop；v0.7.2 仅针对新版 ChatGPT button-based conversation row 引入最小 pointer bridge，不恢复 mousemove 驱动的完整自定义拖拽系统；
 - 放弃长期 sidebar/document observer；
 - 放弃 `history.pushState()` 模拟路由；
 - 支持 draggable=false Recent link 的按需临时启用；
@@ -1029,6 +1031,14 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 文件夹因此脱离 ChatGPT 自己的 `data-chatgpt-project-conversation-drop-target`，避免官方 drop handler 抢占拖入文件夹事件；
 - 新增 document capture `drop`：落点在脚本文件夹内时，优先使用 pointerdown 缓存的 conversation payload，并阻止外层官方 drop handler 接管；
 - 根节点 `drop` 与 dragend 继续作为兼容兜底，旧 `/c/` anchor 拖拽路径继续保留。
+
+### v0.7.2：新版 conversation pointer bridge
+
+- 保持 `#cgfm-root` 位于整个 `Recents` wrapper 之前；
+- 新版 `data-sidebar-chatgpt-conversation-key` row 不再强制切换 `draggable=true`，避免与 ChatGPT 自己的 sortable/drag system 竞争；
+- pointerdown 缓存 conversation 与坐标，移动超过 6px 后由 `elementFromPoint()` 自行命中文件夹并显示 hover；
+- pointerup 命中文件夹时直接调用既有 `addChatToFolder()`，不依赖 `dataTransfer` 或官方 drop zone；
+- 脚本自身文件夹拖拽和 legacy `/c/` anchor 继续保留 HTML5 DnD 兼容路径。
 
 ## 31. 不建议重新引入的方案
 
