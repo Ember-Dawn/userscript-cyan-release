@@ -201,28 +201,100 @@ context_truncation_continuation
 - v0.3.1 修复 v0.3.0 在声明 GM 权限后可能只运行在 userscript 隔离环境、未真正 patch ChatGPT 页面 `window.fetch` 的问题；改为通过 `unsafeWindow` 显式桥接页面主上下文，并使用页面 realm 的 `Request` / `URL` / `Headers` / `Response` 构造器。
 - v0.3.2 将“历史窗口覆盖”和“完整总轮数统计”解耦：Off 只停止改写 `num_turns`，后台统计仍继续；同时把首次与页间随机等待从 2.5–4.5 秒缩短为 1.0–2.0 秒。
 - v0.3.3 将后台总轮数统计的分页窗口从 `num_turns=10` 提高到 `num_turns=25`，减少较长对话需要的分页请求次数；首屏历史窗口仍保持独立配置。
-- v0.3.4 初步加入新建对话 bootstrap，但当 ChatGPT 先进入 `/c/WEB:<temporary-id>`、随后再切到正式 `/c/<uuid>` 时，统计会被第二次路由切换清掉。
-- v0.3.5 根据实测时序 `/ → /c/WEB:<temporary-id> → /c/<uuid>` 修复该问题：`WEB:` 只作为临时会话阶段，不写入持久缓存；临时阶段收集的 user message id 会在正式 UUID 出现时迁移并初始化精确总轮数。
+- v0.3.4 初步加入新建对话 bootstrap，但当 ChatGPT 在首次建会话期间先进入临时 conversation id、随后再切到正式 `/c/<uuid>` 时，统计会被第二次路由切换清掉。
+- v0.3.5 按当时的 `WEB:` 临时 ID 模型处理首次绑定：临时阶段不写持久缓存，并在正式 UUID 出现时迁移 user message id。
+- v0.3.6 根据 2026-09-25 的实际 Console 连续日志更新首次绑定模型：当前普通新对话会经历 `/ → /c/local-chatgpt:<uuid> → /c/<final-uuid>`；`local-chatgpt:*` 现在与 `WEB:` 一样被视为未完成绑定的中间 ID，只有最终稳定 ID 才允许写入 conversation 轮数缓存。
 
 这两个日期分别代表“旧架构参考基线”和“当前 ChatGPT 接口适配节点”，不应混为同一个维护日期。
 
-### v0.3.5 新建对话的临时 `WEB:` 路由处理
+### v0.3.6 新建对话的两阶段首次绑定
 
-实测新建对话并不是直接从 `/` 进入最终 conversation UUID，而是可能经历：
+2026-09-25 使用 Console 连续跟踪普通新对话首轮的 `history.replaceState` 与 URL 后，确认当前 ChatGPT 的实际链路是：
 
 ```text
 /
-→ /c/WEB:<temporary-id>
+→ /c/local-chatgpt:<local-uuid>
 → /c/<final-uuid>
 ```
 
-`WEB:` 是 ChatGPT 新建会话过程中的临时路由。v0.3.5 将它与正式 conversation ID 分开处理：
+因此维护时不能把“第一次出现 `/c/<id>`”等同于“已经获得正式 conversation id”。v0.3.6 将会话生命周期明确按三阶段理解：
 
-- `/` 或 `/c/WEB:<temporary-id>` 阶段出现的 user message id 只保存在当前页面内存，不写入 GM storage 或 session conversation cache。
-- 临时阶段已经看到 user message 时，右下角可以先显示当前临时精确数量，例如 `LS Off / 1`。
-- 当路由从 `WEB:` 切换到正式 UUID 时，把临时阶段收集的 user message id 迁移到正式 UUID，并建立完成态总轮数缓存。
-- 后续新 user message 继续沿用现有 DOM 增量逻辑直接 `+1`，无需重新分页，也无需手动刷新。
-- 从首页直接打开一个已有正式 `/c/<uuid>` 对话时，如果没有 `WEB:` 临时阶段或预路由新消息证据，仍走正常的 `conversations + page_info` / 后台分页路径，避免把旧对话误判为新对话。
+```text
+UNBOUND  /                         尚未绑定
+LOCAL    /c/local-chatgpt:<uuid>   首次建会话的中间绑定
+STABLE   /c/<final-uuid>            最终稳定会话
+```
+
+实现上继续复用原有 `pendingNewConversationUserIds` bootstrap，不重写历史窗口或后台分页统计：
+
+- `/` 阶段出现的 user message id 先保留在当前页面的 pending 集合。
+- `/ → /c/local-chatgpt:*` 时，`local-chatgpt:*` 被视为临时 / 中间 ID；可以继续显示已知临时轮数，但不写入 Tampermonkey round-count cache，也不写入 session conversation stats cache。
+- `/c/local-chatgpt:* → /c/<final-uuid>` 时，因为前一个 ID 仍属于临时阶段，现有 bootstrap 会把 pending user message id 一次性初始化到最终 UUID；第一轮显示应保持连续，不因第二次 `replaceState` 清空。
+- `WEB:` 仍保留为兼容性的临时 ID 识别，但当前普通新对话的维护基线以已实测的 `local-chatgpt:*` 链路为准。
+- 已经从稳定 `/c/<uuid>` 打开的旧对话仍走原有 `conversations + page_info` / 后台分页与缓存恢复路径，不进入新对话 bootstrap。
+
+首轮回归时最重要的预期是：
+
+```text
+第 1 轮发送后：1
+local-chatgpt:* → final UUID：仍为 1
+再发送第 2 轮：2
+```
+
+### 首轮绑定的 Console 诊断方法
+
+如果未来 ChatGPT 再次修改新对话路由，不要先猜 conversation id 规则。可在首页新对话、发送第一轮之前执行一次下面的 Console 代码，然后正常发送第一轮并等待正式 URL 稳定；它会持续记录 URL 变化、`pushState` / `replaceState` / `popstate` 与长对话助手当前按钮文字：
+
+```js
+(() => {
+  const prefix = '[LS-FIRST-TURN]';
+  const snapshot = (reason, extra = null) => {
+    console.log(prefix, new Date().toLocaleTimeString(), reason, {
+      url: location.href,
+      status: document.querySelector('#cyan-ls-status')?.textContent ?? null,
+      extra,
+    });
+  };
+
+  for (const name of ['pushState', 'replaceState']) {
+    const original = history[name];
+    history[name] = function (...args) {
+      const before = location.href;
+      const result = original.apply(this, args);
+      queueMicrotask(() => snapshot(name, { before, after: location.href }));
+      return result;
+    };
+  }
+
+  addEventListener('popstate', () => snapshot('popstate'));
+
+  let lastHref = location.href;
+  let lastStatus = document.querySelector('#cyan-ls-status')?.textContent ?? null;
+  const timer = setInterval(() => {
+    const status = document.querySelector('#cyan-ls-status')?.textContent ?? null;
+    if (location.href !== lastHref || status !== lastStatus) {
+      lastHref = location.href;
+      lastStatus = status;
+      snapshot('changed');
+    }
+  }, 250);
+
+  window.__lsFirstTurnDebugStop = () => {
+    clearInterval(timer);
+    console.log(prefix, 'debug stopped');
+  };
+
+  snapshot('debug started');
+})();
+```
+
+测试完成后可执行：
+
+```js
+window.__lsFirstTurnDebugStop?.();
+```
+
+重点检查日志顺序，而不是只看最终 URL。如果再次出现“第一轮显示正常、随后轮数消失”，优先确认是否新增了一个未识别的中间 conversation id；如果 URL / ID 链路没有变化，再单独检查 user message DOM 捕获与计数来源。刷新页面即可恢复被诊断代码临时包装的 History 方法。
 
 ## SPA 与 Project 对话
 
@@ -309,4 +381,4 @@ node --check userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js
 13. 非 2xx / 非 JSON / cursor 不推进时停止本轮后台统计，不进行高频重试。
 14. 旧 `mapping + current_node` 接口如果仍出现，旧裁剪兼容路径不报错。
 15. switch 关闭后只停止 `num_turns` 覆盖，后台总轮数统计仍继续工作；数字输入与“应用并刷新”继续沿用旧配置并正常工作。
-16. 新建对话应兼容 `/ → /c/WEB:<temporary-id> → /c/<final-uuid>` 两阶段路由：`WEB:` 阶段不写持久缓存，第一条 user message 出现后可显示 `LS Off / 1`，切到正式 UUID 后总数保持不丢失且无需刷新；从其他路由打开已有正式对话不得被误判为新对话。
+16. 新建对话应兼容当前实测的 `/ → /c/local-chatgpt:<uuid> → /c/<final-uuid>` 两阶段绑定：`local-chatgpt:*` 阶段不写持久缓存，第一条 user message 出现后可显示 1 轮，切到正式 UUID 后仍保持 1；继续发送第二轮后应变为 2；从其他路由打开已有正式对话不得被误判为新对话。`WEB:` 临时 ID 只作为兼容路径保留。
