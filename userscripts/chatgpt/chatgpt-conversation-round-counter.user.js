@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.1.2
+// @version      0.1.3
 // @description  统计并缓存 ChatGPT 当前对话的完整用户轮数，支持分页补齐、断点续跑和新建对话实时计数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -835,8 +835,8 @@
         style.textContent = `
 #cyan-round-counter-root {
     position: absolute;
-    right: 8px;
-    bottom: 4px;
+    right: 14px;
+    bottom: -1px;
     z-index: 20;
     pointer-events: none;
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -846,7 +846,7 @@
     box-sizing: border-box;
     width: 40px;
     height: 24px;
-    border: 0;
+    border: 1px solid #000;
     border-radius: 6px;
     padding: 0 6px;
     display: flex;
@@ -854,25 +854,16 @@
     justify-content: center;
     white-space: nowrap;
     overflow: hidden;
-    background: #10a37f;
-    color: #fff;
-    font-size: 12px;
+    background: transparent;
+    color: #000;
+    font-size: 14px;
     font-weight: 650;
     font-variant-numeric: tabular-nums;
     line-height: 1;
     text-align: center;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, .18);
     pointer-events: auto;
     cursor: default;
     user-select: none;
-}
-#cyan-round-counter-status[data-status="paused"] {
-    background: #6b7280;
-}
-@media (prefers-color-scheme: dark) {
-    #cyan-round-counter-status {
-        box-shadow: 0 4px 16px rgba(0, 0, 0, .38);
-    }
 }
 `;
         (document.head || document.documentElement).appendChild(style);

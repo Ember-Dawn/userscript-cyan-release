@@ -134,7 +134,7 @@ STABLE   /c/<final-uuid>           最终稳定会话
 
 ## Composer 上沿状态
 
-轮数状态挂载在当前 thread Composer 的 `data-above-composer-portal` 中，作为紧贴输入框上边框右侧的轻量 badge；不再使用页面右下角悬浮组件，也不提供设置面板：
+轮数状态挂载在当前 thread Composer 的 `data-above-composer-portal` 中，作为贴住输入框外边框右上方的轻量 badge；badge 下边缘与 Composer 上边框轻微重叠，使两者视觉上直接相接，不再保留上方空隙。页面不再使用右下角悬浮组件，也不提供设置面板：
 
 ```text
 0   当前尚无 user 轮次
@@ -144,7 +144,7 @@ STABLE   /c/<final-uuid>           最终稳定会话
 86  已获得完整总轮数 86
 ```
 
-badge 固定为 40 × 24 px，并启用等宽数字排版，预留 3 位轮数宽度，避免 `9 → 99 → 999` 时横向跳动。外层挂载容器不参与 Composer 交互；badge 本身只保留悬停命中以显示 `title` 状态说明，不可聚焦，也没有点击行为。
+badge 固定为 40 × 24 px，使用 1 px 黑色边框、透明背景和黑色文字；在保持尺寸不变的前提下，数字字号提高到 14 px。继续启用等宽数字排版并预留 3 位轮数宽度，避免 `9 → 99 → 999` 时横向跳动。外层挂载容器不参与 Composer 交互；badge 本身只保留悬停命中以显示 `title` 状态说明，不可聚焦，也没有点击行为。
 
 ## 持久缓存
 
