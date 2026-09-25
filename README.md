@@ -35,15 +35,16 @@ userscript-cyan-release/
 
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
-| ChatGPT 宽屏 | [`chatgpt-wide.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-wide.user.js) | 自动放宽 ChatGPT 的对话区和输入区。 |
 | ChatGPT 文件夹 | [`chatgpt-folders.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js) | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。 |
 | ChatGPT GitHub 自动允许助手 | [`chatgpt-auto-allow-github.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-auto-allow-github.user.js) | 自动处理 ChatGPT 的 GitHub 权限卡片。 |
 | ChatGPT 顺序任务助手 | [`chatgpt-sequential-task-queue.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js) | 每个非空行作为一轮命令，按对话独立保存并顺序发送；提供面板内确认弹窗和绿黄分段进度。 |
 | ChatGPT 输入框增强助手 | [`chatgpt-composer-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-composer-enhancer.user.js) | 增强 ChatGPT 输入框；当前 Raw Paste Mode 保持短文本粘贴的 Markdown 为原始文本，并保留长文本附件及图片/文件粘贴的原生行为。 |
-| ChatGPT 界面视觉增强助手 | [`chatgpt-visual-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js) | 在白天模式下将主界面与侧边栏统一柔化为中性浅灰，并为临时对话输入框提供琥珀色视觉提示。 |
+| ChatGPT 界面视觉增强助手 | [`chatgpt-visual-enhancer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js) | 柔化白天模式；仅放宽对话正文并保留 Composer 默认宽度；高亮助手文件下载入口；临时对话使用 `#0891B2` 青色描边提示。 |
 | ChatGPT 长对话优化助手 | [`chatgpt-long-chat-optimizer.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-long-chat-optimizer.user.js) | 在 ChatGPT 渲染长对话前裁剪历史，仅保留最近 N 轮，并用悬浮按钮显示保留轮数与总轮数。 |
 
 ChatGPT 输入框增强助手的开发背景、Raw Paste Mode 范围和维护说明见 [`userscripts/chatgpt/chatgpt-composer-enhancer.md`](./userscripts/chatgpt/chatgpt-composer-enhancer.md)。
+
+ChatGPT 界面视觉增强助手的正文宽屏、文件入口高亮、临时对话提示和浅色主题说明见 [`userscripts/chatgpt/chatgpt-visual-enhancer.md`](./userscripts/chatgpt/chatgpt-visual-enhancer.md)。
 
 ChatGPT 长对话优化助手的轮数定义、Fetch Proxy、悬浮设置和维护说明见 [`userscripts/chatgpt/chatgpt-long-chat-optimizer.md`](./userscripts/chatgpt/chatgpt-long-chat-optimizer.md)。
 
@@ -83,7 +84,7 @@ NocoDB Markdown 表格的实际保存、NodeView 渲染和导出规则见 [`user
 
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
-| YouTube 工具箱 | [`youtube-tools.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/youtube/youtube-tools.user.js) | 打开频道上传播放列表、处理上传日期并导出 CSV。 |
+| YouTube 工具箱 | [`youtube-tools.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/youtube/youtube-tools.user.js) | 打开频道上传播放列表、处理播放列表上传日期并导出 CSV。 |
 
 ## MusicFree 插件
 

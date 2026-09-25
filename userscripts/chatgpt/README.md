@@ -6,24 +6,29 @@
 
 | 中文名称 | 文件 | 用途 |
 |---|---|---|
-| ChatGPT 宽屏 | `chatgpt-wide.user.js` | 放宽对话区和输入区，改善长文本与代码阅读。 |
 | ChatGPT 文件夹 | `chatgpt-folders.user.js` | 提供聊天文件夹、排序、多标签同步和 WebDAV 同步。参见[详细说明](./chatgpt-folders.md)。 |
 | ChatGPT GitHub 自动允许助手 | `chatgpt-auto-allow-github.user.js` | 自动处理 ChatGPT 中明确指向 GitHub 的授权卡片。 |
 | ChatGPT 顺序任务助手 | `chatgpt-sequential-task-queue.user.js` | 将多行命令按会话顺序发送并显示进度；支持后台标签页继续推进。 |
 | ChatGPT 输入框增强助手 | `chatgpt-composer-enhancer.user.js` | 增强 ChatGPT 输入框；当前 Raw Paste Mode 保持短文本粘贴的 Markdown 为原始文本，并保留长文本附件及图片/文件粘贴的原生行为。参见[详细说明](./chatgpt-composer-enhancer.md)。 |
-| ChatGPT 界面视觉增强助手 | `chatgpt-visual-enhancer.user.js` | 在白天模式下将主界面与侧边栏统一为中性浅灰，并让输入框保持稍亮层次；临时对话继续使用琥珀色描边、淡色背景和轻微阴影。 |
+| ChatGPT 界面视觉增强助手 | `chatgpt-visual-enhancer.user.js` | 柔化白天模式；仅放宽对话正文并保留 Composer 默认宽度；高亮助手文件下载入口；临时对话使用 `#0891B2` 青色描边提示。参见[详细说明](./chatgpt-visual-enhancer.md)。 |
 | ChatGPT 长对话优化助手 | `chatgpt-long-chat-optimizer.user.js` | 通过原生 `num_turns` 控制最近 N 轮历史窗口，并以低速分页、Tampermonkey 持久缓存和断点续跑统计完整总轮数。参见[详细说明](./chatgpt-long-chat-optimizer.md)。 |
+
+ChatGPT 宽屏已停止作为独立脚本维护，其正文宽屏功能已并入“ChatGPT 界面视觉增强助手”。最终独立版本归档为：
+
+```text
+archive/userscripts/chatgpt-wide-v1.0.3.user.js
+```
+
+ChatGPT 文件链接高亮助手已停止作为独立脚本维护，其文件入口高亮功能已并入“ChatGPT 界面视觉增强助手”。最终独立版本归档为：
+
+```text
+archive/userscripts/chatgpt-file-link-highlighter-v1.0.0.user.js
+```
 
 旧版 `chatgpt-temporary-chat-highlighter.user.js` 已由“ChatGPT 界面视觉增强助手”取代，最终版本归档为：
 
 ```text
 archive/userscripts/chatgpt-temporary-chat-highlighter-v0.1.0.user.js
-```
-
-ChatGPT 文件链接高亮助手已停止维护，最终版本归档为：
-
-```text
-archive/userscripts/chatgpt-file-link-highlighter-v1.0.0.user.js
 ```
 
 ChatGPT 朗读增强助手已停止维护，最终脚本与维护说明归档为：
