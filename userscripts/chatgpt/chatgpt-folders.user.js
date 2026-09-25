@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.7.5
-// @description  ChatGPT 普通聊天文件夹管理：v0.7.5；文件夹固定在“最近”区块之前，新版聊天使用完整手势所有权的低开销自定义拖拽。
+// @version      0.7.6
+// @description  ChatGPT 普通聊天文件夹管理：v0.7.6；文件夹固定在“最近”区块之前，新版聊天使用带轻量浮动预览的自定义拖拽。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.7.5';
+  const VERSION = '0.7.6';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -66,6 +66,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const MAX_SIDEBAR_WIDTH_PX = 520;
   const NATIVE_CHAT_DRAG_THRESHOLD_PX = 6;
   const NATIVE_CHAT_RELEASE_GUARD_MS = 350;
+  const NATIVE_CHAT_PREVIEW_OFFSET_PX = 12;
   const FOLDER_SORT_LOCALE = undefined;
   const folderCollator = new Intl.Collator(FOLDER_SORT_LOCALE, { numeric: true, sensitivity: 'base' });
   const TAB_ID = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -102,6 +103,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let dropCommitted = false;
   let nativeChatPointerDrag = null;
   let nativeChatPointerRaf = 0;
+  let nativeChatDragPreviewEl = null;
   let suppressedNativeChatClickRow = null;
   let suppressedNativeChatClickUntil = 0;
   let nativeChatReleaseGuardRow = null;
@@ -1046,6 +1048,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-root .cgfm-row-actions .cgfm-icon svg { width:16px; height:16px; }
       #cgfm-root .cgfm-folder-name-input { flex:1; min-width:0; height:26px; border-radius:7px; border:1px solid rgba(128,128,128,.35); background:var(--main-surface-primary,#fff); color:var(--cgfm-text); padding:0 7px; font:inherit; }
       #cgfm-root .cgfm-folder-row.cgfm-drop-inside { outline:1.5px solid #3b82f6; background:rgba(59,130,246,.12); }
+      .cgfm-native-chat-drag-preview { position:fixed; left:0; top:0; z-index:2147483647; pointer-events:none; display:flex; align-items:center; gap:8px; min-width:160px; max-width:300px; height:36px; padding:0 11px; border-radius:10px; border:1px solid rgba(128,128,128,.28); background:var(--main-surface-primary,#fff); color:var(--text-primary,#111827); box-shadow:0 8px 24px rgba(0,0,0,.18); opacity:.92; font:13px/1.2 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; will-change:transform; transform:translate3d(-10000px,-10000px,0); }
+      .cgfm-native-chat-drag-preview .cgfm-native-chat-drag-preview-icon { width:16px; min-width:16px; height:16px; display:flex; align-items:center; justify-content:center; opacity:.72; }
+      .cgfm-native-chat-drag-preview .cgfm-native-chat-drag-preview-icon svg { width:16px; height:16px; stroke-width:1.9; }
+      .cgfm-native-chat-drag-preview .cgfm-native-chat-drag-preview-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .cgfm-menu, .cgfm-color-popover { position:fixed; z-index:2147483647; min-width:172px; padding:6px; border-radius:12px; background:var(--main-surface-primary,#fff); color:var(--text-primary,#111827); border:1px solid rgba(128,128,128,.25); box-shadow:0 12px 34px rgba(0,0,0,.22); font:13px/1.35 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; }
       .cgfm-menu-item { width:100%; display:flex; align-items:center; gap:9px; height:32px; border:0; background:transparent; color:inherit; border-radius:8px; padding:0 9px; cursor:pointer; text-align:left; }
       .cgfm-menu-item:hover { background:rgba(128,128,128,.12); }
@@ -1856,6 +1862,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     state.active = true;
     closeMenu();
     clearDropHighlight();
+    createNativeChatDragPreview(state);
+    updateNativeChatDragPreview(state.lastX, state.lastY);
     try {
       if (state.source && typeof state.source.setPointerCapture === 'function' && !state.source.hasPointerCapture?.(state.pointerId)) {
         state.source.setPointerCapture(state.pointerId);
@@ -1864,6 +1872,43 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (event) stopOwnedNativeChatEvent(event, true);
     scheduleNativeChatPointerHover();
     return true;
+  }
+
+  function createNativeChatDragPreview(state) {
+    removeNativeChatDragPreview();
+    if (!state || !state.payload) return;
+    const preview = document.createElement('div');
+    preview.className = 'cgfm-native-chat-drag-preview';
+    preview.setAttribute('aria-hidden', 'true');
+
+    const previewIcon = document.createElement('span');
+    previewIcon.className = 'cgfm-native-chat-drag-preview-icon';
+    previewIcon.innerHTML = icon('chat');
+
+    const previewTitle = document.createElement('span');
+    previewTitle.className = 'cgfm-native-chat-drag-preview-title';
+    previewTitle.textContent = cleanText(state.payload.title) || 'Untitled chat';
+
+    preview.append(previewIcon, previewTitle);
+    try {
+      const rect = state.source && state.source.getBoundingClientRect ? state.source.getBoundingClientRect() : null;
+      if (rect && rect.width) preview.style.width = Math.round(clamp(rect.width, 180, 300)) + 'px';
+    } catch (_) {}
+    document.body.appendChild(preview);
+    nativeChatDragPreviewEl = preview;
+  }
+
+  function updateNativeChatDragPreview(x, y) {
+    if (!nativeChatDragPreviewEl) return;
+    const px = Math.round((Number(x) || 0) + NATIVE_CHAT_PREVIEW_OFFSET_PX);
+    const py = Math.round((Number(y) || 0) + NATIVE_CHAT_PREVIEW_OFFSET_PX);
+    nativeChatDragPreviewEl.style.transform = `translate3d(${px}px,${py}px,0)`;
+  }
+
+  function removeNativeChatDragPreview() {
+    if (!nativeChatDragPreviewEl) return;
+    try { nativeChatDragPreviewEl.remove(); } catch (_) {}
+    nativeChatDragPreviewEl = null;
   }
 
   function getFolderDropTargetAtCoordinates(x, y, payload) {
@@ -1891,6 +1936,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       nativeChatPointerRaf = 0;
       const state = nativeChatPointerDrag;
       if (!state || !state.active) return;
+      updateNativeChatDragPreview(state.lastX, state.lastY);
       const target = getFolderDropTargetAtCoordinates(state.lastX, state.lastY, state.payload);
       state.targetFolderId = target ? target.folderId : '';
       if (!target) {
@@ -1992,6 +2038,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       } catch (_) {}
     }
     nativeChatPointerDrag = null;
+    removeNativeChatDragPreview();
     clearDropHighlight();
   }
 
