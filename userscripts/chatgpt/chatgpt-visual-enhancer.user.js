@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.2.0
+// @version      0.2.1
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.2.0';
+    const VERSION = '0.2.1';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -55,13 +55,11 @@ html:not(.dark) body {
     }
 }
 
-/* 临时对话：#0891B2 在浅色和深色模式下都保持清晰可辨。 */
+/* 临时对话：浅色和深色模式统一使用 #0891B2 描边，并混入 10% 同色背景。 */
 html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-body] {
     border: 2px solid #0891B2 !important;
     border-radius: 26px !important;
-    box-shadow:
-        0 0 0 1px rgba(8, 145, 178, 0.18),
-        0 3px 14px rgba(8, 145, 178, 0.14) !important;
+    background-color: color-mix(in srgb, var(--composer-surface-primary) 90%, #0891B2 10%) !important;
 }
 
 .${FILE_HIGHLIGHT_CLASS},
@@ -276,6 +274,8 @@ html[${TEMPORARY_CHAT_ATTRIBUTE}="true"] [data-composer-body] {
     patchHistoryMethod('pushState');
     patchHistoryMethod('replaceState');
 
+    document.addEventListener('DOMContentLoaded', syncTemporaryChatState, { once: true });
+    window.addEventListener('load', syncTemporaryChatState, { once: true });
     window.addEventListener('popstate', syncTemporaryChatState);
     window.addEventListener(LOCATION_CHANGE_EVENT, syncTemporaryChatState);
     window.addEventListener('load', () => scheduleFileScan(document));
