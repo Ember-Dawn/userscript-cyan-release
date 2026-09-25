@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.7.4
-// @description  ChatGPT 普通聊天文件夹管理：v0.7.4；文件夹固定在“最近”区块之前，新版聊天使用低开销 pointer-capture 自定义拖拽。
+// @version      0.7.5
+// @description  ChatGPT 普通聊天文件夹管理：v0.7.5；文件夹固定在“最近”区块之前，新版聊天使用完整手势所有权的低开销自定义拖拽。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -28,7 +28,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 - DOM：#cgfm-root 必须挂在 ChatGPT 原生侧边栏中，并位于整个 Recents 区块之前；不得嵌入 ChatGPT 自己的 conversation/project drop target。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
 - Hydration：document-idle 不代表 React hydration 已结束。首次挂载必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS；稳定前不要注入脚本样式、宽度覆盖或根节点。首次成功后，React 重建/休眠恢复可继续快速 remount。
 - 性能：禁止长期观察 document/sidebar 的 MutationObserver、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。仅原生三点菜单允许短时 observer，捕捉成功或超时立即断开。
-- 交互：新版原生聊天使用仅在实际拖动手势期间启用的 pointer-capture 自定义拖拽；超过阈值后取消 ChatGPT 本次 native drag，并以 requestAnimationFrame 限流的坐标命中实现 hover/提交。旧 /c/ anchor 仍保留 HTML5 drag/drop 兼容。聊天跳转逻辑不变。
+- 交互：新版原生聊天由脚本从 pointerdown 起取得本次手势所有权；超过阈值后进入 pointer-capture 自定义拖拽，并以 requestAnimationFrame 限流的坐标命中实现 hover/提交，结束后短暂隔离 release/click 残留事件。旧 /c/ anchor 仍保留 HTML5 drag/drop 兼容。聊天跳转逻辑不变。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
 */
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.7.4';
+  const VERSION = '0.7.5';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -65,6 +65,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const MIN_SIDEBAR_WIDTH_PX = 240;
   const MAX_SIDEBAR_WIDTH_PX = 520;
   const NATIVE_CHAT_DRAG_THRESHOLD_PX = 6;
+  const NATIVE_CHAT_RELEASE_GUARD_MS = 350;
   const FOLDER_SORT_LOCALE = undefined;
   const folderCollator = new Intl.Collator(FOLDER_SORT_LOCALE, { numeric: true, sensitivity: 'base' });
   const TAB_ID = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -103,6 +104,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let nativeChatPointerRaf = 0;
   let suppressedNativeChatClickRow = null;
   let suppressedNativeChatClickUntil = 0;
+  let nativeChatReleaseGuardRow = null;
+  let nativeChatReleaseGuardUntil = 0;
   let menuEl = null;
   let modalEl = null;
   let sidebarWidthStyleEl = null;
@@ -1709,15 +1712,19 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function setupNativeDragCache() {
     if (document.__cgfmNativeDragBound) return;
     document.__cgfmNativeDragBound = true;
-    document.addEventListener('pointerdown', onNativeHistoryPointerDown, true);
-    // Window capture runs before ChatGPT's document/root handlers once a custom drag
-    // becomes active, while the fast no-state return keeps idle overhead negligible.
+    // New conversation rows are owned from pointerdown at window capture. We stop only
+    // propagation, not the browser default, so an un-dragged row still produces its
+    // normal click while ChatGPT's sortable sensor never sees the initiating press.
+    window.addEventListener('pointerdown', onNativeHistoryPointerDown, true);
+    window.addEventListener('mousedown', onNativeHistoryMouseDownCapture, true);
+    // The hot move handlers are inert unless one conversation gesture is active.
     window.addEventListener('pointermove', onNativeHistoryPointerMove, true);
+    window.addEventListener('mousemove', onNativeHistoryMouseMoveCapture, true);
     window.addEventListener('pointerup', onNativeHistoryPointerUp, true);
     window.addEventListener('pointercancel', onNativeHistoryPointerCancel, true);
     window.addEventListener('dragstart', onNativeHistoryDragStart, true);
     window.addEventListener('dragend', onNativeHistoryDragEnd, true);
-    window.addEventListener('mouseup', restoreTransientNativeChatDrag, true);
+    window.addEventListener('mouseup', onNativeHistoryMouseUpCapture, true);
     window.addEventListener('click', onNativeHistoryClickCapture, true);
     window.addEventListener('blur', onNativeHistoryWindowBlur, true);
   }
@@ -1740,6 +1747,29 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (payload.kind === 'chat' && payload.id) return 'chat';
     if (payload.id) return 'chat';
     return '';
+  }
+
+  function stopOwnedNativeChatEvent(event, preventDefault) {
+    if (!event) return;
+    if (preventDefault && event.cancelable) {
+      try { event.preventDefault(); } catch (_) {}
+    }
+    try { event.stopImmediatePropagation(); }
+    catch (_) { try { event.stopPropagation(); } catch (_) {} }
+  }
+
+  function beginNativeChatReleaseGuard(row) {
+    nativeChatReleaseGuardRow = row instanceof Element ? row : null;
+    nativeChatReleaseGuardUntil = Date.now() + NATIVE_CHAT_RELEASE_GUARD_MS;
+  }
+
+  function nativeChatReleaseGuardActive() {
+    if (!nativeChatReleaseGuardUntil || Date.now() > nativeChatReleaseGuardUntil) {
+      nativeChatReleaseGuardRow = null;
+      nativeChatReleaseGuardUntil = 0;
+      return false;
+    }
+    return true;
   }
 
   function onRootDragStart(event) {
@@ -1778,6 +1808,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (!chat) return;
       chat.kind = 'chat';
       cancelNativeChatPointerDrag(false);
+      nativeChatReleaseGuardRow = null;
+      nativeChatReleaseGuardUntil = 0;
       pointerPayload = null;
       dragPayload = null;
       dragStartPayload = null;
@@ -1799,6 +1831,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       try {
         if (typeof row.setPointerCapture === 'function') row.setPointerCapture(event.pointerId);
       } catch (_) {}
+      // Own the initiating press before ChatGPT's sortable sensor can arm itself. Do not
+      // preventDefault here: if movement stays below threshold, the browser still emits
+      // the normal click and ChatGPT navigation remains unchanged.
+      stopOwnedNativeChatEvent(event, false);
       return;
     }
 
@@ -1825,10 +1861,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         state.source.setPointerCapture(state.pointerId);
       }
     } catch (_) {}
-    if (event) {
-      try { event.preventDefault(); } catch (_) {}
-      try { event.stopPropagation(); } catch (_) {}
-    }
+    if (event) stopOwnedNativeChatEvent(event, true);
     scheduleNativeChatPointerHover();
     return true;
   }
@@ -1880,8 +1913,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
     if (!state.active) return;
 
-    event.preventDefault();
-    event.stopPropagation();
+    stopOwnedNativeChatEvent(event, true);
     scheduleNativeChatPointerHover();
   }
 
@@ -1896,20 +1928,49 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
+    stopOwnedNativeChatEvent(event, true);
     const target = getFolderDropTargetAtCoordinates(state.lastX, state.lastY, state.payload);
     const sourceRow = state.source;
     const payload = state.payload;
     if (target) commitDropPayload(payload, target.folderId);
     suppressNativeChatClick(sourceRow);
+    beginNativeChatReleaseGuard(sourceRow);
     cancelNativeChatPointerDrag(false);
   }
 
   function onNativeHistoryPointerCancel(event) {
     const state = nativeChatPointerDrag;
     if (!state || event.pointerId !== state.pointerId) return;
+    if (state.active) {
+      stopOwnedNativeChatEvent(event, true);
+      beginNativeChatReleaseGuard(state.source);
+    }
     cancelNativeChatPointerDrag(false);
+  }
+
+  function onNativeHistoryMouseDownCapture(event) {
+    const state = nativeChatPointerDrag;
+    if (!state || (typeof event.button === 'number' && event.button !== 0)) return;
+    if (!(event.target instanceof Node) || !state.source || !state.source.contains(event.target)) return;
+    // Pointerdown is already ours; keep a parallel MouseSensor from arming as well.
+    stopOwnedNativeChatEvent(event, false);
+  }
+
+  function onNativeHistoryMouseMoveCapture(event) {
+    const state = nativeChatPointerDrag;
+    if (state && state.active) {
+      stopOwnedNativeChatEvent(event, true);
+      return;
+    }
+    if (nativeChatReleaseGuardActive()) stopOwnedNativeChatEvent(event, true);
+  }
+
+  function onNativeHistoryMouseUpCapture(event) {
+    restoreTransientNativeChatDrag();
+    const state = nativeChatPointerDrag;
+    if ((state && state.active) || nativeChatReleaseGuardActive()) {
+      stopOwnedNativeChatEvent(event, true);
+    }
   }
 
   function onNativeHistoryWindowBlur() {
@@ -1949,8 +2010,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return;
     }
     if (!(event.target instanceof Node) || !suppressedNativeChatClickRow.contains(event.target)) return;
-    event.preventDefault();
-    event.stopPropagation();
+    stopOwnedNativeChatEvent(event, true);
     suppressedNativeChatClickRow = null;
     suppressedNativeChatClickUntil = 0;
   }
@@ -2006,11 +2066,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const row = event.target.closest(NATIVE_CHAT_ROW_SELECTOR);
     const pointerState = nativeChatPointerDrag;
     if (row && pointerState && pointerState.source === row) {
-      // ChatGPT may try to start its own sortable/native drag before our pointer threshold
-      // fully settles. Cancel this one native drag and keep the pointer-capture gesture ours.
+      // ChatGPT should not have seen the initiating press, but cancel any delayed/native
+      // dragstart for this owned gesture as a defensive fallback.
       activateNativeChatPointerDrag(event);
-      event.preventDefault();
-      event.stopPropagation();
+      stopOwnedNativeChatEvent(event, true);
+      return;
+    }
+    if (row && nativeChatReleaseGuardActive() && nativeChatReleaseGuardRow === row) {
+      stopOwnedNativeChatEvent(event, true);
       return;
     }
 
