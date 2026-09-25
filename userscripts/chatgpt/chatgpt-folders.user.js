@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.7.2
-// @description  ChatGPT 普通聊天文件夹管理：v0.7.2；文件夹固定在“最近”区块之前，新版聊天通过 pointer bridge 拖入文件夹。
+// @version      0.7.3
+// @description  ChatGPT 普通聊天文件夹管理：v0.7.3；文件夹固定在“最近”区块之前，新版聊天通过 capture drag bridge 拖入文件夹。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -28,7 +28,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 - DOM：#cgfm-root 必须挂在 ChatGPT 原生侧边栏中，并位于整个 Recents 区块之前；不得嵌入 ChatGPT 自己的 conversation/project drop target。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
 - Hydration：document-idle 不代表 React hydration 已结束。首次挂载必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS；稳定前不要注入脚本样式、宽度覆盖或根节点。首次成功后，React 重建/休眠恢复可继续快速 remount。
 - 性能：禁止长期观察 document/sidebar 的 MutationObserver、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。仅原生三点菜单允许短时 observer，捕捉成功或超时立即断开。
-- 交互：新版原生聊天使用 pointer bridge：pointerdown 缓存 conversation，移动超过阈值后用 elementFromPoint 命中文件夹，pointerup 直接提交；旧 /c/ anchor 仍保留 HTML5 drag/drop 兼容。聊天跳转逻辑不变。
+- 交互：新版原生聊天由 pointerdown 缓存 conversation，并在 document capture 的 dragover/drop 阶段按坐标命中文件夹、显示 hover 和提交；旧 /c/ anchor 仍保留 HTML5 drag/drop 兼容。聊天跳转逻辑不变。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
 */
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.7.2';
+  const VERSION = '0.7.3';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -49,7 +49,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const CURRENT_PROFILE_ID = 'local_current';
   const ROOT_ID = 'root';
   const DRAG_MIME = 'application/x-chatgpt-folder-manager';
-  const POINTER_BRIDGE_THRESHOLD_PX = 6;
   const SIDEBAR_CONVERSATION_PREFIX = 'chatgpt:conversation:';
   const NATIVE_CHAT_ROW_SELECTOR = '[data-sidebar-chatgpt-conversation-key^="' + SIDEBAR_CONVERSATION_PREFIX + '"][role="listitem"]';
   const RECENTS_SECTION_SELECTOR = 'section[data-app-action-sidebar-section-heading="Recents"]';
@@ -95,8 +94,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let editingOriginalName = '';
   let dragPayload = null;
   let pointerPayload = null;
-  let nativePointerBridge = null;
-  let suppressBridgeClickUntil = 0;
   let dragStartPayload = null;
   let lastHoveredFolderId = '';
   let lastHoveredFolderAt = 0;
@@ -1708,13 +1705,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (document.__cgfmNativeDragBound) return;
     document.__cgfmNativeDragBound = true;
     document.addEventListener('pointerdown', onNativeHistoryPointerDown, true);
-    document.addEventListener('pointermove', onNativeHistoryPointerMove, true);
-    document.addEventListener('pointerup', onNativeHistoryPointerUp, true);
-    document.addEventListener('pointercancel', onNativeHistoryPointerCancel, true);
     document.addEventListener('dragstart', onNativeHistoryDragStart, true);
+    document.addEventListener('dragover', onDocumentNativeChatDragOver, true);
+    document.addEventListener('drop', onDocumentNativeChatDrop, true);
     document.addEventListener('dragend', onNativeHistoryDragEnd, true);
     document.addEventListener('mouseup', restoreTransientNativeChatDrag, true);
-    document.addEventListener('click', onNativePointerBridgeClickCapture, true);
+    document.addEventListener('click', restoreTransientNativeChatDrag, true);
   }
 
   function resetNativeDragState() {
@@ -1722,7 +1718,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     dragPayload = null;
     dragStartPayload = null;
     pointerPayload = null;
-    nativePointerBridge = null;
     lastHoveredFolderId = '';
     lastHoveredFolderAt = 0;
     dropCommitted = false;
@@ -1750,7 +1745,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     dragPayload = payload;
     dragStartPayload = payload;
     pointerPayload = null;
-    nativePointerBridge = null;
     dropCommitted = false;
     row.classList.add('cgfm-dragging-folder');
     try {
@@ -1777,35 +1771,50 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       dragPayload = null;
       dragStartPayload = null;
       dropCommitted = false;
-      nativePointerBridge = {
-        pointerId: typeof event.pointerId === 'number' ? event.pointerId : null,
-        startX: Number(event.clientX) || 0,
-        startY: Number(event.clientY) || 0,
-        active: false,
-        payload: chat
-      };
+      lastHoveredFolderId = '';
+      lastHoveredFolderAt = 0;
       clearDropHighlight();
       return;
     }
 
     const chat = maybeEnableTransientNativeChatDrag(event) || extractChatFromEvent(event);
-    if (chat) pointerPayload = chat;
+    if (chat) {
+      chat.kind = 'chat';
+      pointerPayload = chat;
+      dropCommitted = false;
+    }
   }
 
-  function onNativeHistoryPointerMove(event) {
-    const bridge = nativePointerBridge;
-    if (!bridge || !bridge.payload || !rootEl || !document.body.contains(rootEl)) return;
-    if (bridge.pointerId !== null && typeof event.pointerId === 'number' && event.pointerId !== bridge.pointerId) return;
+  function getFolderDropTargetAtPoint(event, payload) {
+    if (!rootEl || !document.body.contains(rootEl) || !event) return null;
+    const x = Number(event.clientX) || 0;
+    const y = Number(event.clientY) || 0;
+    let candidates = [];
+    try {
+      if (typeof document.elementsFromPoint === 'function') candidates = document.elementsFromPoint(x, y) || [];
+      else {
+        const one = document.elementFromPoint(x, y);
+        if (one) candidates = [one];
+      }
+    } catch (_) {}
 
-    if (!bridge.active) {
-      const dx = (Number(event.clientX) || 0) - bridge.startX;
-      const dy = (Number(event.clientY) || 0) - bridge.startY;
-      if ((dx * dx) + (dy * dy) < POINTER_BRIDGE_THRESHOLD_PX * POINTER_BRIDGE_THRESHOLD_PX) return;
-      bridge.active = true;
+    for (const element of candidates) {
+      if (!(element instanceof Element) || !rootEl.contains(element)) continue;
+      const target = resolveFolderDropTargetFromElement(element, payload, false);
+      if (target) return target;
     }
 
-    const element = document.elementFromPoint(Number(event.clientX) || 0, Number(event.clientY) || 0);
-    const target = resolveFolderDropTargetFromElement(element, bridge.payload, false);
+    if (event.target instanceof Element && rootEl.contains(event.target)) {
+      return resolveFolderDropTargetFromElement(event.target, payload, false);
+    }
+    return null;
+  }
+
+  function onDocumentNativeChatDragOver(event) {
+    const payload = pointerPayload || dragPayload || dragStartPayload;
+    if (payloadKind(payload) !== 'chat') return;
+
+    const target = getFolderDropTargetAtPoint(event, payload);
     if (!target) {
       lastHoveredFolderId = '';
       lastHoveredFolderAt = 0;
@@ -1813,62 +1822,30 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return;
     }
 
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    } catch (_) {}
     lastHoveredFolderId = target.folderId;
     lastHoveredFolderAt = Date.now();
     clearDropHighlight(target.element);
     target.element.classList.add(target.isRoot ? 'cgfm-root-drop' : 'cgfm-drop-inside');
-    try { event.preventDefault(); } catch (_) {}
   }
 
-  function onNativeHistoryPointerUp(event) {
-    const bridge = nativePointerBridge;
-    if (!bridge) return;
-    if (bridge.pointerId !== null && typeof event.pointerId === 'number' && event.pointerId !== bridge.pointerId) return;
+  function onDocumentNativeChatDrop(event) {
+    const payload = pointerPayload || dragPayload || dragStartPayload || getDragPayload(event, true);
+    if (payloadKind(payload) !== 'chat') return;
 
-    let committed = false;
-    if (bridge.active && rootEl && document.body.contains(rootEl)) {
-      const element = document.elementFromPoint(Number(event.clientX) || 0, Number(event.clientY) || 0);
-      const target = resolveFolderDropTargetFromElement(element, bridge.payload, false);
-      if (target && !dropCommitted) {
-        try { event.preventDefault(); } catch (_) {}
-        try { event.stopPropagation(); } catch (_) {}
-        commitDropPayload(bridge.payload, target.folderId);
-        dropCommitted = true;
-        committed = true;
-        suppressBridgeClickUntil = Date.now() + 600;
-      }
-    }
+    const target = getFolderDropTargetAtPoint(event, payload);
+    if (!target) return;
 
+    event.preventDefault();
+    event.stopPropagation();
     clearDropHighlight();
-    nativePointerBridge = null;
-    pointerPayload = null;
-    lastHoveredFolderId = '';
-    lastHoveredFolderAt = 0;
-    if (!committed) dropCommitted = false;
-  }
-
-  function onNativeHistoryPointerCancel(event) {
-    const bridge = nativePointerBridge;
-    if (!bridge) return;
-    if (bridge.pointerId !== null && typeof event.pointerId === 'number' && event.pointerId !== bridge.pointerId) return;
-    nativePointerBridge = null;
-    pointerPayload = null;
-    lastHoveredFolderId = '';
-    lastHoveredFolderAt = 0;
-    dropCommitted = false;
-    clearDropHighlight();
-  }
-
-  function onNativePointerBridgeClickCapture(event) {
-    if (Date.now() >= suppressBridgeClickUntil) {
-      restoreTransientNativeChatDrag();
-      return;
-    }
-    if (!rootEl || !(event.target instanceof Node) || !rootEl.contains(event.target)) return;
-    suppressBridgeClickUntil = 0;
-    try { event.preventDefault(); } catch (_) {}
-    try { event.stopPropagation(); } catch (_) {}
-    restoreTransientNativeChatDrag();
+    if (dropCommitted) return;
+    commitDropPayload(payload, target.folderId);
+    dropCommitted = true;
   }
 
   function maybeEnableTransientNativeChatDrag(event) {
@@ -1876,8 +1853,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (!(target instanceof Element)) return null;
     if (target.closest('button[aria-haspopup="menu"],input,textarea,select,[contenteditable="true"],[data-trailing-button],[data-conversation-options-trigger]')) return null;
 
-    // New button-based conversation rows use the pointer bridge above. Only legacy
-    // /c/ anchors keep the temporary HTML5 draggable compatibility path.
+    // New button-based conversation rows use the document-capture drag bridge above.
+    // Only legacy /c/ anchors keep the temporary HTML5 draggable compatibility path.
     if (target.closest(NATIVE_CHAT_ROW_SELECTOR)) return null;
     const source = target.closest('a[href*="/c/"]');
     if (!source || (rootEl && rootEl.contains(source))) return null;
@@ -1939,7 +1916,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onNativeHistoryDragEnd() {
-    if (nativePointerBridge) return;
     const shouldFallback = !dropCommitted && lastHoveredFolderId && (Date.now() - lastHoveredFolderAt < 900);
     const payload = dragPayload || dragStartPayload || pointerPayload;
     if (shouldFallback && payload) {
