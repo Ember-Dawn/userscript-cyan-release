@@ -1,195 +1,195 @@
 # ChatGPT 对话轮数统计
 
-`chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本，只负责统计、缓存并显示当前对话的完整用户轮数，不修改 ChatGPT 的历史窗口大小，也不改写 conversation response body。
+`chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。v0.2.0 重新设计了计数核心：脚本不再主动分页抓取历史，而是被动读取 ChatGPT 页面自己已经请求到的 conversation `mapping`，统计其中全部用户消息节点，并用 DOM 增量维护当前页面的新消息。
 
 ## 功能定位
 
-- 一次 `user` 提问按 1 轮计数；`assistant`、`system`、`tool`、`thinking` 等消息不单独增加轮数。
-- 对当前新版 `/backend-api/conversations/<id>` 分页会话接口，先读取首屏 `messages` 与 `page_info`，再在需要时低速分页补齐更早历史。
-- 完整轮数写入 Tampermonkey GM storage；未完成统计保存 cursor 和已见 user message id，可在再次进入会话时续跑。
-- 已完成统计后，如果当前页面继续出现新的 user message，DOM 增量观察器直接把总轮数 `+1`，无需重新扫描历史。
+- “轮数”定义为当前 conversation `mapping` 中所有唯一的 `user` 消息节点数。
+- 不按 `current_node` 只统计当前 active path，因此编辑旧消息并重新发送后形成的其他分支也会计入总数。
+- 主数据源为 ChatGPT 页面自己发送的 `POST /backend-api/conversations/batch`；脚本只旁路观察 `response.clone()`，不会主动请求 batch。
+- 页面进入已有对话时先读取 Tampermonkey GM cache 秒显旧值；自然 batch 到达后用当前 `mapping` 重新校准。
+- batch 校准允许增加也允许减少：缓存只是启动时的临时显示值，当前服务器返回的 mapping 才是权威基线。
+- batch 基线建立后，页面新出现的 user message DOM 使用 message id 去重并实时 `+1`，无需额外网络请求。
 - 支持普通 `/c/<id>` 和 Project `/g/g-p-<project-id>/c/<id>` 路由。
-- 兼容当前新建普通对话的 `/ → /c/local-chatgpt:<uuid> → /c/<final-uuid>` 两阶段绑定。
-- 保留旧 `/backend-api/conversation/<id>` / `shared_conversation` 的 `mapping + current_node` 只读计数兼容路径。
+- 兼容普通新对话的 `/ → /c/local-chatgpt:<uuid> → /c/<final-uuid>` 两阶段绑定。
 
-## 与已归档长对话优化助手的关系
+## v0.2.0 为什么重构
 
-本脚本从 `ChatGPT 长对话优化助手 v0.3.6` 中提取完整总轮数统计子系统并独立维护。
-
-旧脚本同时包含两类职责：
-
-1. 修改 ChatGPT 原生 conversation 请求中的 `num_turns`，限制首屏加载的历史窗口；
-2. 通过分页、缓存和 DOM 增量统计完整总轮数。
-
-从本脚本开始只保留第 2 类职责。新的轮数统计脚本：
-
-- 不读取或保存 `keepRounds`；
-- 不提供历史窗口开关；
-- 不改写 `num_turns`；
-- 不裁剪旧 `mapping`；
-- 不构造修改后的 `Response`；
-- 对 ChatGPT 原生 conversation 请求仅旁路观察并 `clone()` JSON 用于计数。
-
-旧版完整实现原样归档为：
+2026-09-27 实测确认，当前 ChatGPT 在切换已有对话时会自然发送：
 
 ```text
-archive/userscripts/chatgpt-long-chat-optimizer-v0.3.6.user.js
-archive/userscripts/chatgpt-long-chat-optimizer-v0.3.6.md
+POST /backend-api/conversations/batch
 ```
 
-## 新版分页统计机制
+请求体形态为：
 
-当前主要会话接口：
+```json
+{
+  "conversation_ids": ["<conversation-id>"]
+}
+```
+
+响应是 conversation 数组，每个 conversation 直接包含：
 
 ```text
-/backend-api/conversations/<id>
+id
+mapping
+current_node
+...
 ```
 
-首屏响应中使用：
+多组长对话实测显示，`mapping` 中全部 user 节点数与从 `current_node` 沿 parent 回溯得到的 active-path user 数可能差异很大，例如 `46 vs 4`、`61 vs 56`、`55 vs 52`。这说明同一个 conversation URL 内可以同时保留多个消息路径；编辑旧消息并重新发送会改变当前路径，但旧路径节点仍可能保留在 `mapping` 中。
+
+v0.1.x 的分页方案会围绕 `/backend-api/conversations/<id>`、`page_info`、cursor 和 `latestUserMessageId` 维护完成状态，并主动调用 `/messages?before=...` 补齐历史。该设计既复杂，也会产生额外请求；同时 active-path 或局部历史变化可能让已缓存轮数被错误向下校正。
+
+v0.2.0 因此改为直接使用页面自然取得的完整 `mapping`，彻底移除主动历史分页链。
+
+## 计数规则
+
+### mapping 全量校准
+
+脚本只在观察到页面自己的：
 
 ```text
-messages
-page_info.start_cursor
-page_info.has_previous_page
-context_truncation_continuation
+POST /backend-api/conversations/batch
 ```
 
-脚本只统计 `author.role === "user"` 的唯一 message id。
+成功 JSON 响应时读取 conversation `mapping`。
 
-如果确认存在更早历史，则后台分页请求：
+遍历每个 mapping node，仅保留：
 
 ```text
-/backend-api/conversations/<id>/messages
-?before=<start_cursor>
-&include_has_versions=true
-&num_turns=25
+node.message.author.role === "user"
 ```
 
-这里的 `num_turns=25` 只用于轮数统计自己的后台分页，不修改 ChatGPT 首屏请求，也不改变页面实际渲染的历史窗口。
+并按 message id 去重；若 message id 缺失，则退回 mapping key。最终唯一 user 节点数量就是该 conversation 的权威轮数。
 
-### 后台策略
+脚本不使用 `current_node` 来决定轮数，因此：
 
-- 首次补齐前随机等待约 1.0–2.0 秒。
-- 每一页之间随机等待约 1.0–2.0 秒。
-- 同一时刻只运行当前会话的一条统计链。
-- 页面隐藏时不主动开始下一页；重新可见后继续。
-- SPA 切换和 `pagehide` 会中止当前请求。
-- 每页完成后立即持久保存断点。
-- 非 2xx、非 JSON 或 cursor 无法推进时暂停，不进行高频重试。
-- 最多保存最近 300 个稳定 conversation 的缓存记录。
+- 当前 active path 变短不会让分支外的 user 节点自动消失；
+- 编辑旧 user 消息重新发送后，新生成的 user 节点会作为新的累计节点计入；
+- 同一个 conversation 内不同路径的 user 节点都会统计。
 
-后台分页响应只由脚本解析，不交给 ChatGPT React，不会因为统计而把旧消息插入当前 DOM。
+### batch 请求期间的新消息
 
-## 请求上下文复用
+batch 请求发出后到响应返回前，用户可能又发送了新消息。为了避免较早发出的 batch 快照覆盖刚刚出现的 DOM 新消息，脚本在内存中记录实时 user message id 的观察时间。
 
-脚本在 `document-start` 阶段通过 `unsafeWindow` 进入页面主上下文并链式包装页面真实 `window.fetch`。
+应用 batch 快照时：
 
-当观察到当前会话的 `/backend-api/conversations/<id>` 请求时，只在内存中保存后台分页所需的请求模板：
+1. 先采用 mapping 中全部 user message id；
+2. 再保留“晚于该 batch 请求开始时间出现、且 mapping 尚未包含”的实时 user id；
+3. 得到新的当前总数；
+4. 后续 batch 一旦自然包含这些 id，就回到纯 mapping 基线。
 
-- 请求 headers；
-- credentials；
-- 当前 conversation id。
+这只是处理请求竞态，不是“只增不减”策略；如果新的权威 mapping 本身确实减少，缓存和显示值允许随之减少。
 
-后台请求沿用页面已有认证上下文，但不持久保存 Cookie、Token 或 Authorization Header。
+## 不主动请求网络
 
-Fetch wrapper 使用独立标记：
+v0.2.0 的网络原则是：**100% 被动观察，不为轮数统计额外发送 ChatGPT 请求。**
+
+脚本不会：
+
+- 主动调用 `/backend-api/conversations/batch`；
+- 主动调用 `/backend-api/conversations/<id>`；
+- 主动调用 `/messages?before=...`；
+- 定时轮询 conversation；
+- 为了“等待新数据”执行高频重试。
+
+Fetch wrapper 只识别页面自身已经发出的精确路径：
 
 ```text
-__CYAN_ROUND_COUNTER_FETCH_PATCHED__
+POST /backend-api/conversations/batch
 ```
 
-History wrapper 使用独立标记：
+然后对成功 JSON response 使用 `clone()` 解析；原 response 原样交还 ChatGPT，不修改请求、请求体或响应体。
 
-```text
-__CYAN_ROUND_COUNTER_HISTORY_PATCHED__
-```
+因此脚本不会因为轮数统计增加服务器请求频率，也不会再触发 v0.1.x 的后台历史分页流量。
 
-因此即使其他 ChatGPT userscript 也包装 `fetch` / History，本脚本也不会复用旧长对话助手的全局 patch flag。
+## GM 持久缓存
 
-## 新建对话首次绑定
-
-2026-09-25 的实测链路为：
-
-```text
-/
-→ /c/local-chatgpt:<local-uuid>
-→ /c/<final-uuid>
-```
-
-脚本将会话生命周期分成：
-
-```text
-UNBOUND  /                         尚未绑定
-LOCAL    /c/local-chatgpt:<uuid>   中间绑定
-STABLE   /c/<final-uuid>           最终稳定会话
-```
-
-处理规则：
-
-- `/` 阶段捕获的 user message id 放入 `pendingNewConversationUserIds`。
-- `local-chatgpt:*` 与历史兼容的 `WEB:*` 都视为临时 ID，不写正式 GM cache。
-- 切到最终稳定 ID 后，把 pending user message id 一次性初始化到正式 conversation。
-- 预期首轮链路为 `1 → 正式 UUID 后仍为 1 → 再发送一轮后为 2`。
-- 从已有稳定 `/c/<uuid>` 打开的旧会话不使用 bootstrap，而是走首屏分页分析与持久缓存恢复。
-
-## Composer 上沿状态
-
-轮数状态挂载在当前 thread Composer 的 `data-above-composer-portal` 中，作为贴住输入框外边框右上方的轻量 badge；badge 下边缘与 Composer 上边框轻微重叠，使两者视觉上直接相接，不再保留上方空隙。页面不再使用右下角悬浮组件，也不提供设置面板：
-
-```text
-0   当前尚无 user 轮次
-…   正在后台补齐完整轮数
-+   确认有更早历史，等待继续统计
-!   完整轮数统计已暂停
-86  已获得完整总轮数 86
-```
-
-badge 固定为 40 × 24 px，使用 1 px 黑色边框、透明背景和黑色文字；在保持尺寸不变的前提下，数字字号提高到 14 px。继续启用等宽数字排版并预留 3 位轮数宽度，避免 `9 → 99 → 999` 时横向跳动。外层挂载容器不参与 Composer 交互；badge 本身只保留悬停命中以显示 `title` 状态说明，不可聚焦，也没有点击行为。
-
-## 持久缓存
-
-缓存键：
+缓存键继续沿用：
 
 ```text
 cyan_chatgpt_conversation_round_counter_cache_v1
 ```
 
-未完成条目保存：
+沿用旧 key 是为了升级后仍能读取 v0.1.x 已保存的 `totalRounds`。v0.2.0 会把旧复杂条目归一化为简单结构：
 
-- `countedRounds`
-- `nextBeforeCursor`
-- `seenUserMessageIds`
-- `latestUserMessageId`
-- `updatedAt`
+```text
+totalRounds
+updatedAt
+```
 
-完成后只保留最终 `totalRounds`、`latestUserMessageId` 等必要字段，并清空分页去重列表以减少存储体积。
+不再持久保存：
 
-从 v0.1.4 起，已经完成的 GM cache 作为高可信持久基线：刷新或强制刷新后，如果当前首屏分页响应暂时没有包含缓存中的 `latestUserMessageId`，脚本不会因此删除完成缓存或重新抓取完整历史，而是继续显示已保存的 `totalRounds`。只有当接口明确返回 `has_previous_page=false`、能够确认当前响应已经覆盖完整会话时，才使用当前完整 user message 列表校正完成缓存。若首屏仍能找到缓存锚点，则继续按锚点后的新增 user message 增量更新。
+```text
+countedRounds
+nextBeforeCursor
+seenUserMessageIds
+latestUserMessageId
+```
 
-因此普通刷新、强制刷新、浏览器重启，以及只清理 `chatgpt.com` 的 Cookie / Local Storage / IndexedDB / Cache Storage，都不应删除这份轮数缓存；缓存属于 Tampermonkey GM storage。删除脚本、清除 Tampermonkey/扩展数据、卸载扩展或删除整个浏览器配置文件时则可能丢失。
+缓存职责只有两个：
 
-新脚本使用独立的 Tampermonkey 存储空间和新缓存键，不尝试迁移已归档长对话优化助手中的旧缓存；首次进入已有长对话时可能需要重新完成一次统计。
+1. 打开/刷新已有会话时，在自然 batch 到达前立即显示上次总数；
+2. mapping 校准或当前页面实时新增后保存最新总数。
+
+缓存不是单调计数器。自然 batch 到达后，当前 mapping 统计值可以覆盖更高或更低的旧缓存。
+
+普通刷新、强制刷新、浏览器重启，以及只清理 `chatgpt.com` 的 Cookie / Local Storage / IndexedDB / Cache Storage，都不应删除 Tampermonkey GM storage。删除脚本、清除 Tampermonkey/扩展数据、卸载扩展或删除整个浏览器配置文件时则可能丢失缓存。
+
+## 当前页面实时增量
+
+batch mapping 建立权威基线后，脚本在页面 DOM 中观察：
+
+```css
+[data-message-author-role="user"][data-message-id]
+```
+
+新出现且 mapping 尚未认识的 user message id：
+
+```text
+当前总数 +1
+→ 写入 GM cache
+→ 更新 badge
+```
+
+为了避免进入旧会话时把 React 重新挂载、向上滚动或历史虚拟化产生的旧 DOM 当成“新轮次”，已有稳定 conversation 在只恢复到 GM cache、尚未收到本次自然 batch 前不会启用 DOM 增量。batch 校准后，mapping 中全部历史 user id 已作为内存去重基线，此时再启用实时增量。
+
+新建对话例外：在正式 UUID 尚未建立时，脚本继续收集页面实际出现的 user message id；当 `/ → local-chatgpt:* → final UUID` 完成绑定后，以这些 pending id 初始化新 conversation，再等待后续自然 batch 校准。
+
+## Composer 上沿状态
+
+轮数 badge 继续挂载在当前 thread Composer 的 `data-above-composer-portal` 中，UI 位置与 v0.1.4 保持不变：
+
+```text
+0   新对话尚无 user 轮次
+–   已进入稳定 conversation，但尚无缓存且仍在等待自然 batch
+86  当前已有 86 个累计 user 节点
+```
+
+badge 固定为 40 × 24 px，`right: 14px`、`bottom: -1px`，使用 1 px 黑色边框、透明背景、黑色 14 px 文字。它紧贴 Composer 上边框，不提供点击行为。
+
+若数字来自 GM cache，悬停 title 会标注“缓存，等待页面自然校准”；mapping 或实时 DOM 已更新后恢复普通轮数 title。
 
 ## DOM 与性能策略
 
-轮数消息和 Composer badge 分开维护，避免 UI 逻辑进入全局 DOM 热路径：
-
-- 全局消息 MutationObserver 只处理新增节点中的 user message，不再调用 `ensureUi()`。
-- user message 检测先用单次 `querySelector()` 判断新增子树是否包含目标消息，只有命中时才枚举匹配节点，减少无关 DOM 的遍历。
-- badge 首次挂载和 SPA 路由切换后只执行一组有上限的短时重试；挂载成功后立即清理剩余 timer，不做持续轮询。
-- badge 挂载成功后仅观察 `data-above-composer-portal`、对应 composer form 和 form 的直属父节点，且都只监听 `childList`，不监听 subtree；只有 portal / form 实际被替换或 badge 被移除时才重新挂载。
-- `renderUiState()` 对文字、title 和状态属性逐项比较，值没有变化时不写 DOM，避免产生无意义 MutationRecord。
-- 捕获新出现的 `[data-message-author-role="user"][data-message-id]` 后，在完整统计已经建立时执行本地增量 `+1`；新建会话正式 UUID 尚未绑定时则维护 pending user message id。
-
-因此页面静止、正常输入和普通 React 更新不会持续触发 badge 查询或重绘；UI 维护只在首次挂载、路由变化或 Composer 结构真正替换时工作。
+- 全局消息 MutationObserver 只处理新增节点中的 user message selector，不承担 Composer UI 维护。
+- 已有旧对话在 mapping 基线建立前关闭 DOM 增量，避免历史 DOM 懒加载误计数。
+- mapping user id、当前页面实时新增 id 和新对话 pending id 只保存在当前页面内存；GM storage 只持久保存总数和更新时间。
+- badge 首次挂载与 SPA 路由切换后只进行有限次数短时重试；挂载成功后清理剩余 timer。
+- badge 挂载成功后仅观察 portal、对应 composer form 和 form 直属父节点的 `childList`，不使用全局 subtree 做 UI 重挂载。
+- `renderUiState()` 只在文字、title 或来源状态实际变化时写 DOM。
+- 不存在历史分页 timer、网络轮询 timer 或页面隐藏后恢复分页的逻辑。
 
 ## 隐私与安全
 
 - 不向第三方服务器发送数据。
-- 不保存聊天正文、conversation response、Cookie、Token 或 Authorization Header。
-- GM storage 只保存轮数、message id、cursor 与时间戳等统计状态。
-- 后台分页会产生额外的 ChatGPT 历史 GET 请求，但采用延迟、串行、页面隐藏暂停和错误即暂停策略。
-- `/backend-api/conversations`、`/messages`、`page_info` 等均为 ChatGPT 内部实现，不属于公开稳定 API，未来可能需要重新适配。
+- 不为统计主动发送任何 ChatGPT API 请求。
+- 不修改 ChatGPT 自身请求或响应。
+- batch response 只在内存中通过 `response.clone()` 读取；不会持久保存完整 conversation、聊天正文、Cookie、Token 或 Authorization Header。
+- 内存中只需要 mapping 的 user message id 用于当前页面去重；GM storage 只保存轮数和更新时间。
+- `/backend-api/conversations/batch` 与 `mapping` 都属于 ChatGPT 内部实现，不是公开稳定 API；未来如果页面更换数据入口，需要重新观察真实网络请求后适配。
 
 ## 维护检查
 
@@ -201,20 +201,15 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 
 实际页面建议至少验证：
 
-1. 普通 `/c/<id>` 能观察 `/backend-api/conversations/<id>`，且请求 URL 原样发送，不修改 `num_turns`。
-2. 页面 Console 中 `window.__CYAN_ROUND_COUNTER_FETCH_PATCHED__ === true`。
-3. Project `/g/g-p-.../c/<id>` 能正确匹配当前 conversation id。
-4. 若首屏 `has_previous_page=true`，后台使用 `/messages?before=`、`num_turns=25` 串行补齐。
-5. 统计过程中切换会话会中止当前链；返回后从持久 cursor 续跑。
-6. 页面隐藏时不启动新的后台页；恢复可见后继续。
-7. 完成统计后继续发送 user message，显示值只增加一次并同步缓存。
-8. 页面自己向上滚动产生的 `/messages?before=` 如果刚好匹配当前断点，可被顺带用于统计。
-9. 非 2xx / 非 JSON / cursor 不推进时暂停，不高频重试。
-10. 新建对话 `/ → local-chatgpt:* → final UUID` 中首轮计数保持连续。
-11. `WEB:*` 临时 ID 仍作为兼容路径，不写正式缓存。
-12. 旧 `mapping + current_node` 响应仍可只读计算 user 轮数，不改写 response。
-13. 与其他包装 `window.fetch` / History 的 userscript 共存时，不应覆盖对方的独立 patch flag。
-14. 状态 badge 应挂载到当前 thread Composer 的 `data-above-composer-portal`，紧贴输入框上边框右侧；Composer 重建后能自动重新挂载，且 `1`、`99`、`999` 显示宽度保持不变。
-15. 对已完成统计的会话执行 F5、Ctrl+Shift+R 或重新打开页面时，如果首屏分页暂时不含缓存的 `latestUserMessageId`，应继续显示 GM cache 中的总轮数且不启动完整历史重抓；只有 `has_previous_page=false` 明确证明当前响应覆盖完整会话时才允许校正完成缓存。
-16. 打开 Performance / Console 验证页面静止和正常输入时不会出现 badge 自触发的 MutationObserver 循环；无状态变化时 `renderUiState()` 不应反复写 DOM。
-17. Composer 已稳定挂载后，不应存在持续轮询 timer；UI observer 仅监听 portal、composer form 及直属父节点的 `childList`，不得恢复到 `document.documentElement + subtree` 的 UI 检查路径。
+1. 切换已有 `/c/<id>` 时，ChatGPT 页面自身会自然产生 `POST /backend-api/conversations/batch`；轮数脚本本身不会主动增加任何 batch 请求。
+2. batch 返回 `mapping + current_node` 时，脚本统计整个 mapping 的唯一 user 节点，而不是只统计 current-node active path。
+3. 对存在明显分支的 conversation，badge 应与 mapping 的 `allUserNodeCount` 一致，即使 active-path user 数明显更小。
+4. 刷新已有对话时先显示 GM cache；自然 batch 到达后允许按当前 mapping 向上或向下校准。
+5. batch 基线建立后继续发送一条 user 消息，badge 只增加一次；后续自然 batch 包含该 id 时不得再次增加。
+6. batch 请求进行期间发送新消息时，即使响应快照尚未包含新 id，也不能把刚增加的实时轮次覆盖掉。
+7. 只有 GM cache、但本次尚未收到 batch 时，滚动历史或 React 重挂载旧消息不得增加轮数。
+8. 新对话 `/ → local-chatgpt:* → final UUID` 的第一轮计数保持连续，正式 UUID 建立后保存缓存。
+9. Project `/g/g-p-.../c/<id>` 能正确匹配当前 conversation id。
+10. Console 中 `window.__CYAN_ROUND_COUNTER_FETCH_PATCHED__ === true`；与其他包装 `window.fetch` / History 的 userscript 共存时不得复用对方 patch flag。
+11. 不应出现脚本主动发出的 `/messages?before=`、conversation 分页请求或轮数相关轮询。
+12. Composer badge 仍位于输入框右上沿，Composer 重建后可以自动重新挂载，且不会形成 MutationObserver 自触发循环。
