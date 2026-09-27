@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.2.2
-// @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，并为临时对话输入框提供青色视觉提示。
+// @version      0.3.0
+// @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，显示当前对话名称，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -17,11 +17,14 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.2.2';
+    const VERSION = '0.3.0';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
     const FILE_HIGHLIGHT_CLASS = 'cg-file-link-highlight';
+    const CONVERSATION_TITLE_ROOT_ID = 'cg-conversation-title-root';
+    const CONVERSATION_TITLE_BOX_ID = 'cg-conversation-title-box';
+    const CONVERSATION_TITLE_TEXT_ID = 'cg-conversation-title-text';
     const ASSISTANT_CONTENT_SELECTOR = [
         '[data-markdown-text-style="assistant-message"]',
         '[data-message-author-role="assistant"] .markdown',
@@ -32,6 +35,10 @@
 
     const pendingRoots = new Set();
     let scanScheduled = false;
+    let conversationTitleSyncScheduled = false;
+    let conversationTitleMountToken = 0;
+    let currentConversationId = extractConversationPageId();
+    let documentTitleTrusted = true;
 
     const css = `
 /* 白天模式：主界面与侧边栏统一为中性浅灰，输入框稍亮以保留层次。 */
@@ -58,6 +65,45 @@ html:not(.dark) body {
 /* 临时对话：直接标记当前 Composer，并混入 10% #0891B2 背景。 */
 [data-composer-body][${TEMPORARY_CHAT_ATTRIBUTE}="true"] {
     background-color: color-mix(in srgb, var(--composer-surface-primary) 90%, #0891B2 10%) !important;
+}
+
+/* 当前对话名称：占用 Composer 左上沿，并为右侧顺序任务与轮数控件预留空间。 */
+#${CONVERSATION_TITLE_ROOT_ID} {
+    position: absolute;
+    left: 14px;
+    right: 166px;
+    bottom: -1px;
+    z-index: 20;
+    min-width: 0;
+    pointer-events: none;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#${CONVERSATION_TITLE_BOX_ID} {
+    box-sizing: border-box;
+    width: max-content;
+    max-width: 100%;
+    height: 24px;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    background: transparent;
+    color: var(--text-primary, #000);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    pointer-events: auto;
+    cursor: default;
+    user-select: none;
+}
+
+#${CONVERSATION_TITLE_TEXT_ID} {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .${FILE_HIGHLIGHT_CLASS},
@@ -137,6 +183,213 @@ html:not(.dark) body {
 
     function normalizeText(text) {
         return (text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function extractConversationPageId() {
+        const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)(?:\/|$)/);
+        if (!match?.[1]) return null;
+        try {
+            return decodeURIComponent(match[1]);
+        } catch {
+            return match[1];
+        }
+    }
+
+    function isLocalConversationId(conversationId) {
+        return typeof conversationId === 'string' && /^local-chatgpt:/i.test(conversationId);
+    }
+
+    function cleanConversationTitle(title) {
+        return normalizeText(title).slice(0, 200);
+    }
+
+    function cleanConversationAriaLabel(label) {
+        const value = cleanConversationTitle(label);
+        const chinese = value.match(/^打开[“"]?(.+?)[”"]?的对话选项(?:.*)?$/);
+        if (chinese) return cleanConversationTitle(chinese[1]);
+
+        const englishFor = value.match(/^Open\s+(?:(?:conversation|chat)\s+)?options\s+for\s+[“"]?(.+?)[”"]?(?:[.!])?$/i);
+        if (englishFor) return cleanConversationTitle(englishFor[1]);
+
+        const english = value.match(/^Open(?:\s+[“"]?|[“"])(.+?)[”"]?(?:['’]s)?\s+(?:(?:conversation|chat)\s+)?options(?:[.!])?$/i);
+        return english ? cleanConversationTitle(english[1]) : cleanConversationTitle(value);
+    }
+
+    function cleanDocumentConversationTitle(title) {
+        return cleanConversationTitle(title)
+            .replace(/\s*(?:[|｜·•]|[-–—])\s*ChatGPT\s*$/i, '')
+            .trim()
+            .slice(0, 200);
+    }
+
+    function extractConversationIdFromHref(href) {
+        try {
+            const url = new URL(href, location.href);
+            const match = url.pathname.match(/(?:^|\/)c\/([^/?#]+)(?:\/|$)/);
+            if (!match?.[1]) return null;
+            try {
+                return decodeURIComponent(match[1]);
+            } catch {
+                return match[1];
+            }
+        } catch {
+            return null;
+        }
+    }
+
+    function isVisibleElement(element) {
+        if (!(element instanceof Element) || !element.isConnected) return false;
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        return element.getClientRects().length > 0;
+    }
+
+    function extractTitleFromAnchor(anchor) {
+        if (!anchor) return '';
+        const clone = anchor.cloneNode(true);
+        clone.querySelectorAll('button, svg, [aria-hidden="true"]').forEach((node) => node.remove());
+        const visibleText = cleanConversationTitle(clone.textContent || anchor.textContent || '');
+        const ariaText = cleanConversationAriaLabel(anchor.getAttribute('aria-label') || '');
+        return visibleText || ariaText;
+    }
+
+    function findNativeConversationTitle(conversationId) {
+        if (!conversationId) return '';
+        const matches = [];
+        for (const anchor of document.querySelectorAll('a[href*="/c/"]')) {
+            if (extractConversationIdFromHref(anchor.getAttribute('href') || anchor.href || '') === conversationId) {
+                matches.push(anchor);
+            }
+        }
+        if (!matches.length) return '';
+        const anchor = matches.find(isVisibleElement) || matches[0];
+        return extractTitleFromAnchor(anchor);
+    }
+
+    function getCurrentConversationTitle() {
+        if (isTemporaryChat()) {
+            return '临时对话';
+        }
+
+        if (!currentConversationId || isLocalConversationId(currentConversationId)) {
+            return '新对话';
+        }
+
+        if (documentTitleTrusted) {
+            const pageTitle = cleanDocumentConversationTitle(document.title || '');
+            if (pageTitle && !/^ChatGPT$/i.test(pageTitle)) {
+                return pageTitle;
+            }
+        }
+
+        return findNativeConversationTitle(currentConversationId) || '加载中…';
+    }
+
+    function getComposerPortal() {
+        return document.querySelector(
+            'form[data-chatgpt-composer][data-composer-placement="thread"] > [data-above-composer-portal="true"]'
+        ) || document.querySelector(
+            'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
+        );
+    }
+
+    function renderConversationTitle() {
+        const box = document.getElementById(CONVERSATION_TITLE_BOX_ID);
+        const text = document.getElementById(CONVERSATION_TITLE_TEXT_ID);
+        if (!box || !text) return;
+
+        const title = getCurrentConversationTitle();
+        if (text.textContent !== title) {
+            text.textContent = title;
+        }
+        if (box.title !== title) {
+            box.title = title;
+        }
+    }
+
+    function installConversationTitle(portal) {
+        if (!portal?.isConnected || getComposerPortal() !== portal) {
+            return false;
+        }
+
+        let root = document.getElementById(CONVERSATION_TITLE_ROOT_ID);
+        if (!root) {
+            root = document.createElement('div');
+            root.id = CONVERSATION_TITLE_ROOT_ID;
+
+            const box = document.createElement('div');
+            box.id = CONVERSATION_TITLE_BOX_ID;
+            box.setAttribute('role', 'status');
+            box.setAttribute('aria-live', 'polite');
+
+            const text = document.createElement('span');
+            text.id = CONVERSATION_TITLE_TEXT_ID;
+            box.appendChild(text);
+            root.appendChild(box);
+        }
+
+        if (root.parentElement !== portal) {
+            portal.appendChild(root);
+        }
+
+        renderConversationTitle();
+        return true;
+    }
+
+    function scheduleConversationTitleMount() {
+        if (document.readyState !== 'complete') return;
+
+        const portal = getComposerPortal();
+        if (!portal) return;
+
+        const root = document.getElementById(CONVERSATION_TITLE_ROOT_ID);
+        if (root?.parentElement === portal) {
+            renderConversationTitle();
+            return;
+        }
+
+        const token = ++conversationTitleMountToken;
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+                if (token !== conversationTitleMountToken) return;
+                if (portal !== getComposerPortal() || !portal.isConnected) return;
+                installConversationTitle(portal);
+            });
+        });
+    }
+
+    function scheduleConversationTitleSync() {
+        if (conversationTitleSyncScheduled) return;
+        conversationTitleSyncScheduled = true;
+        window.requestAnimationFrame(() => {
+            conversationTitleSyncScheduled = false;
+            scheduleConversationTitleMount();
+            renderConversationTitle();
+        });
+    }
+
+    function handleLocationChange() {
+        const nextConversationId = extractConversationPageId();
+        if (nextConversationId !== currentConversationId) {
+            currentConversationId = nextConversationId;
+            documentTitleTrusted = false;
+        }
+        syncTemporaryChatState(document);
+        scheduleConversationTitleSync();
+    }
+
+    function markDocumentTitleFresh() {
+        documentTitleTrusted = true;
+        scheduleConversationTitleSync();
+    }
+
+    function isTitleMutation(mutation) {
+        const target = mutation.target;
+        if (target instanceof Element && target.tagName === 'TITLE') return true;
+        if (target?.parentElement?.tagName === 'TITLE') return true;
+        return Array.from(mutation.addedNodes || []).some(
+            (node) => node instanceof Element && (node.tagName === 'TITLE' || node.querySelector?.('title'))
+        );
     }
 
     function safeDecodeURIComponent(value) {
@@ -263,7 +516,14 @@ html:not(.dark) body {
 
     function observePageChanges() {
         const observer = new MutationObserver((mutations) => {
+            let titleChanged = false;
+            let titleMountMayBeNeeded = false;
+
             for (const mutation of mutations) {
+                if (isTitleMutation(mutation)) {
+                    titleChanged = true;
+                }
+
                 if (mutation.type === 'characterData') {
                     scheduleFileScan(mutation.target.parentElement);
                     continue;
@@ -272,7 +532,19 @@ html:not(.dark) body {
                 for (const node of mutation.addedNodes) {
                     syncTemporaryChatState(node);
                     scheduleFileScan(node);
+                    if (node instanceof Element && (
+                        node.matches?.('form[data-chatgpt-composer], [data-above-composer-portal="true"]') ||
+                        node.querySelector?.('form[data-chatgpt-composer], [data-above-composer-portal="true"]')
+                    )) {
+                        titleMountMayBeNeeded = true;
+                    }
                 }
+            }
+
+            if (titleChanged) {
+                markDocumentTitleFresh();
+            } else if (titleMountMayBeNeeded || !document.getElementById(CONVERSATION_TITLE_ROOT_ID)?.isConnected) {
+                scheduleConversationTitleSync();
             }
         });
 
@@ -289,21 +561,36 @@ html:not(.dark) body {
     patchHistoryMethod('pushState');
     patchHistoryMethod('replaceState');
 
-    window.addEventListener('popstate', () => syncTemporaryChatState(document));
-    window.addEventListener(LOCATION_CHANGE_EVENT, () => syncTemporaryChatState(document));
-    window.addEventListener('load', () => scheduleFileScan(document));
-    window.addEventListener('focus', () => scheduleFileScan(document));
+    window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener(LOCATION_CHANGE_EVENT, handleLocationChange);
+    window.addEventListener('load', () => {
+        documentTitleTrusted = true;
+        scheduleFileScan(document);
+        scheduleConversationTitleSync();
+    });
+    window.addEventListener('focus', () => {
+        scheduleFileScan(document);
+        scheduleConversationTitleSync();
+    });
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) scheduleFileScan(document);
+        if (!document.hidden) {
+            scheduleFileScan(document);
+            scheduleConversationTitleSync();
+        }
     });
 
     observePageChanges();
     scheduleFileScan(document);
+    scheduleConversationTitleSync();
 
     window.__cgVisualEnhancer = {
         version: VERSION,
         scanFileControls() {
             scanFileControls(document);
+        },
+        syncConversationTitle() {
+            documentTitleTrusted = true;
+            scheduleConversationTitleSync();
         },
     };
 })();
