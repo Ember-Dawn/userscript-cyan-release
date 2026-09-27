@@ -1,6 +1,6 @@
 # ChatGPT 对话轮数统计
 
-`chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。v0.2.0 重新设计了计数核心：脚本不再主动分页抓取历史，而是被动读取 ChatGPT 页面自己已经请求到的 conversation `mapping`，统计其中全部用户消息节点，并用 DOM 增量维护当前页面的新消息。
+`chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。v0.2.x 使用被动 batch + mapping 计数核心：脚本不主动分页抓取历史，而是读取 ChatGPT 页面自己已经请求到的 conversation `mapping`，统计其中全部用户消息节点，并用 DOM 增量维护当前页面的新消息。v0.2.1 进一步修复 F5 首次加载时 Composer badge 可能错过挂载的问题。
 
 ## 功能定位
 
@@ -12,6 +12,21 @@
 - batch 基线建立后，页面新出现的 user message DOM 使用 message id 去重并实时 `+1`，无需额外网络请求。
 - 支持普通 `/c/<id>` 和 Project `/g/g-p-<project-id>/c/<id>` 路由。
 - 兼容普通新对话的 `/ → /c/local-chatgpt:<uuid> → /c/<final-uuid>` 两阶段绑定。
+
+## v0.2.1 Composer 首次挂载修复
+
+F5 / Ctrl+Shift+R 首次加载时，ChatGPT 的 Composer 可能在 DOMContentLoaded 后较晚才真正建立。v0.2.0 只在 `0 / 60 / 180 / 400 / 800 / 1500 / 2500 ms` 内尝试寻找 Composer；若 2.5 秒内仍未出现，脚本便不再等待，表现为 badge 偶尔缺失，而 SPA 切换对话后因为重新触发挂载流程又会恢复。
+
+v0.2.1 取消这组有限重试 timer，改为：
+
+1. 网络层仍在 `document-start` 立即安装 batch 被动监听，不等待 UI；
+2. badge 首次挂载不在页面 hydration 早期直接写入 Composer，先等待文档达到 `complete`；
+3. 若此时 Composer 尚未出现，仅在“尚未挂载 badge”期间临时观察 DOM，直到找到当前 thread Composer 的 `data-above-composer-portal`；
+4. 找到 portal 后再等待两个 animation frame，并确认 portal 仍是当前有效节点，才挂载 badge；
+5. 挂载成功立即断开临时全局等待 observer；之后仍只使用 portal、composer form 和 form 直属父节点三个窄范围 `childList` observer 维护重挂载；
+6. SPA 切换或 Composer 真正替换时重新进入同一等待流程，不设置固定截止时间。
+
+因此首次加载即使 Composer 晚于 2.5 秒出现也不会永久错过，同时避免在 React 首次 hydration 尚未完成时过早向 Composer portal 插入 badge。
 
 ## v0.2.0 为什么重构
 
@@ -177,8 +192,8 @@ badge 固定为 40 × 24 px，`right: 14px`、`bottom: -1px`，使用 1 px 黑�
 - 全局消息 MutationObserver 只处理新增节点中的 user message selector，不承担 Composer UI 维护。
 - 已有旧对话在 mapping 基线建立前关闭 DOM 增量，避免历史 DOM 懒加载误计数。
 - mapping user id、当前页面实时新增 id 和新对话 pending id 只保存在当前页面内存；GM storage 只持久保存总数和更新时间。
-- badge 首次挂载与 SPA 路由切换后只进行有限次数短时重试；挂载成功后清理剩余 timer。
-- badge 挂载成功后仅观察 portal、对应 composer form 和 form 直属父节点的 `childList`，不使用全局 subtree 做 UI 重挂载。
+- badge 首次加载先等待文档 `complete`；若 Composer 尚未出现，临时使用全局 `childList + subtree` observer 仅负责等待首次 portal。portal 出现后等待两个 animation frame 再挂载，成功后立即断开该临时 observer，不保留持续全局 UI 观察。
+- badge 挂载成功后仅观察 portal、对应 composer form 和 form 直属父节点的 `childList`；只有 Composer 真正被替换时才重新启用临时首次等待 observer。
 - `renderUiState()` 只在文字、title 或来源状态实际变化时写 DOM。
 - 不存在历史分页 timer、网络轮询 timer 或页面隐藏后恢复分页的逻辑。
 
@@ -212,4 +227,5 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 9. Project `/g/g-p-.../c/<id>` 能正确匹配当前 conversation id。
 10. Console 中 `window.__CYAN_ROUND_COUNTER_FETCH_PATCHED__ === true`；与其他包装 `window.fetch` / History 的 userscript 共存时不得复用对方 patch flag。
 11. 不应出现脚本主动发出的 `/messages?before=`、conversation 分页请求或轮数相关轮询。
-12. Composer badge 仍位于输入框右上沿，Composer 重建后可以自动重新挂载，且不会形成 MutationObserver 自触发循环。
+12. F5 / Ctrl+Shift+R 时即使 Composer 晚于 2.5 秒出现，badge 最终也应挂载；首次挂载前等待文档 `complete` 和两个 animation frame，避免过早介入 hydration。
+13. badge 稳定挂载后，临时全局等待 observer 应已断开；后续只保留 portal、composer form 和直属父节点的窄范围 `childList` observer，Composer 重建后仍可自动重新挂载且不会形成 MutationObserver 自触发循环。

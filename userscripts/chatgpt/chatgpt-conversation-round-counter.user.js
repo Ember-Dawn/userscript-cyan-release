@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.2.0
+// @version      0.2.1
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -51,7 +51,9 @@
     let uiPortalObserver = null;
     let uiFormObserver = null;
     let uiParentObserver = null;
-    let uiRetryTimers = [];
+    let uiWaitObserver = null;
+    let uiMountToken = 0;
+    let uiLoadWaitArmed = false;
 
     function diagnosticError(message, error) {
         console.error(`${DIAGNOSTIC_PREFIX} ${message}`, error);
@@ -411,11 +413,27 @@
         uiParentObserver = null;
     }
 
-    function clearUiRetryTimers() {
-        for (const timer of uiRetryTimers) {
-            window.clearTimeout(timer);
+    function disconnectUiWaitObserver() {
+        uiWaitObserver?.disconnect();
+        uiWaitObserver = null;
+    }
+
+    function startUiWaitObserver() {
+        if (uiWaitObserver || !document.documentElement) {
+            return;
         }
-        uiRetryTimers = [];
+        uiWaitObserver = new MutationObserver(() => {
+            if (document.readyState !== 'complete') {
+                return;
+            }
+            const portal = getComposerPortal();
+            if (!portal) {
+                return;
+            }
+            disconnectUiWaitObserver();
+            scheduleStableUiMount(portal);
+        });
+        uiWaitObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     function bindUiObservers(portal) {
@@ -428,14 +446,14 @@
         uiPortalObserver = new MutationObserver(() => {
             const root = document.getElementById('cyan-round-counter-root');
             if (!root || root.parentElement !== portal) {
-                ensureUi();
+                scheduleStableUiMount(portal);
             }
         });
         uiPortalObserver.observe(portal, { childList: true });
 
         uiFormObserver = new MutationObserver(() => {
             if (!form.isConnected || getComposerPortal() !== portal) {
-                scheduleUiMountRetries();
+                startUiMountWait();
             }
         });
         uiFormObserver.observe(form, { childList: true });
@@ -444,7 +462,7 @@
         if (parent) {
             uiParentObserver = new MutationObserver(() => {
                 if (!form.isConnected) {
-                    scheduleUiMountRetries();
+                    startUiMountWait();
                 }
             });
             uiParentObserver.observe(parent, { childList: true });
@@ -481,42 +499,56 @@
             renderUiState();
         }
         bindUiObservers(portal);
-        clearUiRetryTimers();
+        disconnectUiWaitObserver();
         return true;
     }
 
-    function ensureUi() {
-        installStyles();
-        const portal = getComposerPortal();
-        if (!portal) {
-            state.uiReady = false;
-            statusButton = null;
-            disconnectUiObservers();
-            return false;
+    function scheduleStableUiMount(expectedPortal) {
+        if (!expectedPortal?.isConnected) {
+            startUiMountWait();
+            return;
         }
-
-        const root = document.getElementById('cyan-round-counter-root');
-        if (root?.parentElement === portal) {
-            const currentStatusButton = root.querySelector('#cyan-round-counter-status');
-            if (currentStatusButton) {
-                statusButton = currentStatusButton;
-                state.uiReady = true;
-                bindUiObservers(portal);
-                clearUiRetryTimers();
-                return true;
-            }
-        }
-        return installUi(portal);
+        const token = ++uiMountToken;
+        PAGE_WINDOW.requestAnimationFrame(() => {
+            PAGE_WINDOW.requestAnimationFrame(() => {
+                if (token !== uiMountToken) {
+                    return;
+                }
+                const currentPortal = getComposerPortal();
+                if (currentPortal !== expectedPortal || !expectedPortal.isConnected) {
+                    startUiMountWait();
+                    return;
+                }
+                installUi(expectedPortal);
+            });
+        });
     }
 
-    function scheduleUiMountRetries() {
-        clearUiRetryTimers();
-        const delays = [0, 60, 180, 400, 800, 1500, 2500];
-        uiRetryTimers = delays.map((delay) => window.setTimeout(() => {
-            if (ensureUi()) {
-                clearUiRetryTimers();
+    function startUiMountWait() {
+        installStyles();
+        disconnectUiObservers();
+        uiMountToken += 1;
+        state.uiReady = false;
+        statusButton = null;
+
+        if (document.readyState !== 'complete') {
+            if (!uiLoadWaitArmed) {
+                uiLoadWaitArmed = true;
+                PAGE_WINDOW.addEventListener('load', () => {
+                    uiLoadWaitArmed = false;
+                    startUiMountWait();
+                }, { once: true });
             }
-        }, delay));
+            return;
+        }
+
+        const portal = getComposerPortal();
+        if (!portal) {
+            startUiWaitObserver();
+            return;
+        }
+        disconnectUiWaitObserver();
+        scheduleStableUiMount(portal);
     }
 
     function getVisibleUserMessageIds() {
@@ -659,7 +691,7 @@
 
         resetConversationRuntimeState();
         state.currentConversationId = nextConversationId;
-        scheduleUiMountRetries();
+        startUiMountWait();
 
         if (nextIsTemporary) {
             seedVisibleUserMessageIds();
@@ -718,7 +750,7 @@
         } else if (!restorePersistentRoundCountStats()) {
             renderUiState();
         }
-        scheduleUiMountRetries();
+        startUiMountWait();
         installLocalMessageObserver();
         patchHistoryForSpaNavigation();
     }
