@@ -5,12 +5,12 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.7.7
-// @description  ChatGPT 普通聊天文件夹管理：v0.7.7；修复新版双栏侧边栏收起时文件夹误挂到常驻导航栏的问题。
+// @version      0.7.8
+// @description  ChatGPT 普通聊天文件夹管理：v0.7.8；适配新版聊天链接结构并提前注册拖拽手势监听，修复首次拖动偶发失效。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
-// @run-at       document-idle
+// @run-at       document-start
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -26,9 +26,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 - 作用：在 ChatGPT 原生侧边栏中增加本地“文件夹”索引；只保存聊天引用、文件夹结构和非敏感设置，不修改 ChatGPT 后端，也不保存完整聊天正文。
 - 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
 - DOM：#cgfm-root 必须挂在 ChatGPT 原生侧边栏中，并位于整个 Recents 区块之前；不得嵌入 ChatGPT 自己的 conversation/project drop target。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
-- Hydration：document-idle 不代表 React hydration 已结束。首次挂载必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS；稳定前不要注入脚本样式、宽度覆盖或根节点。首次成功后，React 重建/休眠恢复可继续快速 remount。
+- Hydration：document-start 只用于尽早注册不改 DOM 的拖拽 capture listener；DOM/state boot 延后，首次挂载仍必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS。稳定前不要注入脚本样式、宽度覆盖或根节点。
 - 性能：禁止长期观察 document/sidebar 的 MutationObserver、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。仅原生三点菜单允许短时 observer，捕捉成功或超时立即断开。
-- 交互：新版原生聊天由脚本从 pointerdown 起取得本次手势所有权；超过阈值后进入 pointer-capture 自定义拖拽，并以 requestAnimationFrame 限流的坐标命中实现 hover/提交，结束后短暂隔离 release/click 残留事件。旧 /c/ anchor 仍保留 HTML5 drag/drop 兼容。聊天跳转逻辑不变。
+- 交互：新版优先识别 a[data-interactive-row-link] 作为聊天主交互；window capture 在 document-start 注册，但仅在文件夹 UI 完成安全挂载后接管 pointerdown。超过阈值后进入 pointer-capture 自定义拖拽，并以 requestAnimationFrame 限流命中，结束后短暂隔离 release/click 残留事件。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
 */
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.7.7';
+  const VERSION = '0.7.8';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1134,15 +1134,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       : '';
   }
 
-  function getNativeChatButton(row) {
+  function getNativeChatPrimaryAction(row) {
     if (!(row instanceof Element)) return null;
-    return row.querySelector('[role="button"][aria-label]:not([aria-haspopup="menu"])') || null;
+    return row.querySelector('a[data-interactive-row-link][href*="/c/"][aria-label]')
+      || row.querySelector('[role="button"][aria-label]:not([aria-haspopup="menu"])')
+      || row.querySelector('a[href*="/c/"][aria-label]')
+      || null;
   }
 
   function extractTitleFromRow(row) {
     if (!(row instanceof Element)) return '';
-    const button = getNativeChatButton(row);
-    const aria = cleanConversationTitle(button?.getAttribute('aria-label') || '');
+    const action = getNativeChatPrimaryAction(row);
+    const aria = cleanConversationTitle(action?.getAttribute('aria-label') || '');
     if (aria) return aria;
     const clone = row.cloneNode(true);
     clone.querySelectorAll('button, svg, [aria-hidden="true"]').forEach(node => node.remove());
@@ -1813,8 +1816,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function onNativeHistoryPointerDown(event) {
     if (!event || !(event.target instanceof Element)) return;
     if (event.isPrimary === false || (typeof event.button === 'number' && event.button !== 0)) return;
-    if (rootEl && event.target instanceof Node && rootEl.contains(event.target)) return;
-    if (event.target.closest('button[aria-haspopup="menu"],input,textarea,select,[contenteditable="true"],[data-trailing-button],[data-conversation-options-trigger]')) return;
+    // Listener is registered at document-start so it precedes ChatGPT's later sortable
+    // sensors, but it must stay inert until our hydration-safe UI mount is complete.
+    if (!mounted || !rootEl || !rootEl.isConnected || rootEl.hidden) return;
+    if (rootEl.contains(event.target)) return;
+    // New rows expose separate action buttons (menu, pin, etc.). Only the conversation
+    // primary action itself may start our drag gesture.
+    if (event.target.closest('button,input,textarea,select,[contenteditable="true"],[data-trailing-button],[data-conversation-options-trigger]')) return;
 
     const row = event.target.closest(NATIVE_CHAT_ROW_SELECTOR);
     if (row) {
@@ -1831,9 +1839,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       lastHoveredFolderId = '';
       lastHoveredFolderAt = 0;
       clearDropHighlight();
+      const primaryAction = getNativeChatPrimaryAction(row);
+      const captureTarget = primaryAction && primaryAction.contains(event.target) ? primaryAction : row;
       nativeChatPointerDrag = {
         pointerId: event.pointerId,
         source: row,
+        captureTarget,
         payload: chat,
         startX: Number(event.clientX) || 0,
         startY: Number(event.clientY) || 0,
@@ -1843,7 +1854,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         targetFolderId: ''
       };
       try {
-        if (typeof row.setPointerCapture === 'function') row.setPointerCapture(event.pointerId);
+        if (typeof captureTarget.setPointerCapture === 'function') captureTarget.setPointerCapture(event.pointerId);
       } catch (_) {}
       // Own the initiating press before ChatGPT's sortable sensor can arm itself. Do not
       // preventDefault here: if movement stays below threshold, the browser still emits
@@ -1873,8 +1884,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     createNativeChatDragPreview(state);
     updateNativeChatDragPreview(state.lastX, state.lastY);
     try {
-      if (state.source && typeof state.source.setPointerCapture === 'function' && !state.source.hasPointerCapture?.(state.pointerId)) {
-        state.source.setPointerCapture(state.pointerId);
+      const captureTarget = state.captureTarget || state.source;
+      if (captureTarget && typeof captureTarget.setPointerCapture === 'function' && !captureTarget.hasPointerCapture?.(state.pointerId)) {
+        captureTarget.setPointerCapture(state.pointerId);
       }
     } catch (_) {}
     if (event) stopOwnedNativeChatEvent(event, true);
@@ -2038,10 +2050,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       nativeChatPointerRaf = 0;
     }
     if (state && suppressClick && state.active) suppressNativeChatClick(state.source);
-    if (state && state.source) {
+    if (state) {
       try {
-        if (typeof state.source.hasPointerCapture === 'function' && state.source.hasPointerCapture(state.pointerId)) {
-          state.source.releasePointerCapture(state.pointerId);
+        const captureTarget = state.captureTarget || state.source;
+        if (captureTarget && typeof captureTarget.hasPointerCapture === 'function' && captureTarget.hasPointerCapture(state.pointerId)) {
+          captureTarget.releasePointerCapture(state.pointerId);
         }
       } catch (_) {}
     }
@@ -2662,8 +2675,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     try {
       const row = findNativeConversationRowById(id);
       if (row) {
-        const button = getNativeChatButton(row);
-        if (button && !(rootEl && rootEl.contains(button))) return button;
+        const action = getNativeChatPrimaryAction(row);
+        if (action && !(rootEl && rootEl.contains(action))) return action;
       }
 
       const selector = 'a[href*="/c/' + cssEscape(id) + '"]';
@@ -3894,5 +3907,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
   }
 
-  boot();
+  // Register the gesture capture layer as early as possible, before ChatGPT attaches
+  // its sortable sensors. The handler itself stays inert until mount() marks the UI ready.
+  setupNativeDragCache();
+
+  // Keep all DOM/state boot work deferred; document-start is used only for listener order.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
 })();

@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.7.7  
+> 当前说明版本：v0.7.8  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -24,10 +24,10 @@
 1. `state` 是当前 ChatGPT 账号的内存单一数据源。
 2. 本地 profile 按 ChatGPT 账号隔离，不再自动迁移旧 v1/v2 单 profile。
 3. `#cgfm-root` 是脚本唯一主 UI 根节点；新版 UI 中必须挂在整个 `Recents` 区块之前，且不能嵌进 ChatGPT 自己的 conversation/project drop target。
-4. 首次挂载必须避开 React hydration；`document-idle` 不代表 hydration 已完成。
+4. 手势监听在 `document-start` 尽早注册以抢在 ChatGPT sortable sensor 之前；DOM/state boot 仍延后，首次挂载继续避开 React hydration。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 sidebar/document，不给最近聊天逐项注入常驻 UI。
-7. 新版原生 conversation row 拖入文件夹使用完整手势所有权的低开销 pointer-capture 自定义拖拽：window capture 从 pointerdown 起阻断 ChatGPT sortable sensor 的启动，但不取消浏览器默认点击；超过阈值后由脚本接管移动/提交，并显示仅在拖动期间存在的轻量浮动聊天预览；结束后短暂隔离 release/click 残留事件。旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
+7. 新版原生 conversation row 拖入文件夹使用完整手势所有权的低开销 pointer-capture 自定义拖拽：手势层在 `document-start` 注册 window capture，实际处理仅在 `#cgfm-root` 完成 hydration-safe mount 后启用；优先以 `a[data-interactive-row-link]` 作为主交互/捕获元素，超过阈值后由脚本接管移动/提交，并显示轻量浮动预览。旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
 8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
 10. WebDAV 使用 schema 3、基准快照、对象级 operation log、墓碑和有限 412 重试实现多端合并。
@@ -242,7 +242,7 @@ ChatGPT 2026-09 新 UI 中，`#app-shell-sidebar` 是**常驻导航 rail 与可�
 关键不变量：
 
 - 新版优先使用 `[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"][role="listitem"]` 识别原生聊天；
-- conversation id 直接从 `data-sidebar-chatgpt-conversation-key` 提取，标题优先读原生 `role="button"` 的 `aria-label`；
+- conversation id 直接从 `data-sidebar-chatgpt-conversation-key` 提取；新版标题/主交互优先读 `a[data-interactive-row-link][href*="/c/"]` 的 `aria-label`，旧版 `role="button"` 仅作回退；
 - 脚本自身生成的 `.cgfm-chat-title` `/c/` 链接不能作为 legacy fallback；
 - `findNativeChatLink()` 必须排除 `rootEl` 内链接；
 - 旧版 fallback 应尽量限制在原生 sidebar/nav 语义范围；
@@ -277,7 +277,7 @@ v0.6.3 的修复包括：
 
 ### 7.4 首次挂载与 React hydration
 
-`@run-at document-idle` **不等于 React hydration 已完成**。
+脚本从 v0.7.8 起使用 `@run-at document-start`，但这**只用于尽早注册不改 DOM 的手势 capture listener**；DOM/state `boot()` 仍延后到 `DOMContentLoaded`。无论何种 run-at，DOM ready 都不等于 React hydration 已完成。
 
 ChatGPT 可以在 document 已 idle 后继续 streaming / hydration / sidebar replacement。若脚本看到 nav 后立即插入 `#cgfm-root`，React 可能发现服务器 HTML 与客户端 hydration 时 DOM 不一致，报：
 
@@ -398,10 +398,10 @@ payload：
 
 新版 conversation row 拖入文件夹使用**完整手势所有权的 pointer-capture 自定义拖拽**：
 
-1. window capture 的 pointerdown 从 `data-sidebar-chatgpt-conversation-key` row 读取 conversation id/title/url，并建立只针对当前 pointerId 的临时手势状态；
-2. 对新版 row 的这次 pointerdown 只停止事件继续传播给 ChatGPT sortable sensor，不调用 `preventDefault()`；因此未发生拖拽时浏览器仍会产生正常 click，聊天导航保持原行为；
-3. 同一手势随后产生的 mousedown 也在 window capture 被阻断传播，避免 ChatGPT 同时使用 MouseSensor 再次武装拖拽；
-4. 尝试对当前 row 调用 `setPointerCapture()`；移动距离未超过 6px 时不进入自定义拖拽，超过阈值后才开始 hover/hit-test；
+1. 手势 capture listener 在 `document-start` 注册到 window，确保注册顺序尽量早于 ChatGPT 后续 sortable sensor；但在 `mounted === true`、`#cgfm-root` connected 且可见之前立即 return，不干扰 hydration/初始页面交互；
+2. pointerdown 从 `data-sidebar-chatgpt-conversation-key` row 读取 conversation id，并优先从 `a[data-interactive-row-link]` 读取标题/主交互元素；点击菜单、置顶等独立 `button` 不建立聊天拖拽候选；
+3. 对真正的聊天主交互 pointerdown 只停止事件继续传播给 ChatGPT sortable sensor，不调用 `preventDefault()`；因此未发生拖拽时浏览器仍会产生正常 click，聊天导航保持原行为；
+4. 同一手势随后产生的 mousedown 也在 window capture 被阻断传播，避免 MouseSensor 旁路重新武装原生拖拽；优先在主交互元素上调用 `setPointerCapture()`，旧结构再回退到 row；移动距离未超过 6px 时不进入自定义拖拽，超过阈值后才开始 hover/hit-test；
 5. 活动拖拽期间 window capture 的 pointermove/mousemove 由脚本完整占有，并通过 `requestAnimationFrame` 限流到每帧最多一次视觉预览位置更新与 hit-test；
 6. 激活拖拽时只创建一个 `position: fixed; pointer-events: none` 的浮动聊天预览，显示聊天图标和单行标题；其位置只通过 `translate3d()` 跟随鼠标，不移动或克隆进 React 列表布局；每次 hit-test 使用 `document.elementsFromPoint()` / `elementFromPoint()` 从坐标下方寻找 `#cgfm-root` 内的 `.cgfm-folder-row`，命中后显示脚本自己的 hover；
 7. pointerup 时按最终坐标重新确认目标，命中文件夹则直接调用既有 `addChatToFolder()`；该 pointerup 不再传给 ChatGPT 的拖拽传感器；
@@ -419,7 +419,7 @@ payload：
 
 - 脚本自身“文件夹 → 文件夹”拖拽继续使用现有 HTML5 DnD；
 - 旧版 `/c/` anchor 仍可按需临时设置 `draggable=true`；
-- 新版 button-based conversation row 不设置 `draggable=true`；
+- 新版 anchor-based / button-based conversation row 都不设置 `draggable=true`；
 - root-level dragover/drop 与 dragend fallback 只服务脚本文件夹拖拽和 legacy/浏览器兼容路径。
 
 拖入聊天只改变聊天归属，不主动修改目标文件夹的 `collapsed`：目标原本折叠则继续折叠，原本展开则继续展开。通过原生三点菜单“移至文件夹”添加聊天时也复用同一 `addChatToFolder()` 语义。
@@ -456,7 +456,7 @@ payload：
 
 点击脚本文件夹中的聊天：
 
-1. 新版先找同 conversation 的原生 conversation row，并点击其主 `role="button"`；旧版再回退 `/c/<id>` anchor；
+1. 新版先找同 conversation row 中的 `a[data-interactive-row-link][href*="/c/"]`，旧版主 `role="button"` 次之，再回退普通 `/c/<id>` anchor；
 2. 优先触发原生 click，让 ChatGPT router 自己处理；
 3. 找不到时才 `location.assign()`；
 4. 不强行 `history.pushState()`。
@@ -959,7 +959,7 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 3. operation log 会增加远端 JSON 大小，目前通过条数上限控制；
 4. 极端跨设备父子移动冲突经过 normalize 后结果稳定，但未必符合所有主观意图；
 5. 运行旧版本脚本的设备可能不理解新同步语义，应尽量保证活跃设备版本一致；
-6. ChatGPT DOM 是外部依赖；当前新版依赖 `data-app-action-sidebar-section-heading="Recents"`、`data-sidebar-chatgpt-conversation-key`、聊天 `role=button` 和 Radix `role=menu/menuitem`，旧 `#history` / `/c/` anchor 仅作兼容回退；修改 selector 时必须继续保留 native-only 和 hydration-safe 两条原则。
+6. ChatGPT DOM 是外部依赖；当前新版依赖 `data-app-action-sidebar-section-heading="Recents"`、`data-sidebar-chatgpt-conversation-key`、`a[data-interactive-row-link]` 和 Radix `role=menu/menuitem`，旧聊天 `role=button`、`#history` / `/c/` anchor 仅作兼容回退；修改 selector 时必须继续保留 native-only 和 hydration-safe 两条原则。
 
 ## 30. 历史决策与版本演进
 
@@ -1083,6 +1083,16 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 自定义拖拽结束后增加约 350ms release guard，隔离 mouseup/mousemove/延迟 dragstart，并继续短暂抑制源 row click，修复“松手后原生对话才开始跟随鼠标”的残留拖拽；
 - 无候选/活动手势时新增 mouse 监听均立即 return，不执行 hit-test、轮询或 DOM 扫描；
 - 文件夹自身 DnD、legacy `/c/` anchor、三点菜单、profile、WebDAV、cross-tab 和业务数据模型保持不变。
+
+
+### v0.7.8：early gesture capture / interactive-row link
+
+- `@run-at` 改为 `document-start`，但仅立即注册幂等的 window capture 手势监听；`boot()` 延后到 `DOMContentLoaded`，首次 DOM mount 仍要求 `document.readyState === complete` 且同一宿主稳定 1200ms，不恢复 hydration 阶段注入；
+- pointerdown handler 在 `mounted`、`#cgfm-root` connected 且可见之前保持 inert，因此提前注册只改变 listener 顺序，不提前读取/修改业务 state 或 DOM；
+- 新版 conversation 主交互优先识别 `a[data-interactive-row-link][href*="/c/"]`，标题读取其 `aria-label`，导航也优先复用该原生链接；旧 `role="button"` 继续作为兼容回退；
+- pointer capture 优先落在实际主交互元素上，而不是一律落在 sortable `role=listitem`；保留 row 作为 conversation identity 与 release/click guard 范围；
+- pointerdown 明确排除所有独立 `button`，避免新版“聊天操作”“置顶聊天”等按钮误建立聊天拖拽候选；
+- 目的：降低 ChatGPT 自己的 sortable sensor 先于脚本武装而导致“第一次拖不动、第二次才生效”的事件竞争；不新增长期 observer、轮询或逐行监听器。
 
 ### v0.7.7：app-shell collapsed sidebar host guard
 
