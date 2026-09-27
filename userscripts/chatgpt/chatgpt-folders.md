@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.7.8  
+> 当前说明版本：v0.7.9  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -27,7 +27,7 @@
 4. 手势监听在 `document-start` 尽早注册以抢在 ChatGPT sortable sensor 之前；DOM/state boot 仍延后，首次挂载继续避开 React hydration。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 sidebar/document，不给最近聊天逐项注入常驻 UI。
-7. 新版原生 conversation row 拖入文件夹使用完整手势所有权的低开销 pointer-capture 自定义拖拽：手势层在 `document-start` 注册 window capture，实际处理仅在 `#cgfm-root` 完成 hydration-safe mount 后启用；优先以 `a[data-interactive-row-link]` 作为主交互/捕获元素，超过阈值后由脚本接管移动/提交，并显示轻量浮动预览。旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
+7. 新版原生 conversation row 拖入文件夹使用完整手势所有权的低开销自定义拖拽：手势层在 `document-start` 注册 window capture，实际处理仅在 `#cgfm-root` 完成 hydration-safe mount 后启用；聊天主交互的 pointerdown 从起点即由脚本 `preventDefault()` + `stopImmediatePropagation()` 独占，小于阈值时在 pointerup 主动回放原生聊天点击，大于阈值时进入脚本拖拽；不再依赖 `setPointerCapture()`。旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
 8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
 10. WebDAV 使用 schema 3、基准快照、对象级 operation log、墓碑和有限 412 重试实现多端合并。
@@ -39,7 +39,7 @@
 ```text
 ChatGPT 原生 sidebar / conversation list / menu
           │
-          ├─ 新版 conversation pointer-capture drag / legacy drag-drop / 三点菜单入口
+          ├─ 新版 conversation exclusive pointer gesture / legacy drag-drop / 三点菜单入口
           │
           ▼
       #cgfm-root UI
@@ -100,7 +100,7 @@ WebDAV 请求优先使用 `GM_xmlhttpRequest`，并兼容部分脚本管理器�
 4. UI 样式与 icon；
 5. sidebar host 探测、首次 mount、remount 与文件夹树 render；
 6. 文件夹创建、重命名、颜色、删除与折叠；
-7. 新版 conversation row 的 pointer-capture 自定义拖拽与 legacy anchor 的聊天 drag/drop；
+7. 新版 conversation row 的独占 pointer 手势自定义拖拽与 legacy anchor 的聊天 drag/drop；
 8. 文件夹拖拽移动；
 9. ChatGPT 原生聊天三点菜单“移至文件夹”；
 10. 聊天标题提取、清洗与刷新；
@@ -396,17 +396,17 @@ payload：
 { kind: "chat", id, title, url }
 ```
 
-新版 conversation row 拖入文件夹使用**完整手势所有权的 pointer-capture 自定义拖拽**：
+新版 conversation row 拖入文件夹使用**完整手势所有权的独占 pointer 自定义拖拽**：
 
 1. 手势 capture listener 在 `document-start` 注册到 window，确保注册顺序尽量早于 ChatGPT 后续 sortable sensor；但在 `mounted === true`、`#cgfm-root` connected 且可见之前立即 return，不干扰 hydration/初始页面交互；
-2. pointerdown 从 `data-sidebar-chatgpt-conversation-key` row 读取 conversation id，并优先从 `a[data-interactive-row-link]` 读取标题/主交互元素；点击菜单、置顶等独立 `button` 不建立聊天拖拽候选；
-3. 对真正的聊天主交互 pointerdown 只停止事件继续传播给 ChatGPT sortable sensor，不调用 `preventDefault()`；因此未发生拖拽时浏览器仍会产生正常 click，聊天导航保持原行为；
-4. 同一手势随后产生的 mousedown 也在 window capture 被阻断传播，避免 MouseSensor 旁路重新武装原生拖拽；优先在主交互元素上调用 `setPointerCapture()`，旧结构再回退到 row；移动距离未超过 6px 时不进入自定义拖拽，超过阈值后才开始 hover/hit-test；
+2. pointerdown 从 `data-sidebar-chatgpt-conversation-key` row 读取 conversation id，并优先从 `a[data-interactive-row-link]` 读取标题/主交互元素；只有真正的聊天主交互区域才能建立候选，点击菜单、置顶等独立 `button` 不建立聊天拖拽候选；
+3. 对真正的聊天主交互 pointerdown 从起点同时执行 `preventDefault()` 与 `stopImmediatePropagation()`，使整条候选手势不再交给 ChatGPT 的 sortable/link 默认路径；这一步不修改 DOM，只改变当前手势所有权；
+4. 同一候选手势的 pointermove 以及兼容 mousedown/mousemove/mouseup 都由 window capture 阻断，避免 MouseSensor 或 sortable 在中途重新武装；不再调用 `setPointerCapture()`；移动距离未超过 6px 时只保持候选，超过阈值后才创建预览并开始 hover/hit-test；
 5. 活动拖拽期间 window capture 的 pointermove/mousemove 由脚本完整占有，并通过 `requestAnimationFrame` 限流到每帧最多一次视觉预览位置更新与 hit-test；
 6. 激活拖拽时只创建一个 `position: fixed; pointer-events: none` 的浮动聊天预览，显示聊天图标和单行标题；其位置只通过 `translate3d()` 跟随鼠标，不移动或克隆进 React 列表布局；每次 hit-test 使用 `document.elementsFromPoint()` / `elementFromPoint()` 从坐标下方寻找 `#cgfm-root` 内的 `.cgfm-folder-row`，命中后显示脚本自己的 hover；
-7. pointerup 时按最终坐标重新确认目标，命中文件夹则直接调用既有 `addChatToFolder()`；该 pointerup 不再传给 ChatGPT 的拖拽传感器；
-8. 自定义拖拽结束后保留约 350ms 的 release guard，拦截同一释放链上的 mouseup/mousemove/延迟 dragstart，并短暂屏蔽源 conversation row 的 click，防止“松手后原生对话才开始跟鼠标移动”；随后自动失效；
-9. 未超过阈值的普通点击不会建立 release guard，仍由 ChatGPT 正常处理 click。
+7. pointerup 时：若已超过阈值，则按最终坐标重新确认目标，命中文件夹后直接调用既有 `addChatToFolder()`；若从未超过阈值，则脚本主动对原生 `a[data-interactive-row-link]` / legacy 主交互执行一次 click replay，从而保留普通点击导航；两条路径的 pointerup 都不再传给 ChatGPT 的拖拽传感器；
+8. 拖拽和 click replay 都保留约 350ms 的 release guard，并短暂屏蔽源 conversation row 可能随后生成的真实 click；脚本自身回放 click 通过单次 replay guard 放行，避免被自己的 click suppression 吃掉；
+9. 未超过阈值的普通点击不再依赖浏览器原始 click 是否生成，而是由脚本在 pointerup 明确回放一次原生聊天主交互，因此点击语义与拖拽判定解耦。
 
 性能约束：
 
@@ -1093,6 +1093,14 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - pointer capture 优先落在实际主交互元素上，而不是一律落在 sortable `role=listitem`；保留 row 作为 conversation identity 与 release/click guard 范围；
 - pointerdown 明确排除所有独立 `button`，避免新版“聊天操作”“置顶聊天”等按钮误建立聊天拖拽候选；
 - 目的：降低 ChatGPT 自己的 sortable sensor 先于脚本武装而导致“第一次拖不动、第二次才生效”的事件竞争；不新增长期 observer、轮询或逐行监听器。
+
+### v0.7.9：exclusive pointer gesture / click replay
+
+- 放弃 v0.7.8 仍保留的 `setPointerCapture()` 路径；新版 conversation 主交互从 pointerdown 起由脚本同时 `preventDefault()` 与 `stopImmediatePropagation()` 独占，候选阶段也不再让 ChatGPT sortable/link 默认手势继续参与；
+- 同一候选手势的 pointermove 与兼容 mouse 事件均被 window capture 阻断，移动超过 6px 后才创建浮动预览并进入文件夹 hit-test；
+- 未超过阈值的 pointerup 不依赖浏览器后续是否生成 click，而是主动对原生 `a[data-interactive-row-link]`（旧结构回退到原生主交互）执行一次 click replay；
+- click replay 期间使用短暂内部放行标志，避免被脚本自己的 click suppression 拦截；释放链仍使用 release guard 屏蔽可能残留的真实 click / mouseup / 延迟 dragstart；
+- 目的：把“普通点击”和“拖入文件夹”统一为脚本先判定、再分流的单一手势状态机，彻底避免与 ChatGPT sortable sensor 争抢同一 pointer sequence；不增加逐行监听、长期 observer 或高频轮询。
 
 ### v0.7.7：app-shell collapsed sidebar host guard
 
