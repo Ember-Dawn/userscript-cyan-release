@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.3.0
+// @version      0.3.1
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，显示当前对话名称，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.0';
+    const VERSION = '0.3.1';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -285,12 +285,38 @@ html:not(.dark) body {
         return findNativeConversationTitle(currentConversationId) || '加载中…';
     }
 
+    function getPortalConversationId(portal) {
+        const raw = portal?.getAttribute?.('data-above-composer-conversation-id') || '';
+        return raw.replace(/^chatgpt:/i, '') || null;
+    }
+
+    function isCurrentComposerPortal(portal) {
+        if (!(portal instanceof Element) || !portal.isConnected) return false;
+        const form = portal.closest('form[data-chatgpt-composer]');
+        if (!form) return false;
+
+        const routeConversationId = extractConversationPageId();
+        const portalConversationId = getPortalConversationId(portal);
+        const placement = form.getAttribute('data-composer-placement') || '';
+
+        if (routeConversationId) {
+            if (portalConversationId) return portalConversationId === routeConversationId;
+            return placement === 'thread';
+        }
+
+        // 新版 ChatGPT 从已有会话切到“新建”时会短暂保留旧 thread Composer。
+        // 只有真正的 home Composer 或 local-chatgpt 临时 portal 才属于当前新对话。
+        return placement === 'home' || isLocalConversationId(portalConversationId);
+    }
+
     function getComposerPortal() {
-        return document.querySelector(
-            'form[data-chatgpt-composer][data-composer-placement="thread"] > [data-above-composer-portal="true"]'
-        ) || document.querySelector(
+        const portals = document.querySelectorAll(
             'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
         );
+        for (const portal of portals) {
+            if (isCurrentComposerPortal(portal)) return portal;
+        }
+        return null;
     }
 
     function renderConversationTitle() {
@@ -529,6 +555,16 @@ html:not(.dark) body {
                     continue;
                 }
 
+                if (mutation.type === 'attributes') {
+                    if (
+                        mutation.attributeName === 'data-composer-placement' ||
+                        mutation.attributeName === 'data-above-composer-conversation-id'
+                    ) {
+                        titleMountMayBeNeeded = true;
+                    }
+                    continue;
+                }
+
                 for (const node of mutation.addedNodes) {
                     syncTemporaryChatState(node);
                     scheduleFileScan(node);
@@ -552,6 +588,8 @@ html:not(.dark) body {
             childList: true,
             subtree: true,
             characterData: true,
+            attributes: true,
+            attributeFilter: ['data-composer-placement', 'data-above-composer-conversation-id'],
         });
     }
 

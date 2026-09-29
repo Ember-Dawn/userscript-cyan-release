@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.4.3
+// @version      1.4.4
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、后台标签页推进及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.3';
+  const VERSION = '1.4.4';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -126,6 +126,7 @@
   let launcherPortalObserver = null;
   let launcherFormObserver = null;
   let launcherParentObserver = null;
+  let launcherWaitObserver = null;
   let launcherRetryTimers = [];
 
   const tabId = getOrCreateTabId();
@@ -2152,12 +2153,38 @@
     document.head.appendChild(style);
   }
 
+  function getPortalConversationId(portal) {
+    const raw = portal?.getAttribute?.('data-above-composer-conversation-id') || '';
+    return raw.replace(/^chatgpt:/i, '') || null;
+  }
+
+  function isCurrentComposerPortal(portal) {
+    if (!(portal instanceof Element) || !portal.isConnected) return false;
+    const form = portal.closest('form[data-chatgpt-composer]');
+    if (!form) return false;
+
+    const routeConversationId = getConversationId();
+    const portalConversationId = getPortalConversationId(portal);
+    const placement = form.getAttribute('data-composer-placement') || '';
+
+    if (routeConversationId) {
+      if (portalConversationId) return portalConversationId === routeConversationId;
+      return placement === 'thread';
+    }
+
+    // 新版 ChatGPT 从已有会话切到“新建”时会短暂保留旧 thread Composer。
+    // 新对话只接受 home Composer，或已经获得 local-chatgpt 临时身份的 portal。
+    return placement === 'home' || isLocalConversationId(portalConversationId);
+  }
+
   function getComposerPortal() {
-    return document.querySelector(
-      'form[data-chatgpt-composer][data-composer-placement="thread"] > [data-above-composer-portal="true"]'
-    ) || document.querySelector(
+    const portals = document.querySelectorAll(
       'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
     );
+    for (const portal of portals) {
+      if (isCurrentComposerPortal(portal)) return portal;
+    }
+    return null;
   }
 
   function disconnectLauncherObservers() {
@@ -2167,6 +2194,26 @@
     launcherPortalObserver = null;
     launcherFormObserver = null;
     launcherParentObserver = null;
+  }
+
+  function disconnectLauncherWaitObserver() {
+    launcherWaitObserver?.disconnect();
+    launcherWaitObserver = null;
+  }
+
+  function startLauncherWaitObserver() {
+    if (launcherWaitObserver || !document.documentElement) return;
+    launcherWaitObserver = new MutationObserver(() => {
+      if (!getComposerPortal()) return;
+      disconnectLauncherWaitObserver();
+      scheduleLauncherMountRetries();
+    });
+    launcherWaitObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-composer-placement', 'data-above-composer-conversation-id'],
+    });
   }
 
   function clearLauncherRetryTimers() {
@@ -2188,14 +2235,24 @@
 
     launcherPortalObserver = new MutationObserver(() => {
       const launcher = document.getElementById(LAUNCHER_ID);
-      if (!launcher || launcher.parentElement !== portal) scheduleLauncherMountRetries();
+      if (!launcher || launcher.parentElement !== portal || getComposerPortal() !== portal) {
+        scheduleLauncherMountRetries();
+      }
     });
-    launcherPortalObserver.observe(portal, { childList: true });
+    launcherPortalObserver.observe(portal, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ['data-above-composer-conversation-id'],
+    });
 
     launcherFormObserver = new MutationObserver(() => {
       if (!form.isConnected || getComposerPortal() !== portal) scheduleLauncherMountRetries();
     });
-    launcherFormObserver.observe(form, { childList: true });
+    launcherFormObserver.observe(form, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ['data-composer-placement'],
+    });
 
     const parent = form.parentElement;
     if (parent) {
@@ -2235,8 +2292,11 @@
       disconnectLauncherObservers();
       const launcher = document.getElementById(LAUNCHER_ID);
       if (launcher) launcher.hidden = true;
+      startLauncherWaitObserver();
       return false;
     }
+
+    disconnectLauncherWaitObserver();
 
     const launcher = createLauncher();
     if (launcher.parentElement !== portal) portal.appendChild(launcher);

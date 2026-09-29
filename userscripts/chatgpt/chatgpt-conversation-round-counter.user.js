@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.2.1
+// @version      0.2.2
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -396,12 +396,46 @@
         (document.head || document.documentElement).appendChild(style);
     }
 
+    function getPortalConversationId(portal) {
+        const raw = portal?.getAttribute?.('data-above-composer-conversation-id') || '';
+        return raw.replace(/^chatgpt:/i, '') || null;
+    }
+
+    function isCurrentComposerPortal(portal) {
+        if (!(portal instanceof Element) || !portal.isConnected) {
+            return false;
+        }
+        const form = portal.closest('form[data-chatgpt-composer]');
+        if (!form) {
+            return false;
+        }
+
+        const routeConversationId = extractConversationPageId();
+        const portalConversationId = getPortalConversationId(portal);
+        const placement = form.getAttribute('data-composer-placement') || '';
+
+        if (routeConversationId) {
+            if (portalConversationId) {
+                return portalConversationId === routeConversationId;
+            }
+            return placement === 'thread';
+        }
+
+        // 新版 ChatGPT 在“已有对话 -> 新建”切换时可能暂时保留旧 thread Composer。
+        // 只有真正的 home Composer，或已进入 local-chatgpt 临时身份的 portal，才属于当前新对话。
+        return placement === 'home' || isLocalConversationId(portalConversationId);
+    }
+
     function getComposerPortal() {
-        return document.querySelector(
-            'form[data-chatgpt-composer][data-composer-placement="thread"] > [data-above-composer-portal="true"]'
-        ) ?? document.querySelector(
+        const portals = document.querySelectorAll(
             'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
         );
+        for (const portal of portals) {
+            if (isCurrentComposerPortal(portal)) {
+                return portal;
+            }
+        }
+        return null;
     }
 
     function disconnectUiObservers() {
@@ -433,7 +467,12 @@
             disconnectUiWaitObserver();
             scheduleStableUiMount(portal);
         });
-        uiWaitObserver.observe(document.documentElement, { childList: true, subtree: true });
+        uiWaitObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['data-composer-placement', 'data-above-composer-conversation-id'],
+        });
     }
 
     function bindUiObservers(portal) {
@@ -445,18 +484,26 @@
 
         uiPortalObserver = new MutationObserver(() => {
             const root = document.getElementById('cyan-round-counter-root');
-            if (!root || root.parentElement !== portal) {
+            if (!root || root.parentElement !== portal || getComposerPortal() !== portal) {
                 scheduleStableUiMount(portal);
             }
         });
-        uiPortalObserver.observe(portal, { childList: true });
+        uiPortalObserver.observe(portal, {
+            childList: true,
+            attributes: true,
+            attributeFilter: ['data-above-composer-conversation-id'],
+        });
 
         uiFormObserver = new MutationObserver(() => {
             if (!form.isConnected || getComposerPortal() !== portal) {
                 startUiMountWait();
             }
         });
-        uiFormObserver.observe(form, { childList: true });
+        uiFormObserver.observe(form, {
+            childList: true,
+            attributes: true,
+            attributeFilter: ['data-composer-placement'],
+        });
 
         const parent = form.parentElement;
         if (parent) {
