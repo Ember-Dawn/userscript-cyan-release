@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.7.9  
+> 当前说明版本：v0.8.0  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -26,7 +26,7 @@
 3. `#cgfm-root` 是脚本唯一主 UI 根节点；新版 UI 中必须挂在整个 `Recents` 区块之前，且不能嵌进 ChatGPT 自己的 conversation/project drop target。
 4. 手势监听在 `document-start` 尽早注册以抢在 ChatGPT sortable sensor 之前；DOM/state boot 仍延后，首次挂载继续避开 React hydration。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
-6. 性能优先：不长期观察整个 sidebar/document，不给最近聊天逐项注入常驻 UI。
+6. 性能优先：不长期观察整个 document/sidebar subtree，不给最近聊天逐项注入常驻 UI；仅允许对 app-shell left panel 的 peeking 属性与 conversation content 的 inert 属性做窄范围 attributes observer。
 7. 新版原生 conversation row 拖入文件夹使用完整手势所有权的低开销自定义拖拽：手势层在 `document-start` 注册 window capture，实际处理仅在 `#cgfm-root` 完成 hydration-safe mount 后启用；聊天主交互的 pointerdown 从起点即由脚本 `preventDefault()` + `stopImmediatePropagation()` 独占，小于阈值时在 pointerup 主动回放原生聊天点击，大于阈值时进入脚本拖拽；不再依赖 `setPointerCapture()`。旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
 8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
@@ -233,7 +233,27 @@ initialMountCandidateSince
 
 旧 UI 仍保留 `#history` / `/c/` anchor 回退。不要把根节点挂到 `#stage-slideover-sidebar` 过外层的位置，否则官方 sidebar 收起时脚本可能残留或继续占宽度。
 
-ChatGPT 2026-09 新 UI 中，`#app-shell-sidebar` 是**常驻导航 rail 与可收起 conversation sidebar 的共同外壳**，不是文件夹的合法挂载宿主。新版 fallback 只能使用 `#app-shell-sidebar [data-app-action-sidebar-scroll]` 这类属于可收起 conversation sidebar 的原生内容区；sidebar 收起后若找不到可信宿主，应让本轮 mount 失败并保持/隐藏现有根节点，绝不能把 `#cgfm-root` 搬到常驻账号 rail 下方。
+ChatGPT 2026-09 新 UI 中，`#app-shell-sidebar` 是**常驻 navigation rail 与 conversation sidebar 的共同外壳**，不是文件夹的合法挂载宿主。conversation sidebar 本体由 `[data-slate-sidebar-content="true"]` 标识；新版 fallback 只能使用其内部 `[data-app-action-sidebar-scroll]` 这类原生内容区，绝不能把 `#cgfm-root` 搬到常驻账号 rail 下方。
+
+2026-09-29 的新版 app-shell 不再是简单的“展开 / 收起”二态，而是三态：
+
+```text
+rail-only
+  left panel 只占 navigation rail 宽度
+  [data-slate-sidebar-content] 仍可能存在，但带 inert
+
+peeking
+  left panel 带 data-slate-sidebar-peeking="true"
+  conversation content 去掉 inert 并悬浮显示
+  left panel 仍只占 rail 的页面布局宽度
+
+pinned
+  无 data-slate-sidebar-peeking
+  conversation content 可交互
+  left panel 占完整 sidebar 布局宽度
+```
+
+因此 `aria-expanded` 不再用于区分 peeking / pinned：实测两种状态都可能为 `true`。文件夹是否显示取决于 conversation content 是否处于 rail-only；自定义 sidebar width 只允许在 pinned 时激活，peeking 必须保持 overlay-only，避免 hover 时正文布局跳动。
 
 ### 7.2 原生宿主探测
 
@@ -275,7 +295,18 @@ v0.6.3 的修复包括：
 - `mount()` 拒绝 root 自身或 descendant 作为 parent；
 - `ensureMountedLight()` 只有在 `expectedParent` 安全时才认为 parent changed。
 
-### 7.4 首次挂载与 React hydration
+### 7.4 app-shell 三态监听与即时恢复
+
+新版 hover peeking 不一定触发 sidebar toggle click。若仍只依赖 80/220/500/900ms 点击后检查或稀疏恢复定时器，官方悬浮 sidebar 会先出现，`#cgfm-root` 则可能晚几百毫秒甚至更久才恢复。
+
+允许两个长期但极窄的 `MutationObserver`：
+
+- 只观察 `[data-app-shell-left-panel-appearance]` 自身的 `data-slate-sidebar-peeking` 属性；
+- 只观察当前 `[data-slate-sidebar-content="true"]` 自身的 `inert` 属性。
+
+observer 不观察 subtree，不监听 conversation list 的 childList，也不扫描最近聊天；回调只经 `requestAnimationFrame` 合并后调用一次 `ensureMountedLight()`。这样 hover 进入/退出 peeking 时可在下一帧同步文件夹显隐，而不会恢复“长期观察整个 sidebar/document”的高开销方案。
+
+### 7.5 首次挂载与 React hydration
 
 脚本从 v0.7.8 起使用 `@run-at document-start`，但这**只用于尽早注册不改 DOM 的手势 capture listener**；DOM/state `boot()` 仍延后到 `DOMContentLoaded`。无论何种 run-at，DOM ready 都不等于 React hydration 已完成。
 
@@ -310,7 +341,7 @@ RecoverableError: Minified React error #418
 - React 重绘、sidebar 重建、休眠恢复时继续使用快速 `ensureMountedLight()`；
 - 这样既避开 hydration，又不牺牲恢复速度。
 
-### 7.5 稀疏挂载检查
+### 7.6 稀疏挂载检查
 
 boot 使用有限延迟检查：
 
@@ -325,9 +356,9 @@ boot 使用有限延迟检查：
 - `visibilitychange` 恢复可见
 - sidebar toggle 后少量延迟检查
 
-禁止为了“更稳”恢复长期观察整个 sidebar/document 的 MutationObserver。
+禁止为了“更稳”恢复观察整个 sidebar/document subtree 的 MutationObserver；v0.8.0 仅保留 7.4 所述两个 attributes-only 窄范围 observer。
 
-### 7.6 设置弹窗预创建
+### 7.7 设置弹窗预创建
 
 v0.6.4 起 idle 预创建设置弹窗只在 `mounted` 已成功后进行。原因是即使主根节点尚未插入，过早向 `body` 添加脚本 DOM 也会扩大 hydration 干扰面。
 
@@ -413,7 +444,7 @@ payload：
 - 不给每条 Recent conversation 注入常驻监听器；只使用少量 document/window 级事件委托；
 - 无活动拖拽时 `pointermove` / `mousemove` 第一时间 return，不执行 DOM 查询；
 - 只有用户实际拖动的短时间窗口执行坐标 hit-test和浮动预览 transform 更新，而且每动画帧最多一次；
-- 不增加长期 MutationObserver、轮询或持续 sidebar 扫描。
+- 不增加观察 document/body/sidebar subtree 的长期 MutationObserver、轮询或持续 sidebar 扫描；唯一例外是 7.4 所述两个 attributes-only app-shell 状态 observer。
 
 兼容路径仍保留 HTML5 drag/drop：
 
@@ -513,7 +544,7 @@ cgfm.v2.revision
 - user name
 - `session.account.id` / account id
 
-账号稳定键优先 accountId，其次 email。`#client-bootstrap` 仍是首选来源；仅当 bootstrap 不可用时，fallback 才从旧 `[data-testid="accounts-profile-button"]` 或新版 `button[aria-label*="个人资料菜单"]` / 英文 profile-menu 按钮提取标签与头像信息。
+账号稳定键优先 accountId，其次 email。`#client-bootstrap` 仍是首选来源；bootstrap 暂时不可用时，先读取 `document.documentElement` 上新版 ChatGPT 已暴露的 `data-theme-account-id` / `data-theme-user-id`，其中 account id 可直接复用为稳定 profile key。只有这些强标识也不可用时，才回退到旧 `[data-testid="accounts-profile-button"]` 或新版 `button[aria-label*="个人资料菜单"]` / 英文 profile-menu 按钮的标签与头像信息。
 
 账号切换要求：
 
@@ -815,7 +846,7 @@ ETag 只在事务内使用，不作为跨会话长期写凭据。
 
 禁止：
 
-1. 长期 `MutationObserver` 观察 `document.body` 或整个 sidebar；
+1. 长期 `MutationObserver` 观察 `document.body`、整个 sidebar 或 conversation subtree；仅允许 7.4 所述 peeking/inert attributes-only 窄范围 observer；
 2. 长期 `mousemove` 热路径；
 3. 给原生 conversation list 每一条聊天注入常驻 button/icon/wrapper；
 4. hover 原生 conversation row 时扫描完整聊天列表；
@@ -1093,6 +1124,15 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - pointer capture 优先落在实际主交互元素上，而不是一律落在 sortable `role=listitem`；保留 row 作为 conversation identity 与 release/click guard 范围；
 - pointerdown 明确排除所有独立 `button`，避免新版“聊天操作”“置顶聊天”等按钮误建立聊天拖拽候选；
 - 目的：降低 ChatGPT 自己的 sortable sensor 先于脚本武装而导致“第一次拖不动、第二次才生效”的事件竞争；不新增长期 observer、轮询或逐行监听器。
+
+### v0.8.0：rail / peeking / pinned sidebar lifecycle
+
+- 适配 ChatGPT 2026-09-29 新 app-shell：常驻 `[data-app-navigation-rail="true"]` 与 `[data-slate-sidebar-content="true"]` conversation sidebar 共存，正式把 sidebar 生命周期从 expanded/collapsed 二态升级为 `rail-only / peeking / pinned` 三态；
+- `rail-only` 以 conversation content 的 `inert` 为主信号；`peeking` 以 left panel 的 `data-slate-sidebar-peeking="true"` 为主信号；content 可交互且无 peeking 属性时视为 `pinned`；不再依赖 `aria-expanded` 区分 peeking 与 pinned；
+- 文件夹在 `peeking` 与 `pinned` 都立即显示，仅 `rail-only` 隐藏；新增两个窄范围 attributes-only observer，只观察 left panel 的 peeking 属性和当前 conversation content 的 inert 属性，经 `requestAnimationFrame` 合并后复用 `ensureMountedLight()`，解决 hover 悬浮 sidebar 已出现而文件夹慢拍的问题；
+- observer 不观察 subtree / childList，不监听 conversation list，因此不恢复全局 DOM observer、高频扫描或逐聊天监听；原有稀疏恢复定时器继续作为 subtree 被 React 整体替换、休眠恢复等低频兜底；
+- 自定义 sidebar width 只在 `pinned` 激活；`peeking` 保持 overlay-only，不推动正文布局。除 legacy `--sidebar-width` 外，同时覆盖新版原生 `--codex-sidebar-preferred-width`；
+- 账号识别继续优先 `#client-bootstrap`，新增 `data-theme-account-id` / `data-theme-user-id` 强 fallback，再退到 profile button/头像弱 fallback；稳定 profile key 仍优先 accountId，WebDAV schema 与远端文件映射不变。
 
 ### v0.7.9：exclusive pointer gesture / click replay
 

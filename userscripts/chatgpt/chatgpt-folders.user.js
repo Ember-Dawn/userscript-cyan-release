@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.7.9
-// @description  ChatGPT 普通聊天文件夹管理：v0.7.9；原生聊天手势改为独占 pointerdown + 点击回放，避免与 ChatGPT sortable 拖拽竞争。
+// @version      0.8.0
+// @description  ChatGPT 普通聊天文件夹管理：v0.8.0；适配 rail/peeking/pinned 三态侧边栏，悬浮时即时恢复文件夹并增强账号识别。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -27,7 +27,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 - 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
 - DOM：#cgfm-root 必须挂在 ChatGPT 原生侧边栏中，并位于整个 Recents 区块之前；不得嵌入 ChatGPT 自己的 conversation/project drop target。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
 - Hydration：document-start 只用于尽早注册不改 DOM 的拖拽 capture listener；DOM/state boot 延后，首次挂载仍必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS。稳定前不要注入脚本样式、宽度覆盖或根节点。
-- 性能：禁止长期观察 document/sidebar 的 MutationObserver、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。仅原生三点菜单允许短时 observer，捕捉成功或超时立即断开。
+- 性能：禁止长期观察 document/sidebar subtree、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。新版仅允许对 app-shell left panel 的 peeking 属性和 conversation content 的 inert 属性做窄范围 observer；原生三点菜单仍只短时观察。
 - 交互：新版优先识别 a[data-interactive-row-link] 作为聊天主交互；window capture 在 document-start 注册，但仅在文件夹 UI 完成安全挂载后工作。聊天主交互的 pointerdown 从起点即由脚本 preventDefault + stopImmediatePropagation 独占；小于阈值则在 pointerup 主动回放原生点击，大于阈值则进入自定义拖拽，不再依赖 setPointerCapture。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.7.9';
+  const VERSION = '0.8.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -124,6 +124,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let nativeMenuPollTimer = null;
   let resumeRecoveryTimers = [];
   let sidebarVisibilityTimers = [];
+  let appShellPanelObserver = null;
+  let appShellObservedPanel = null;
+  let appShellContentObserver = null;
+  let appShellObservedContent = null;
+  let appShellStateRaf = 0;
   let storageWriteSeq = 0;
   let lastSeenStorageRevision = '';
   let lastSeenStorageProjection = '';
@@ -831,6 +836,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const boot = getBootstrapAccountInfo();
     if (boot && boot.id) return boot;
 
+    const themed = getThemeAccountInfo();
+    if (themed && themed.id) return themed;
+
     const buttons = Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"], button[aria-label*="个人资料菜单"], button[aria-label*="profile menu" i]'));
     if (!buttons.length) return null;
     let best = null;
@@ -847,6 +855,27 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (!best) return null;
     const raw = location.host + '|' + best.label + '|' + best.img;
     return { id: 'acct_' + fnv1a(raw), label: best.label, email: '', accountId: '' };
+  }
+
+  function getThemeAccountInfo() {
+    try {
+      const html = document.documentElement;
+      if (!html) return null;
+      const accountId = cleanText(html.getAttribute('data-theme-account-id') || '');
+      const userId = cleanText(html.getAttribute('data-theme-user-id') || '');
+      if (!accountId && !userId) return null;
+      const stable = accountId || userId;
+      const remembered = readLastAccountInfo();
+      const sameRememberedAccount = !!(remembered && cleanText(remembered.accountId || '') === stable);
+      return {
+        id: sameRememberedAccount && remembered.id ? remembered.id : 'acct_' + fnv1a(location.host + '|theme|' + stable),
+        label: sameRememberedAccount ? (remembered.label || 'ChatGPT account') : 'ChatGPT account',
+        email: sameRememberedAccount ? (remembered.email || '') : '',
+        accountId: stable
+      };
+    } catch (_) {
+      return null;
+    }
   }
 
   function getBootstrapAccountInfo() {
@@ -3021,18 +3050,25 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   // 9. Sidebar width, sync status and settings modal
   // ---------------------------------------------------------------------------
 
-  function sidebarIsExpandedNow() {
-    try { return officialSidebarExpanded(); }
-    catch (_) { return true; }
+  function sidebarIsPinnedNow() {
+    try {
+      const shellState = getAppShellSidebarState();
+      if (shellState) return shellState.mode === 'pinned';
+      return officialSidebarExpanded();
+    } catch (_) { return true; }
   }
 
-  function syncSidebarWidthClass(expandedOverride) {
+  function syncSidebarWidthClass(pinnedOverride) {
     const p = getProfile();
     const enabled = !!((p.settings.ui || {}).sidebarWidthEnabled);
-    const expanded = typeof expandedOverride === 'boolean' ? expandedOverride : sidebarIsExpandedNow();
+    const shellState = getAppShellSidebarState();
+    const pinned = typeof pinnedOverride === 'boolean'
+      ? pinnedOverride
+      : (shellState ? shellState.mode === 'pinned' : sidebarIsPinnedNow());
+    const visible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
     document.documentElement.classList.toggle('cgfm-sidebar-width-enabled', enabled);
-    document.documentElement.classList.toggle('cgfm-sidebar-width-active', enabled && expanded);
-    document.documentElement.classList.toggle('cgfm-official-sidebar-collapsed', !expanded);
+    document.documentElement.classList.toggle('cgfm-sidebar-width-active', enabled && pinned);
+    document.documentElement.classList.toggle('cgfm-official-sidebar-collapsed', !visible);
   }
   function ensureSidebarWidthStyle(cssPx) {
     if (!sidebarWidthStyleEl) {
@@ -3040,11 +3076,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       sidebarWidthStyleEl.id = 'cgfm-sidebar-width-style';
       document.head.appendChild(sidebarWidthStyleEl);
     }
-    // Match ChatGPT's native markup: #stage-slideover-sidebar already has width: var(--sidebar-width),
-    // and its inner panels already use w-(--sidebar-width). We only override the CSS variable while
-    // the official sidebar is expanded. When it is collapsed, the class is removed and ChatGPT's own
-    // tiny-bar/collapsed layout can reclaim the width.
+    // Legacy UI reads --sidebar-width. The 2026-09 app-shell reads the preferred
+    // conversation width from --codex-sidebar-preferred-width. Apply both only while the
+    // sidebar is pinned; peeking must stay overlay-only and must not change page layout width.
     sidebarWidthStyleEl.textContent = `
+      html.cgfm-sidebar-width-active {
+        --codex-sidebar-preferred-width:${cssPx} !important;
+      }
       html.cgfm-sidebar-width-active body {
         --sidebar-width:${cssPx} !important;
       }
@@ -3751,11 +3789,27 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
   }
 
+  function getAppShellSidebarState() {
+    try {
+      const shell = document.getElementById('app-shell-sidebar');
+      const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+      if (!shell || !panel) return null;
+      const content = shell.querySelector('[data-slate-sidebar-content="true"]');
+      const rail = shell.querySelector('[data-app-navigation-rail="true"]');
+      const peeking = panel.getAttribute('data-slate-sidebar-peeking') === 'true';
+      if (!content) return { mode: 'rail-only', shell, panel, content: null, rail };
+      const inert = content.hasAttribute('inert') || !!content.closest('[inert]');
+      if (inert || !isVisibleElement(content)) return { mode: 'rail-only', shell, panel, content, rail };
+      return { mode: peeking ? 'peeking' : 'pinned', shell, panel, content, rail };
+    } catch (_) {
+      return null;
+    }
+  }
+
   function nativeSidebarContentVisible() {
     try {
-      const appShellSidebar = document.getElementById('app-shell-sidebar');
-      const actionSidebarScroll = appShellSidebar && appShellSidebar.querySelector('[data-app-action-sidebar-scroll]');
-      if (actionSidebarScroll && !actionSidebarScroll.closest('[inert]') && isVisibleElement(actionSidebarScroll)) return true;
+      const shellState = getAppShellSidebarState();
+      if (shellState) return shellState.mode !== 'rail-only';
 
       const sidebar = document.getElementById('stage-slideover-sidebar') || document;
       const history = document.getElementById('history');
@@ -3776,24 +3830,16 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function officialSidebarExpanded() {
-    const appShellSidebar = document.getElementById('app-shell-sidebar');
+    const shellState = getAppShellSidebarState();
     const sidebar = document.getElementById('stage-slideover-sidebar');
 
-    // After Windows/Firefox sleep restore, ChatGPT can briefly show collapsed controls
+    // 2026-09 app-shell has three states. aria-expanded remains true in both peeking and
+    // pinned snapshots, so it is not a reliable discriminator. Treat peeking as visible.
+    if (shellState) return shellState.mode !== 'rail-only';
+
+    // After Windows/Firefox sleep restore, legacy ChatGPT can briefly show collapsed controls
     // while the expanded history area is already visible. Prefer visible native content.
     if (nativeSidebarContentVisible()) return true;
-
-    // ChatGPT 2026-09: app-shell-sidebar contains both the permanent navigation rail and
-    // the collapsible conversation sidebar. The official toggle exposes its state directly.
-    if (appShellSidebar) {
-      const appShellToggle = document.querySelector('button[aria-controls="app-shell-sidebar"][aria-expanded]');
-      if (appShellToggle && !appShellToggle.closest('[inert]') && isVisibleElement(appShellToggle)) {
-        return appShellToggle.getAttribute('aria-expanded') === 'true';
-      }
-      const actionSidebarScroll = appShellSidebar.querySelector('[data-app-action-sidebar-scroll]');
-      if (actionSidebarScroll) return !actionSidebarScroll.closest('[inert]') && isVisibleElement(actionSidebarScroll);
-      return false;
-    }
 
     if (!sidebar) return true;
 
@@ -3809,9 +3855,50 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function syncSidebarVisibility() {
-    const expanded = officialSidebarExpanded();
-    if (rootEl) rootEl.hidden = !expanded;
-    syncSidebarWidthClass(expanded);
+    const shellState = getAppShellSidebarState();
+    const visible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
+    const pinned = shellState ? shellState.mode === 'pinned' : visible;
+    if (rootEl) rootEl.hidden = !visible;
+    syncSidebarWidthClass(pinned);
+  }
+
+  function scheduleAppShellStateRefresh() {
+    if (appShellStateRaf) return;
+    appShellStateRaf = requestAnimationFrame(() => {
+      appShellStateRaf = 0;
+      ensureMountedLight();
+    });
+  }
+
+  function bindAppShellSidebarStateWatcher() {
+    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+    const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
+
+    if (panel !== appShellObservedPanel) {
+      if (appShellPanelObserver) appShellPanelObserver.disconnect();
+      appShellPanelObserver = null;
+      appShellObservedPanel = panel || null;
+      if (panel) {
+        appShellPanelObserver = new MutationObserver(scheduleAppShellStateRefresh);
+        appShellPanelObserver.observe(panel, {
+          attributes: true,
+          attributeFilter: ['data-slate-sidebar-peeking']
+        });
+      }
+    }
+
+    if (content !== appShellObservedContent) {
+      if (appShellContentObserver) appShellContentObserver.disconnect();
+      appShellContentObserver = null;
+      appShellObservedContent = content || null;
+      if (content) {
+        appShellContentObserver = new MutationObserver(scheduleAppShellStateRefresh);
+        appShellContentObserver.observe(content, {
+          attributes: true,
+          attributeFilter: ['inert']
+        });
+      }
+    }
   }
 
   function scheduleSidebarVisibilityCheck() {
@@ -3861,6 +3948,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     try {
       const beforeAccount = currentAccount && currentAccount.id;
       ensureActiveProfile();
+      bindAppShellSidebarStateWatcher();
       const afterAccount = currentAccount && currentAccount.id;
       const recentAnchor = findNativeRecentsAnchor();
       const expectedParent = (recentAnchor && recentAnchor.parentElement) || findSidebarParent();
@@ -3893,6 +3981,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       bindSidebarToggleWatcher();
+      bindAppShellSidebarStateWatcher();
       // Sparse finite remount checks. The first successful mount additionally requires the
       // same native sidebar host to stay connected for a short stability window, so we do not
       // inject into React-managed DOM while hydration is still replacing the sidebar. Later
