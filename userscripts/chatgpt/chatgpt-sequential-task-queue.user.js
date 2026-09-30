@@ -90,6 +90,7 @@
   const LOCK_STALE_MS = 15000;
   const LOCK_HEARTBEAT_MS = 5000;
   const INITIAL_BINDING_MAX_AGE_MS = 120000;
+  const LAUNCHER_INTEGRITY_INTERVAL_MS = 1000;
 
   const STATUS_LABELS = {
     pending: '待执行',
@@ -126,8 +127,9 @@
   let launcherPortalObserver = null;
   let launcherFormObserver = null;
   let launcherParentObserver = null;
-  let launcherWaitObserver = null;
   let launcherRetryTimers = [];
+  let launcherWaitObserver = null;
+  let launcherIntegrityTimer = null;
 
   const tabId = getOrCreateTabId();
   let restoredInitialBindingOnLoad = false;
@@ -2158,8 +2160,15 @@
     return raw.replace(/^chatgpt:/i, '') || null;
   }
 
-  function isCurrentComposerPortal(portal) {
+  function isTemporaryPortalConversationId(conversationId) {
+    return typeof conversationId === 'string' && (
+      isLocalConversationId(conversationId) || /^WEB:/i.test(conversationId)
+    );
+  }
+
+  function isComposerPortalForCurrentRoute(portal) {
     if (!(portal instanceof Element) || !portal.isConnected) return false;
+
     const form = portal.closest('form[data-chatgpt-composer]');
     if (!form) return false;
 
@@ -2172,9 +2181,8 @@
       return placement === 'thread';
     }
 
-    // 新版 ChatGPT 从已有会话切到“新建”时会短暂保留旧 thread Composer。
-    // 新对话只接受 home Composer，或已经获得 local-chatgpt 临时身份的 portal。
-    return placement === 'home' || isLocalConversationId(portalConversationId);
+    if (portalConversationId) return isTemporaryPortalConversationId(portalConversationId);
+    return placement === 'home';
   }
 
   function getComposerPortal() {
@@ -2182,7 +2190,7 @@
       'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
     );
     for (const portal of portals) {
-      if (isCurrentComposerPortal(portal)) return portal;
+      if (isComposerPortalForCurrentRoute(portal)) return portal;
     }
     return null;
   }
@@ -2203,8 +2211,10 @@
 
   function startLauncherWaitObserver() {
     if (launcherWaitObserver || !document.documentElement) return;
+
     launcherWaitObserver = new MutationObserver(() => {
-      if (!getComposerPortal()) return;
+      const portal = getComposerPortal();
+      if (!portal) return;
       disconnectLauncherWaitObserver();
       scheduleLauncherMountRetries();
     });
@@ -2235,9 +2245,7 @@
 
     launcherPortalObserver = new MutationObserver(() => {
       const launcher = document.getElementById(LAUNCHER_ID);
-      if (!launcher || launcher.parentElement !== portal || getComposerPortal() !== portal) {
-        scheduleLauncherMountRetries();
-      }
+      if (!launcher || launcher.parentElement !== portal) scheduleLauncherMountRetries();
     });
     launcherPortalObserver.observe(portal, {
       childList: true,
@@ -2259,7 +2267,7 @@
       launcherParentObserver = new MutationObserver(() => {
         if (!form.isConnected || getComposerPortal() !== portal) scheduleLauncherMountRetries();
       });
-      launcherParentObserver.observe(parent, { childList: true });
+      launcherParentObserver.observe(parent, { childList: true, subtree: true });
     }
   }
 
@@ -2297,7 +2305,6 @@
     }
 
     disconnectLauncherWaitObserver();
-
     const launcher = createLauncher();
     if (launcher.parentElement !== portal) portal.appendChild(launcher);
     syncLauncherVisibility();
@@ -2313,6 +2320,32 @@
         if (ensureLauncherMounted()) clearLauncherRetryTimers();
       }, delay));
     }
+  }
+
+  function verifyLauncherIntegrity() {
+    const portal = getComposerPortal();
+    const launcher = document.getElementById(LAUNCHER_ID);
+
+    if (!portal) {
+      if (launcher) launcher.hidden = true;
+      startLauncherWaitObserver();
+      return;
+    }
+
+    if (!launcher || launcher.parentElement !== portal) {
+      scheduleLauncherMountRetries();
+      return;
+    }
+
+    syncLauncherVisibility();
+  }
+
+  function startLauncherIntegrityWatch() {
+    if (launcherIntegrityTimer !== null) return;
+    launcherIntegrityTimer = window.setInterval(
+      verifyLauncherIntegrity,
+      LAUNCHER_INTEGRITY_INTERVAL_MS
+    );
   }
 
   function createPanel() {
@@ -2665,6 +2698,7 @@
 
     locationSnapshot = newHref;
     switchToConversationContext(newConversationId);
+    startLauncherWaitObserver();
     scheduleLauncherMountRetries();
   }
 
@@ -2737,6 +2771,7 @@
   }
 
   installHistoryHooks();
+  startLauncherIntegrityWatch();
   document.addEventListener('input', handleTrustedEditorInput, true);
   document.addEventListener('keydown', handleDialogKeydown, true);
   window.addEventListener('popstate', handleLocationChange);

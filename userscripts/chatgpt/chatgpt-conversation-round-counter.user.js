@@ -33,6 +33,7 @@
     const BATCH_PATH = '/backend-api/conversations/batch';
     const USER_MESSAGE_SELECTOR = '[data-message-author-role="user"][data-message-id]';
     const DIAGNOSTIC_PREFIX = '[RoundCounter]';
+    const UI_INTEGRITY_INTERVAL_MS = 1000;
     const roundCountCache = loadRoundCountCache();
 
     const state = {
@@ -54,6 +55,7 @@
     let uiWaitObserver = null;
     let uiMountToken = 0;
     let uiLoadWaitArmed = false;
+    let uiIntegrityTimer = null;
 
     function diagnosticError(message, error) {
         console.error(`${DIAGNOSTIC_PREFIX} ${message}`, error);
@@ -401,10 +403,11 @@
         return raw.replace(/^chatgpt:/i, '') || null;
     }
 
-    function isCurrentComposerPortal(portal) {
+    function isComposerPortalForCurrentRoute(portal) {
         if (!(portal instanceof Element) || !portal.isConnected) {
             return false;
         }
+
         const form = portal.closest('form[data-chatgpt-composer]');
         if (!form) {
             return false;
@@ -421,9 +424,10 @@
             return placement === 'thread';
         }
 
-        // 新版 ChatGPT 在“已有对话 -> 新建”切换时可能暂时保留旧 thread Composer。
-        // 只有真正的 home Composer，或已进入 local-chatgpt 临时身份的 portal，才属于当前新对话。
-        return placement === 'home' || isLocalConversationId(portalConversationId);
+        if (portalConversationId) {
+            return isTemporaryConversationId(portalConversationId);
+        }
+        return placement === 'home';
     }
 
     function getComposerPortal() {
@@ -431,7 +435,7 @@
             'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
         );
         for (const portal of portals) {
-            if (isCurrentComposerPortal(portal)) {
+            if (isComposerPortalForCurrentRoute(portal)) {
                 return portal;
             }
         }
@@ -484,7 +488,7 @@
 
         uiPortalObserver = new MutationObserver(() => {
             const root = document.getElementById('cyan-round-counter-root');
-            if (!root || root.parentElement !== portal || getComposerPortal() !== portal) {
+            if (!root || root.parentElement !== portal) {
                 scheduleStableUiMount(portal);
             }
         });
@@ -508,16 +512,16 @@
         const parent = form.parentElement;
         if (parent) {
             uiParentObserver = new MutationObserver(() => {
-                if (!form.isConnected) {
+                if (!form.isConnected || getComposerPortal() !== portal) {
                     startUiMountWait();
                 }
             });
-            uiParentObserver.observe(parent, { childList: true });
+            uiParentObserver.observe(parent, { childList: true, subtree: true });
         }
     }
 
     function installUi(portal) {
-        if (!portal) {
+        if (!portal || !isComposerPortalForCurrentRoute(portal) || getComposerPortal() !== portal) {
             return false;
         }
         let root = document.getElementById('cyan-round-counter-root');
@@ -596,6 +600,37 @@
         }
         disconnectUiWaitObserver();
         scheduleStableUiMount(portal);
+    }
+
+
+    function verifyUiIntegrity() {
+        if (document.readyState !== 'complete') {
+            return;
+        }
+
+        const portal = getComposerPortal();
+        const root = document.getElementById('cyan-round-counter-root');
+
+        if (!portal) {
+            if (root?.isConnected) {
+                root.remove();
+            }
+            state.uiReady = false;
+            statusButton = null;
+            startUiWaitObserver();
+            return;
+        }
+
+        if (!root || root.parentElement !== portal || !state.uiReady) {
+            scheduleStableUiMount(portal);
+        }
+    }
+
+    function startUiIntegrityWatch() {
+        if (uiIntegrityTimer !== null) {
+            return;
+        }
+        uiIntegrityTimer = PAGE_WINDOW.setInterval(verifyUiIntegrity, UI_INTEGRITY_INTERVAL_MS);
     }
 
     function getVisibleUserMessageIds() {
@@ -798,6 +833,7 @@
             renderUiState();
         }
         startUiMountWait();
+        startUiIntegrityWatch();
         installLocalMessageObserver();
         patchHistoryForSpaNavigation();
     }
