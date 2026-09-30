@@ -2,6 +2,12 @@
 
 `chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。v0.2.x 使用被动 batch + mapping 计数核心：脚本不主动分页抓取历史，而是读取 ChatGPT 页面自己已经请求到的 conversation `mapping`，统计其中全部用户消息节点，并用 DOM 增量维护当前页面的新消息。v0.2.1 进一步修复 F5 首次加载时 Composer badge 可能错过挂载的问题。
 
+## v0.2.4 Composer 会话迁移容错
+
+普通新对话发送首条消息时，ChatGPT 可能同时保留多个 Composer，并在 `/ → /c/local-chatgpt:* → /c/<final-uuid>` 过程中让当前 thread Composer 长时间保留 `local-chatgpt:*` identity。v0.2.4 不再要求 portal identity 与最终 URL UUID 严格相等，而是优先选择当前 thread Composer；`local-chatgpt:*` 在正式 UUID 路由下视为合法迁移状态。
+
+当暂时找不到有效 portal 时，脚本不再主动删除现有 badge，而是等待 Composer 状态收敛后重新挂载。这样可避免 ChatGPT React 过渡期间把轮数 badge 自己清掉。
+
 ## 功能定位
 
 - “轮数”定义为当前 conversation `mapping` 中所有唯一的 `user` 消息节点数。
@@ -192,8 +198,8 @@ badge 固定为 40 × 24 px，`right: 14px`、`bottom: -1px`，使用 1 px 黑�
 - 全局消息 MutationObserver 只处理新增节点中的 user message selector，不承担 Composer UI 维护。
 - 已有旧对话在 mapping 基线建立前关闭 DOM 增量，避免历史 DOM 懒加载误计数。
 - mapping user id、当前页面实时新增 id 和新对话 pending id 只保存在当前页面内存；GM storage 只持久保存总数和更新时间。
-- badge 首次加载先等待文档 `complete`；若 Composer 尚未出现，临时使用全局 `childList + subtree` observer 仅负责等待首次 portal。portal 出现后等待两个 animation frame 再挂载，成功后立即断开该临时 observer，不保留持续全局 UI 观察。
-- badge 挂载成功后仅观察 portal、对应 composer form 和 form 直属父节点的 `childList`；只有 Composer 真正被替换时才重新启用临时首次等待 observer。
+- badge 首次加载先等待文档 `complete`；若 Composer 尚未出现，临时使用全局 `childList + subtree` observer 仅负责等待首次 portal。portal 出现后等待两个 animation frame 再挂载，成功后立即断开该临时 observer。Composer 迁移期间允许 thread portal 暂时保留 `local-chatgpt:*` identity，不要求它立即与最终 URL UUID 相等。
+- badge 挂载成功后仅观察 portal、对应 composer form 和 form 直属父节点；同时监听 `data-composer-placement` 与 `data-above-composer-conversation-id` 属性变化。若暂时找不到当前 portal，不删除已有 badge，只重新进入等待流程。
 - `renderUiState()` 只在文字、title 或来源状态实际变化时写 DOM。
 - 不存在历史分页 timer、网络轮询 timer 或页面隐藏后恢复分页的逻辑。
 
@@ -228,4 +234,5 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 10. Console 中 `window.__CYAN_ROUND_COUNTER_FETCH_PATCHED__ === true`；与其他包装 `window.fetch` / History 的 userscript 共存时不得复用对方 patch flag。
 11. 不应出现脚本主动发出的 `/messages?before=`、conversation 分页请求或轮数相关轮询。
 12. F5 / Ctrl+Shift+R 时即使 Composer 晚于 2.5 秒出现，badge 最终也应挂载；首次挂载前等待文档 `complete` 和两个 animation frame，避免过早介入 hydration。
-13. badge 稳定挂载后，临时全局等待 observer 应已断开；后续只保留 portal、composer form 和直属父节点的窄范围 `childList` observer，Composer 重建后仍可自动重新挂载且不会形成 MutationObserver 自触发循环。
+13. badge 稳定挂载后，临时全局等待 observer 应已断开；后续只保留 portal、composer form 和直属父节点的窄范围 observer，Composer 重建或 identity 属性变化后仍可自动重新挂载。
+14. 普通新对话首条消息期间，即使 URL 已进入正式 `/c/<UUID>` 而 thread portal 仍暂时保留 `local-chatgpt:*`，badge 不应被删除，并应继续挂在当前 thread Composer。

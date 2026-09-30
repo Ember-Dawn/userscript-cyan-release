@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.2.3
+// @version      0.2.4
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -403,14 +403,14 @@
         return raw.replace(/^chatgpt:/i, '') || null;
     }
 
-    function isComposerPortalForCurrentRoute(portal) {
+    function getComposerPortalPriority(portal) {
         if (!(portal instanceof Element) || !portal.isConnected) {
-            return false;
+            return -1;
         }
 
         const form = portal.closest('form[data-chatgpt-composer]');
         if (!form) {
-            return false;
+            return -1;
         }
 
         const routeConversationId = extractConversationPageId();
@@ -418,28 +418,61 @@
         const placement = form.getAttribute('data-composer-placement') || '';
 
         if (routeConversationId) {
-            if (portalConversationId) {
-                return portalConversationId === routeConversationId;
+            if (placement !== 'thread') {
+                return -1;
             }
-            return placement === 'thread';
+
+            if (portalConversationId === routeConversationId) {
+                return 300;
+            }
+
+            // During / -> local-chatgpt:* -> final UUID binding, ChatGPT may
+            // keep the active thread portal's local id after the URL becomes
+            // the final UUID. Treat that as a valid transition state.
+            if (isTemporaryConversationId(portalConversationId)) {
+                return 200;
+            }
+
+            // A thread portal without an identity can still be the active
+            // Composer while ChatGPT is finishing its internal transition.
+            if (!portalConversationId) {
+                return 100;
+            }
+
+            return -1;
         }
 
-        if (portalConversationId) {
-            return isTemporaryConversationId(portalConversationId);
+        if (placement !== 'home') {
+            return -1;
         }
-        return placement === 'home';
+
+        if (isTemporaryConversationId(portalConversationId)) {
+            return 300;
+        }
+
+        return portalConversationId ? -1 : 200;
+    }
+
+    function isComposerPortalForCurrentRoute(portal) {
+        return getComposerPortalPriority(portal) >= 0;
     }
 
     function getComposerPortal() {
         const portals = document.querySelectorAll(
             'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
         );
+        let bestPortal = null;
+        let bestPriority = -1;
+
         for (const portal of portals) {
-            if (isComposerPortalForCurrentRoute(portal)) {
-                return portal;
+            const priority = getComposerPortalPriority(portal);
+            if (priority > bestPriority) {
+                bestPriority = priority;
+                bestPortal = portal;
             }
         }
-        return null;
+
+        return bestPortal;
     }
 
     function disconnectUiObservers() {
@@ -612,9 +645,6 @@
         const root = document.getElementById('cyan-round-counter-root');
 
         if (!portal) {
-            if (root?.isConnected) {
-                root.remove();
-            }
             state.uiReady = false;
             statusButton = null;
             startUiWaitObserver();

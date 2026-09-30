@@ -1,7 +1,13 @@
 # ChatGPT 顺序任务助手
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-sequential-task-queue.user.js`  
-> 当前说明版本：v1.4.3
+> 当前说明版本：v1.4.6
+
+## v1.4.6 Composer 会话迁移容错
+
+普通新对话发送首条消息时，ChatGPT 可能同时存在 home 与 thread Composer，并让当前 thread Composer 在最终 `/c/<UUID>` 路由下继续保留 `local-chatgpt:*` identity。v1.4.6 将 Composer 选择改为优先当前 thread Composer；正式 UUID 路由下的 `local-chatgpt:*` 被视为合法迁移状态，不再要求 portal identity 与 URL 严格相等。
+
+收起 launcher 的显示状态与 Composer identity 解耦：临时找不到有效 portal 时不会主动隐藏现有 launcher；找到当前 Composer 后再自动重新挂载。
 
 ## 1. 当前定位
 
@@ -27,7 +33,7 @@
 - 当前轮数 badge 为 `40 × 24 px`、右侧偏移 `14px`；顺序任务按钮使用右侧偏移 `60px`，因此位于轮数 badge 左侧并保留约 `6px` 间距。
 - launcher 与 `#cg-stq-panel` 解耦：launcher 单独挂载到 Composer，完整 panel 仍保留在 `document.body` 并继续使用原来的右下角 `position: fixed` 定位。
 - 点击 launcher 只把现有 panel 从收起状态切换为展开状态；点击 panel 内的“−”后再恢复 Composer 上沿 launcher。
-- Composer / portal 被 React 重建时，仅通过当前 portal、form 及其直属父节点的窄范围 `childList` observer 与一组有上限的短时重试恢复 launcher；不新增全局 subtree 扫描或持续轮询。
+- Composer / portal 被 React 重建时，通过当前 portal、form 及其直属父节点 observer、Composer identity 属性监听、等待 observer 与短时重试恢复 launcher；不依赖固定截止时间。正式 UUID 路由下若 portal 暂时仍保留 `local-chatgpt:*`，仍允许继续挂载。
 
 该改动不触碰任务解析、发送、完成判断、会话状态迁移、运行锁和持久状态逻辑。
 

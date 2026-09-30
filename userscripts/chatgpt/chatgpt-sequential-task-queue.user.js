@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-sequential-task-queue.user.js
-// @version      1.4.5
+// @version      1.4.6
 // @description  在 ChatGPT 中按会话保存并顺序执行任务队列；支持多行 Prompt、后台标签页推进及独立会话状态。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -53,7 +53,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.4.5';
+  const VERSION = '1.4.6';
   const PREFIX = 'cg-stq';
   const LEGACY_STORAGE_KEY = 'cyan.chatgptSequentialTaskQueue.v1';
   const STATE_KEY_PREFIX = 'cyan.chatgptSequentialTaskQueue.state.v2.';
@@ -2166,33 +2166,53 @@
     );
   }
 
-  function isComposerPortalForCurrentRoute(portal) {
-    if (!(portal instanceof Element) || !portal.isConnected) return false;
+  function getComposerPortalPriority(portal) {
+    if (!(portal instanceof Element) || !portal.isConnected) return -1;
 
     const form = portal.closest('form[data-chatgpt-composer]');
-    if (!form) return false;
+    if (!form) return -1;
 
     const routeConversationId = getConversationId();
     const portalConversationId = getPortalConversationId(portal);
     const placement = form.getAttribute('data-composer-placement') || '';
 
     if (routeConversationId) {
-      if (portalConversationId) return portalConversationId === routeConversationId;
-      return placement === 'thread';
+      if (placement !== 'thread') return -1;
+      if (portalConversationId === routeConversationId) return 300;
+
+      // During / -> local-chatgpt:* -> final UUID binding, ChatGPT may keep
+      // the active thread portal's local id after the URL becomes the final UUID.
+      if (isTemporaryPortalConversationId(portalConversationId)) return 200;
+
+      if (!portalConversationId) return 100;
+      return -1;
     }
 
-    if (portalConversationId) return isTemporaryPortalConversationId(portalConversationId);
-    return placement === 'home';
+    if (placement !== 'home') return -1;
+    if (isTemporaryPortalConversationId(portalConversationId)) return 300;
+    return portalConversationId ? -1 : 200;
+  }
+
+  function isComposerPortalForCurrentRoute(portal) {
+    return getComposerPortalPriority(portal) >= 0;
   }
 
   function getComposerPortal() {
     const portals = document.querySelectorAll(
       'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
     );
+    let bestPortal = null;
+    let bestPriority = -1;
+
     for (const portal of portals) {
-      if (isComposerPortalForCurrentRoute(portal)) return portal;
+      const priority = getComposerPortalPriority(portal);
+      if (priority > bestPriority) {
+        bestPriority = priority;
+        bestPortal = portal;
+      }
     }
-    return null;
+
+    return bestPortal;
   }
 
   function disconnectLauncherObservers() {
@@ -2298,8 +2318,6 @@
     const portal = getComposerPortal();
     if (!portal) {
       disconnectLauncherObservers();
-      const launcher = document.getElementById(LAUNCHER_ID);
-      if (launcher) launcher.hidden = true;
       startLauncherWaitObserver();
       return false;
     }
@@ -2327,7 +2345,6 @@
     const launcher = document.getElementById(LAUNCHER_ID);
 
     if (!portal) {
-      if (launcher) launcher.hidden = true;
       startLauncherWaitObserver();
       return;
     }
