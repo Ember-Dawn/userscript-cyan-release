@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flaticon 快捷下载助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.5
+// @version      0.1.6
 // @description  为 Flaticon 图标卡片增加固定均匀排列的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
@@ -163,7 +163,7 @@
         z-index: 20;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 6px;
         opacity: 0;
         pointer-events: none;
         transition: opacity 120ms ease;
@@ -178,8 +178,14 @@
       .${ACTIONS_CLASS} .cyan-fi-color,
       .${ACTIONS_CLASS} .cyan-fi-action {
         box-sizing: border-box;
-        width: 42px;
-        height: 42px;
+        width: 36px !important;
+        height: 36px !important;
+        min-width: 36px !important;
+        min-height: 36px !important;
+        max-width: 36px !important;
+        max-height: 36px !important;
+        margin: 0 !important;
+        flex: 0 0 36px;
         border: 1px solid #2f6fd6;
         border-radius: 8px;
         background-color: #3b82f6;
@@ -189,10 +195,10 @@
 
       .${ACTIONS_CLASS} .cyan-fi-color {
         min-width: 0;
-        padding: 0 4px;
+        padding: 0 3px !important;
         outline: none;
         text-align: center;
-        font: 600 11px/1 Arial, sans-serif;
+        font: 600 10px/1 Arial, sans-serif;
         caret-color: currentColor;
         transition: background-color 100ms ease, color 100ms ease, border-color 100ms ease, box-shadow 100ms ease;
       }
@@ -214,12 +220,12 @@
       }
 
       .${ACTIONS_CLASS} .cyan-fi-action {
-        padding: 0;
+        padding: 0 !important;
         display: block;
         cursor: pointer;
         background-repeat: no-repeat;
         background-position: center;
-        background-size: 21px 21px;
+        background-size: 18px 18px;
       }
 
       .${ACTIONS_CLASS} .cyan-fi-action:hover {
