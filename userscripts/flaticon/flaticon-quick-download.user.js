@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flaticon 快捷下载助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.4
+// @version      0.1.5
 // @description  为 Flaticon 图标卡片增加固定均匀排列的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
@@ -182,7 +182,7 @@
         height: 42px;
         border: 1px solid #2f6fd6;
         border-radius: 8px;
-        background: #3b82f6;
+        background-color: #3b82f6;
         color: #fff;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.10);
       }
@@ -215,23 +215,24 @@
 
       .${ACTIONS_CLASS} .cyan-fi-action {
         padding: 0;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
+        display: block;
         cursor: pointer;
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: 21px 21px;
       }
 
       .${ACTIONS_CLASS} .cyan-fi-action:hover {
-        background: #2563eb;
+        background-color: #2563eb;
         border-color: #255fca;
       }
 
-      .${ACTIONS_CLASS} .cyan-fi-icon {
-        display: block;
-        width: 21px;
-        height: 21px;
-        color: currentColor;
-        pointer-events: none;
+      .${ACTIONS_CLASS} .cyan-fi-copy {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='9' width='10' height='10' rx='1.8'/%3E%3Crect x='5' y='5' width='10' height='10' rx='1.8'/%3E%3C/svg%3E");
+      }
+
+      .${ACTIONS_CLASS} .cyan-fi-download {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4v10'/%3E%3Cpolyline points='8.5 11 12 14.5 15.5 11'/%3E%3Cpath d='M5 17v1.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V17'/%3E%3C/svg%3E");
       }
 
       html.${AUTO_DOWNLOAD_CLASS} [role="dialog"]:has(#download-free),
@@ -598,46 +599,12 @@
     continueAutoDownload();
   }
 
-  function createSvgIcon(kind) {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('width', '21');
-    svg.setAttribute('height', '21');
-    svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('focusable', 'false');
-    svg.style.cssText = 'display:block !important;width:21px !important;height:21px !important;overflow:visible !important;fill:none !important;stroke:#fff !important;stroke-width:2 !important;stroke-linecap:round !important;stroke-linejoin:round !important;';
-
-    const add = (name, attrs) => {
-      const element = document.createElementNS('http://www.w3.org/2000/svg', name);
-      Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, value));
-      element.style.cssText = 'fill:none !important;stroke:#fff !important;stroke-width:2 !important;stroke-linecap:round !important;stroke-linejoin:round !important;';
-      svg.appendChild(element);
-    };
-
-    if (kind === 'copy') {
-      add('rect', { x: '9', y: '9', width: '10', height: '10', rx: '1.8' });
-      add('rect', { x: '5', y: '5', width: '10', height: '10', rx: '1.8' });
-    } else {
-      add('path', { d: 'M12 4v10' });
-      add('polyline', { points: '8.5 11 12 14.5 15.5 11' });
-      add('path', { d: 'M5 17v1.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V17' });
-    }
-
-    return svg;
-  }
-
-  function createIconButton(className, title, iconKind) {
+  function createIconButton(className, title) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `cyan-fi-action ${className}`;
     button.title = title;
     button.setAttribute('aria-label', title);
-
-    const icon = document.createElement('span');
-    icon.className = 'cyan-fi-icon';
-    icon.setAttribute('aria-hidden', 'true');
-    icon.appendChild(createSvgIcon(iconKind));
-    button.appendChild(icon);
     return button;
   }
 
@@ -672,8 +639,8 @@
       updateColorPreview(colorInput);
     });
 
-    const copyButton = createIconButton('cyan-fi-copy', 'Copy PNG', 'copy');
-    const downloadButton = createIconButton('cyan-fi-download', 'Download PNG', 'download');
+    const copyButton = createIconButton('cyan-fi-copy', 'Copy PNG');
+    const downloadButton = createIconButton('cyan-fi-download', 'Download PNG');
 
     copyButton.addEventListener('click', (event) => {
       event.preventDefault();
