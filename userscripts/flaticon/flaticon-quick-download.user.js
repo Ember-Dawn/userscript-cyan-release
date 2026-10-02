@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Flaticon 快捷下载助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.2
-// @description  为 Flaticon 图标卡片增加对齐原生按钮的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
+// @version      0.1.3
+// @description  为 Flaticon 图标卡片增加与原生三行严格对齐的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js
@@ -110,6 +110,7 @@
           queueMicrotask(() => showToast('PNG 已复制'));
           return result;
         } finally {
+          copyState.stopToastWatch?.();
           pendingCopy = null;
           window.clearTimeout(pendingCopyTimer);
           pendingCopyTimer = null;
@@ -134,6 +135,7 @@
         queueMicrotask(() => showToast('PNG 已复制'));
         return result;
       } finally {
+        copyState.stopToastWatch?.();
         pendingCopy = null;
         window.clearTimeout(pendingCopyTimer);
         pendingCopyTimer = null;
@@ -225,59 +227,23 @@
       }
 
       .${ACTIONS_CLASS} .cyan-fi-icon {
-        position: relative;
         display: block;
-        width: 18px;
-        height: 18px;
-        box-sizing: border-box;
+        width: 20px;
+        height: 20px;
         color: currentColor;
+        pointer-events: none;
       }
 
-      .${ACTIONS_CLASS} .cyan-fi-icon-copy::before,
-      .${ACTIONS_CLASS} .cyan-fi-icon-copy::after {
-        content: '';
-        position: absolute;
-        box-sizing: border-box;
-        width: 11px;
-        height: 11px;
-        border: 1.7px solid currentColor;
-        border-radius: 2px;
-      }
-
-      .${ACTIONS_CLASS} .cyan-fi-icon-copy::before {
-        left: 2px;
-        top: 2px;
-      }
-
-      .${ACTIONS_CLASS} .cyan-fi-icon-copy::after {
-        right: 2px;
-        bottom: 2px;
-        background: inherit;
-      }
-
-      .${ACTIONS_CLASS} .cyan-fi-icon-download::before {
-        content: '';
-        position: absolute;
-        left: 8px;
-        top: 2px;
-        width: 2px;
-        height: 10px;
-        border-radius: 1px;
-        background: currentColor;
-        box-shadow: -3px 5px 0 -1px currentColor, 3px 5px 0 -1px currentColor;
-        transform: rotate(0.01deg);
-      }
-
-      .${ACTIONS_CLASS} .cyan-fi-icon-download::after {
-        content: '';
-        position: absolute;
-        left: 3px;
-        bottom: 1px;
-        width: 12px;
-        height: 5px;
-        border: 1.7px solid currentColor;
-        border-top: 0;
-        border-radius: 0 0 2px 2px;
+      .${ACTIONS_CLASS} .cyan-fi-icon svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
       html.${AUTO_DOWNLOAD_CLASS} [role="dialog"]:has(#download-free),
@@ -361,41 +327,63 @@
     input.style.color = getReadableTextColor(color);
   }
 
-  function alignQuickActions(card, actions, copyItem, downloadItem) {
-    if (!(card instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
-
-    const nativeButtons = Array.from(
-      copyItem.parentElement?.querySelectorAll('.popover-button') || []
-    ).filter((button) => button instanceof HTMLElement && button.getClientRects().length > 0);
-
-    const fallbackButtons = [
-      copyItem.querySelector('.popover-button'),
-      downloadItem.querySelector('.popover-button'),
-    ].filter((button) => button instanceof HTMLElement);
-
-    const buttons = nativeButtons.length >= 2 ? nativeButtons : fallbackButtons;
-    if (!buttons.length) return;
+  function getNativeActionRects(card) {
+    if (!(card instanceof HTMLElement)) return [];
 
     const cardRect = card.getBoundingClientRect();
-    const rects = buttons
-      .map((button) => button.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .sort((a, b) => a.top - b.top);
+    const candidates = Array.from(card.querySelectorAll('.popover-button'))
+      .filter((button) => button instanceof HTMLElement)
+      .map((button) => ({ button, rect: button.getBoundingClientRect() }))
+      .filter(({ button, rect }) =>
+        !button.closest(`.${ACTIONS_CLASS}`)
+        && rect.width > 0
+        && rect.height > 0
+        && rect.right > cardRect.left + cardRect.width * 0.55
+      );
+
+    if (!candidates.length) return [];
+
+    const groups = [];
+    for (const candidate of candidates) {
+      let group = groups.find((item) => Math.abs(item.left - candidate.rect.left) <= 4);
+      if (!group) {
+        group = { left: candidate.rect.left, items: [] };
+        groups.push(group);
+      }
+      group.items.push(candidate);
+    }
+
+    groups.sort((a, b) => {
+      if (b.items.length !== a.items.length) return b.items.length - a.items.length;
+      return b.left - a.left;
+    });
+
+    return groups[0].items
+      .map(({ rect }) => rect)
+      .sort((a, b) => a.top - b.top)
+      .slice(0, 3);
+  }
+
+  function alignQuickActions(card, actions) {
+    if (!(card instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
+
+    const rects = getNativeActionRects(card);
     if (!rects.length) return;
 
+    const cardRect = card.getBoundingClientRect();
     const controlSize = Math.round(rects[0].height);
     const top = Math.round(rects[0].top - cardRect.top);
-    const rightGap = Math.max(8, Math.round(rects[0].left - cardRect.left));
-    const left = Math.max(8, Math.min(12, Math.round(cardRect.width - (rects[0].right - cardRect.left))));
+    const nativeRightInset = Math.max(0, Math.round(cardRect.right - rects[0].right));
+    const left = Math.max(8, nativeRightInset);
     let gap = 6;
 
     if (rects.length >= 2) {
-      gap = Math.max(4, Math.round(rects[1].top - rects[0].bottom));
+      gap = Math.max(0, Math.round(rects[1].top - rects[0].bottom));
     }
 
     actions.style.setProperty('--cyan-fi-control-size', `${controlSize}px`);
     actions.style.setProperty('--cyan-fi-actions-top', `${top}px`);
-    actions.style.setProperty('--cyan-fi-actions-left', `${Math.min(left, rightGap)}px`);
+    actions.style.setProperty('--cyan-fi-actions-left', `${left}px`);
     actions.style.setProperty('--cyan-fi-actions-gap', `${gap}px`);
   }
 
@@ -503,6 +491,58 @@
     return color;
   }
 
+  function isBottomLeftNativeToastCandidate(element) {
+    if (!(element instanceof HTMLElement) || element.id === TOAST_ID) return false;
+    const style = getComputedStyle(element);
+    if (!['fixed', 'absolute'].includes(style.position)) return false;
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 24 || rect.height < 18 || rect.width > 520 || rect.height > 180) return false;
+    if (rect.left > window.innerWidth * 0.45 || rect.bottom < window.innerHeight * 0.55) return false;
+
+    const text = (element.textContent || '').trim().toLowerCase();
+    const semanticMatch = /(copied|clipboard|copy|success|成功|复制)/.test(text);
+    const className = typeof element.className === 'string' ? element.className.toLowerCase() : '';
+    const classMatch = /(toast|notification|snackbar|alert|message)/.test(className);
+    const background = style.backgroundColor || '';
+    const greenMatch = /rgb\(\s*(?:[0-9]|[1-9][0-9]|1[0-7][0-9])\s*,\s*(?:1[0-9]{2}|2[0-5][0-9])\s*,\s*(?:[0-9]|[1-9][0-9]|1[0-7][0-9])\s*\)/.test(background);
+
+    return semanticMatch || classMatch || greenMatch;
+  }
+
+  function hideNativeCopyToastCandidate(element) {
+    if (!(element instanceof Element)) return;
+
+    const candidates = [element, ...element.querySelectorAll('*')];
+    for (const candidate of candidates) {
+      if (!(candidate instanceof HTMLElement)) continue;
+      if (!isBottomLeftNativeToastCandidate(candidate) && !isLikelyNativeCopyToast(candidate)) continue;
+      candidate.style.setProperty('display', 'none', 'important');
+      candidate.setAttribute('data-cyan-fi-native-toast-hidden', 'true');
+    }
+  }
+
+  function watchNativeCopyToast() {
+    const root = document.body || document.documentElement;
+    if (!root) return () => {};
+
+    const observer = new MutationObserver((mutations) => {
+      if (performance.now() > suppressNativeCopyToastUntil) return;
+      for (const mutation of mutations) {
+        mutation.addedNodes.forEach((node) => {
+          if (node instanceof Element) hideNativeCopyToastCandidate(node);
+        });
+      }
+    });
+
+    observer.observe(root, { childList: true, subtree: true });
+    const timer = window.setTimeout(() => observer.disconnect(), 2400);
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
+  }
+
   function triggerCopy(card, input, copyItem, downloadItem) {
     const color = getValidatedColor(input);
     if (color === null) return;
@@ -516,11 +556,15 @@
     const iconId = getIconId(copyItem, downloadItem, card);
     if (color) applyColorHints(card, color, iconId);
 
-    pendingCopy = { color, startedAt: performance.now() };
+    pendingCopy = { color, startedAt: performance.now(), stopToastWatch: null };
     suppressNativeCopyToastUntil = performance.now() + 2200;
+    pendingCopy.stopToastWatch = watchNativeCopyToast();
     window.clearTimeout(pendingCopyTimer);
     pendingCopyTimer = window.setTimeout(() => {
-      if (pendingCopy && performance.now() - pendingCopy.startedAt >= 1800) pendingCopy = null;
+      if (pendingCopy && performance.now() - pendingCopy.startedAt >= 1800) {
+        pendingCopy.stopToastWatch?.();
+        pendingCopy = null;
+      }
     }, 2000);
 
     nativeButton.click();
@@ -626,7 +670,30 @@
     continueAutoDownload();
   }
 
-  function createIconButton(className, title, iconClassName) {
+  function createSvgIcon(kind) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+
+    const add = (name, attrs) => {
+      const element = document.createElementNS('http://www.w3.org/2000/svg', name);
+      Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, value));
+      svg.appendChild(element);
+    };
+
+    if (kind === 'copy') {
+      add('rect', { x: '8', y: '8', width: '11', height: '11', rx: '2' });
+      add('path', { d: 'M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2' });
+    } else {
+      add('path', { d: 'M12 4v10' });
+      add('path', { d: 'm8.5 10.5 3.5 3.5 3.5-3.5' });
+      add('path', { d: 'M5 16.5v1.5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1.5' });
+    }
+
+    return svg;
+  }
+
+  function createIconButton(className, title, iconKind) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `cyan-fi-action ${className}`;
@@ -634,8 +701,9 @@
     button.setAttribute('aria-label', title);
 
     const icon = document.createElement('span');
-    icon.className = `cyan-fi-icon ${iconClassName}`;
+    icon.className = 'cyan-fi-icon';
     icon.setAttribute('aria-hidden', 'true');
+    icon.appendChild(createSvgIcon(iconKind));
     button.appendChild(icon);
     return button;
   }
@@ -671,8 +739,8 @@
       updateColorPreview(colorInput);
     });
 
-    const copyButton = createIconButton('cyan-fi-copy', 'Copy PNG', 'cyan-fi-icon-copy');
-    const downloadButton = createIconButton('cyan-fi-download', 'Download PNG', 'cyan-fi-icon-download');
+    const copyButton = createIconButton('cyan-fi-copy', 'Copy PNG', 'copy');
+    const downloadButton = createIconButton('cyan-fi-download', 'Download PNG', 'download');
 
     copyButton.addEventListener('click', (event) => {
       event.preventDefault();
@@ -690,12 +758,12 @@
       colorInput.value = '';
       colorInput.classList.remove('cyan-fi-invalid');
       updateColorPreview(colorInput);
-      requestAnimationFrame(() => alignQuickActions(card, actions, copyItem, downloadItem));
+      requestAnimationFrame(() => alignQuickActions(card, actions));
     });
 
     actions.append(colorInput, copyButton, downloadButton);
     card.appendChild(actions);
-    requestAnimationFrame(() => alignQuickActions(card, actions, copyItem, downloadItem));
+    requestAnimationFrame(() => alignQuickActions(card, actions));
   }
 
   function scan() {

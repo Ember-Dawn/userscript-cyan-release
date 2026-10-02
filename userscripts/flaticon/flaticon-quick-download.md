@@ -7,8 +7,8 @@
 1. **图标左侧快捷操作列**
    - 当鼠标悬停到脚本已识别的 Flaticon 图标卡片时，在左上侧显示一列紧凑控件。
    - 第一项为 HEX 输入框；第二项为一键 Copy PNG；第三项为一键 Download PNG。
-   - 三个快捷控件统一使用蓝色视觉，并动态读取右侧原生按钮的实际尺寸、顶部位置和行间距，让左右三行尽量严格对齐。
-   - HEX 输入框与 Copy / Download 按钮使用相同外尺寸；Copy / Download 使用脚本自绘的 CSS 图标，不依赖 Flaticon 内部 icon font。
+   - 三个快捷控件统一使用蓝色视觉；脚本会从当前卡片中识别右侧最靠右且同列的三个原生 `.popover-button`，读取它们的实际尺寸、第一行顶部位置和行间距，让左侧三行与右侧三行逐行对齐。
+   - HEX 输入框与 Copy / Download 按钮使用相同外尺寸；Copy / Download 使用脚本内嵌的自绘 SVG 线框图标，不依赖 Flaticon 内部 icon font 或 CSS 拼接图形。
    - Flaticon 右侧原生三个按钮全部保留；快捷操作列只作为额外入口，不隐藏或替换原生入口。
 
 2. **可选 HEX 颜色**
@@ -24,7 +24,7 @@
    - HEX 留空时完全保持原生 PNG。
    - HEX 有值时，脚本临时代理浏览器 `Clipboard.write()`，在原生 PNG 真正写入剪贴板前仅替换 PNG 像素颜色，同时保留透明度，再把处理后的 PNG 交给浏览器剪贴板。
    - 不显示原来的 `Copy to clipboard -> SVG / PNG` 二级菜单。
-   - 快捷 Copy 成功后抑制该次原生 Copy toast，并统一使用脚本自己的底部居中提示 `PNG 已复制`；右侧原生 Copy 按钮仍保持 Flaticon 原生反馈。
+   - 快捷 Copy 触发时会临时启动短生命周期 MutationObserver，优先识别并隐藏左下角新增的原生 Copy/Clipboard toast，只保留脚本自己的底部居中提示 `PNG 已复制`；右侧原生 Copy 按钮仍保持 Flaticon 原生反馈。
 
 4. **一键 Download PNG**
    - 直接触发 Flaticon 原生 PNG 下载流程，并自动继续当前免费 PNG 流程中的 `Free download`。
@@ -33,7 +33,7 @@
 
 5. **统一快捷操作反馈**
    - 左侧快捷 Copy / Download 都使用脚本自己的底部居中轻量 toast。
-   - 脚本只在左侧快捷 Copy 的短暂操作窗口内尝试隐藏与 Copy/Clipboard 文案匹配的原生 toast，不影响用户点击右侧原生按钮时的站点反馈。
+   - 脚本只在左侧快捷 Copy 的短暂操作窗口内监听新加入页面的提示节点，并结合 Copy/Clipboard 文案、toast 类名、左下角位置与绿色提示特征进行抑制；操作窗口结束即停止监听，不影响右侧原生按钮。
 
 ## 当前依赖的 Flaticon 页面约定
 
@@ -61,21 +61,21 @@
 - Copy 的有色 PNG 只在当前用户点击触发的 Clipboard 写入阶段本地处理；不会修改页面预览或长期保存颜色。
 - Download 在真正提交当前图标的原生 form 前写入已验证颜色，不创建或保存新的下载 token。
 - MutationObserver 只负责在页面动态增加图标卡片后进行防抖扫描、一键下载期间继续完成短暂的隐藏弹窗链路，以及在快捷 Copy 的极短窗口内抑制原生 Copy toast。
-- 快捷操作列会根据右侧原生按钮实际几何位置更新自身尺寸和间距；不要把对齐参数写死为只适配某一种卡片尺寸。
+- 快捷操作列会根据卡片内右侧同列三个原生按钮的实际几何位置更新自身尺寸、第一行顶部和间距；不要把对齐参数写死为只适配某一种卡片尺寸。
 
 ## 建议回归测试
 
 每次修改后至少检查：
 
 1. Flaticon 搜索结果页正常加载，未 hover 的图标不会显示快捷操作列。
-2. hover 图标后左侧显示同尺寸蓝色 HEX、Copy、Download 三个控件，右侧三个原生按钮仍全部存在；左右三行顶部和间距对齐。
+2. hover 图标后左侧显示同尺寸蓝色 HEX、Copy、Download 三个控件，右侧三个原生按钮仍全部存在；左侧三项分别与右侧第一、第二、第三项逐行对齐。
 3. 每次重新离开再 hover 同一图标，HEX 都恢复为空；同一次 hover 内移动到快捷按钮不会清空。
 4. HEX 留空时 Copy PNG 与 Download PNG 都保持 Flaticon 默认颜色。
 5. 输入 `2563EB` 或 `#2563EB` 后不会报错；输入框背景实时变为该颜色，文字在浅色背景用深色、深色背景用白色，并在执行操作时规范化为 `#2563EB`。
 6. 输入非法 HEX 时不会继续执行 Copy / Download，并出现轻量错误提示。
 7. 输入 HEX 后 Copy PNG 写入剪贴板的 PNG 使用目标颜色，透明背景保持不变。
 8. 输入 HEX 后 Download PNG 下载的 PNG 使用目标颜色。
-9. Copy PNG 点击一次即可触发原生 PNG 复制，不出现 SVG/PNG 二级菜单；成功后只看到脚本底部居中 `PNG 已复制` toast。
+9. Copy PNG 点击一次即可触发原生 PNG 复制，不出现 SVG/PNG 二级菜单；成功后只看到脚本底部居中 `PNG 已复制` toast，不再同时出现左下角原生提示。
 10. Download PNG 点击一次即可完成免费 PNG 下载，不显示 `Free download` 或 attribution confirmation 中间弹窗；成功后只看到同样式、同位置的 `PNG 已下载` toast。
 11. 下载完成后不会残留遮罩或阻塞页面交互，原生 Download 仍可正常手动使用。
 12. 动态滚动加载出新的图标后，新卡片也能获得快捷操作列。
@@ -86,3 +86,9 @@
 ```bash
 node --check userscripts/flaticon/flaticon-quick-download.user.js
 ```
+
+## v0.1.3 维护记录
+
+- 修正快捷操作列误把原生 Copy 按钮当作第一行锚点的问题；改为识别右侧同列的三个原生按钮，从第一行开始逐行对齐。
+- Copy / Download 图标改为脚本内嵌 SVG 路径，避免 CSS 拼接图形在不同缩放和浏览器下出现形状异常。
+- 快捷 Copy 增加短生命周期原生 toast 观察器，只在快捷 Copy 窗口内抑制左下角站点提示，保留脚本统一 toast；原生右侧按钮不受影响。
