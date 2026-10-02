@@ -50,7 +50,7 @@ ChatGPT 对话轮数统计的分页机制、缓存、新建对话绑定和维护
 
 | 中文名称 | 安装文件 | 用途 |
 |---|---|---|
-| Flaticon 快捷下载助手 | [`flaticon-quick-download.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js) | 在图标卡片左侧提供可选 HEX 颜色、一键 Copy PNG 和一键 Download PNG，并收起原生 Copy/Download 二级菜单入口。 |
+| Flaticon 快捷下载助手 | [`flaticon-quick-download.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js) | 在图标卡片左侧提供每次 hover 清空的可选 HEX 颜色、一键 Copy PNG 和一键 Download PNG，同时保留全部原生按钮并隐藏快捷下载过程中的中间弹窗。 |
 
 详细功能、Flaticon DOM 依赖和回归测试见 [`userscripts/flaticon/flaticon-quick-download.md`](./userscripts/flaticon/flaticon-quick-download.md)。
 

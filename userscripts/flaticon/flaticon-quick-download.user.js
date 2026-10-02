@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Flaticon 快捷下载助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.0
-// @description  为 Flaticon 图标卡片增加可选 HEX 颜色、一键复制 PNG 和一键下载 PNG，并收起原生 Copy/Download 二级菜单入口。
+// @version      0.1.1
+// @description  为 Flaticon 图标卡片增加每次悬停清空的可选 HEX 颜色、一键复制 PNG 和一键下载 PNG，同时保留全部原生按钮。
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js
@@ -27,18 +27,105 @@
 
   let scanTimer = null;
   let pendingDownload = null;
+  let pendingCopy = null;
+  let pendingCopyTimer = null;
+
   const nativeFormSubmit = HTMLFormElement.prototype.submit;
+  const nativeFormRequestSubmit = HTMLFormElement.prototype.requestSubmit;
+  const clipboardPrototype = window.Clipboard?.prototype;
+  const nativeClipboardWrite = clipboardPrototype?.write;
+
+  function writePendingDownloadColor(form) {
+    if (!pendingDownload || !(form instanceof HTMLFormElement)) return;
+    if (form.id !== `download-form-${pendingDownload.iconId}`) return;
+    if (!pendingDownload.color) return;
+
+    const colorInput = form.querySelector('input[name="color"]');
+    if (!colorInput) return;
+
+    colorInput.value = pendingDownload.color;
+    colorInput.setAttribute('value', pendingDownload.color);
+  }
 
   HTMLFormElement.prototype.submit = function (...args) {
-    if (pendingDownload && this.id === `download-form-${pendingDownload.iconId}`) {
-      const colorInput = this.querySelector('input[name="color"]');
-      if (colorInput && pendingDownload.color) {
-        colorInput.value = pendingDownload.color;
-        colorInput.setAttribute('value', pendingDownload.color);
-      }
-    }
+    writePendingDownloadColor(this);
     return nativeFormSubmit.apply(this, args);
   };
+
+  if (nativeFormRequestSubmit) {
+    HTMLFormElement.prototype.requestSubmit = function (...args) {
+      writePendingDownloadColor(this);
+      return nativeFormRequestSubmit.apply(this, args);
+    };
+  }
+
+  document.addEventListener(
+    'submit',
+    (event) => {
+      if (event.target instanceof HTMLFormElement) writePendingDownloadColor(event.target);
+    },
+    true
+  );
+
+  async function recolorPngBlob(blob, color) {
+    if (!(blob instanceof Blob) || !color) return blob;
+
+    const bitmap = await createImageBitmap(blob);
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+
+      const context = canvas.getContext('2d');
+      if (!context) return blob;
+
+      context.drawImage(bitmap, 0, 0);
+      context.globalCompositeOperation = 'source-in';
+      context.fillStyle = color;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      return await new Promise((resolve) => {
+        canvas.toBlob((result) => resolve(result || blob), 'image/png');
+      });
+    } finally {
+      bitmap.close?.();
+    }
+  }
+
+  function installClipboardProxy() {
+    if (!clipboardPrototype || typeof nativeClipboardWrite !== 'function') return;
+    if (clipboardPrototype.write.__cyanFiWrapped) return;
+
+    const wrappedWrite = async function (items) {
+      const copyState = pendingCopy;
+      if (!copyState?.color || !Array.isArray(items)) {
+        return nativeClipboardWrite.call(this, items);
+      }
+
+      try {
+        const transformed = items.map((item) => {
+          if (!(item instanceof ClipboardItem) || !item.types.includes('image/png')) return item;
+
+          const entries = {};
+          for (const type of item.types) {
+            entries[type] = type === 'image/png'
+              ? item.getType(type).then((blob) => recolorPngBlob(blob, copyState.color))
+              : item.getType(type);
+          }
+          return new ClipboardItem(entries);
+        });
+
+        return await nativeClipboardWrite.call(this, transformed);
+      } finally {
+        pendingCopy = null;
+        window.clearTimeout(pendingCopyTimer);
+        pendingCopyTimer = null;
+      }
+    };
+
+    Object.defineProperty(wrappedWrite, '__cyanFiWrapped', { value: true });
+    clipboardPrototype.write = wrappedWrite;
+  }
 
   function injectStyle() {
     if (document.getElementById(STYLE_ID)) return;
@@ -67,11 +154,6 @@
       .${CARD_CLASS} > .${ACTIONS_CLASS}:focus-within {
         opacity: 1;
         pointer-events: auto;
-      }
-
-      .${CARD_CLASS} ${COPY_ITEM_SELECTOR},
-      .${CARD_CLASS} ${DOWNLOAD_ITEM_SELECTOR} {
-        display: none !important;
       }
 
       .${ACTIONS_CLASS} .cyan-fi-color {
@@ -133,18 +215,71 @@
         background: #4eb681;
       }
 
-      .${ACTIONS_CLASS} .cyan-fi-action svg {
-        width: 17px;
-        height: 17px;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 1.8;
-        stroke-linecap: round;
-        stroke-linejoin: round;
+      .${ACTIONS_CLASS} .cyan-fi-icon {
+        position: relative;
+        display: block;
+        width: 18px;
+        height: 18px;
+        box-sizing: border-box;
+        color: currentColor;
       }
 
+      .${ACTIONS_CLASS} .cyan-fi-icon-copy::before,
+      .${ACTIONS_CLASS} .cyan-fi-icon-copy::after {
+        content: '';
+        position: absolute;
+        box-sizing: border-box;
+        width: 11px;
+        height: 11px;
+        border: 1.7px solid currentColor;
+        border-radius: 2px;
+      }
+
+      .${ACTIONS_CLASS} .cyan-fi-icon-copy::before {
+        left: 2px;
+        top: 2px;
+      }
+
+      .${ACTIONS_CLASS} .cyan-fi-icon-copy::after {
+        right: 2px;
+        bottom: 2px;
+        background: inherit;
+      }
+
+      .${ACTIONS_CLASS} .cyan-fi-icon-download::before {
+        content: '';
+        position: absolute;
+        left: 8px;
+        top: 2px;
+        width: 2px;
+        height: 10px;
+        border-radius: 1px;
+        background: currentColor;
+        box-shadow: -3px 5px 0 -1px currentColor, 3px 5px 0 -1px currentColor;
+        transform: rotate(0.01deg);
+      }
+
+      .${ACTIONS_CLASS} .cyan-fi-icon-download::after {
+        content: '';
+        position: absolute;
+        left: 3px;
+        bottom: 1px;
+        width: 12px;
+        height: 5px;
+        border: 1.7px solid currentColor;
+        border-top: 0;
+        border-radius: 0 0 2px 2px;
+      }
+
+      html.${AUTO_DOWNLOAD_CLASS} [role="dialog"]:has(#download-free),
+      html.${AUTO_DOWNLOAD_CLASS} .modal:has(#download-free),
+      html.${AUTO_DOWNLOAD_CLASS} [class*="modal"]:has(#download-free),
+      html.${AUTO_DOWNLOAD_CLASS} [role="dialog"]:has(.detail__download-confirmation__close),
+      html.${AUTO_DOWNLOAD_CLASS} .modal:has(.detail__download-confirmation__close),
+      html.${AUTO_DOWNLOAD_CLASS} [class*="modal"]:has(.detail__download-confirmation__close),
       [${AUTO_MODAL_ATTRIBUTE}="true"] {
         visibility: hidden !important;
+        opacity: 0 !important;
         pointer-events: none !important;
       }
 
@@ -273,29 +408,51 @@
     const color = getValidatedColor(input);
     if (color === null) return;
 
-    const iconId = getIconId(copyItem, downloadItem, card);
-    if (color) applyColorHints(card, color, iconId);
-
     const nativeButton = copyItem.querySelector(COPY_PNG_SELECTOR);
     if (!(nativeButton instanceof HTMLElement)) {
       showToast('未找到 Flaticon 原生 PNG 复制按钮');
       return;
     }
 
+    const iconId = getIconId(copyItem, downloadItem, card);
+    if (color) applyColorHints(card, color, iconId);
+
+    pendingCopy = color ? { color, startedAt: performance.now() } : null;
+    window.clearTimeout(pendingCopyTimer);
+    if (pendingCopy) {
+      pendingCopyTimer = window.setTimeout(() => {
+        if (pendingCopy && performance.now() - pendingCopy.startedAt >= 1800) pendingCopy = null;
+      }, 2000);
+    }
+
     nativeButton.click();
   }
 
-  function findDownloadModal(button) {
-    if (!(button instanceof Element)) return null;
-    return button.closest('[role="dialog"], .modal, [class*="modal-"]') || button.parentElement?.parentElement;
+  function markAutoModal(marker) {
+    if (!(marker instanceof Element)) return null;
+
+    let node = marker.parentElement;
+    let best = null;
+    for (let depth = 0; node && depth < 10 && node !== document.body; depth += 1, node = node.parentElement) {
+      const className = typeof node.className === 'string' ? node.className : '';
+      if (node.getAttribute('role') === 'dialog' || /(^|\s|_|-)modal(?:\s|_|-|$)/i.test(className)) {
+        best = node;
+      }
+    }
+
+    const modal = best || marker.closest('.modal-body, [role="dialog"], .modal');
+    if (modal) modal.setAttribute(AUTO_MODAL_ATTRIBUTE, 'true');
+    return modal;
   }
 
   function finishAutoDownload() {
+    const marked = Array.from(document.querySelectorAll(`[${AUTO_MODAL_ATTRIBUTE}="true"]`));
     document.documentElement.classList.remove(AUTO_DOWNLOAD_CLASS);
-    document.querySelectorAll(`[${AUTO_MODAL_ATTRIBUTE}="true"]`).forEach((element) => {
-      element.removeAttribute(AUTO_MODAL_ATTRIBUTE);
-    });
     pendingDownload = null;
+
+    window.setTimeout(() => {
+      marked.forEach((element) => element.removeAttribute(AUTO_MODAL_ATTRIBUTE));
+    }, 300);
   }
 
   function continueAutoDownload() {
@@ -311,35 +468,37 @@
     if (color) applyColorHints(card, color, iconId);
 
     const form = iconId ? document.getElementById(`download-form-${iconId}`) : null;
-    if (form && color) {
-      const colorInput = form.querySelector('input[name="color"]');
-      if (colorInput) {
-        colorInput.value = color;
-        colorInput.setAttribute('value', color);
+    if (form) writePendingDownloadColor(form);
+
+    const freeButton = document.getElementById('download-free');
+    if (freeButton instanceof HTMLButtonElement) {
+      markAutoModal(freeButton);
+
+      if (!pendingDownload.freeClicked) {
+        pendingDownload.freeClicked = true;
+        queueMicrotask(() => {
+          if (!pendingDownload) return;
+          if (color) applyColorHints(card, color, iconId);
+          if (form) writePendingDownloadColor(form);
+          freeButton.click();
+        });
       }
     }
 
-    const freeButton = document.getElementById('download-free');
-    if (!(freeButton instanceof HTMLButtonElement)) return;
-
-    const modal = findDownloadModal(freeButton);
-    if (modal) modal.setAttribute(AUTO_MODAL_ATTRIBUTE, 'true');
-
-    if (pendingDownload.freeClicked) return;
-    pendingDownload.freeClicked = true;
-
-    queueMicrotask(() => {
-      if (!pendingDownload) return;
-      if (color) applyColorHints(card, color, iconId);
-      freeButton.click();
-
-      window.setTimeout(() => {
-        const confirmationClose = document.querySelector('.detail__download-confirmation__close');
-        if (confirmationClose instanceof HTMLElement) confirmationClose.click();
-        finishAutoDownload();
-        showToast('PNG 下载已触发；免费图标仍需遵守 Flaticon 的署名要求。', 2400);
-      }, 220);
-    });
+    const confirmationClose = document.querySelector('.detail__download-confirmation__close');
+    if (confirmationClose instanceof HTMLElement) {
+      markAutoModal(confirmationClose);
+      if (!pendingDownload.confirmationClosed) {
+        pendingDownload.confirmationClosed = true;
+        queueMicrotask(() => {
+          confirmationClose.click();
+          window.setTimeout(() => {
+            finishAutoDownload();
+            showToast('PNG 下载已触发');
+          }, 80);
+        });
+      }
+    }
   }
 
   function triggerDownload(card, input, copyItem, downloadItem) {
@@ -360,6 +519,7 @@
       color,
       card,
       freeClicked: false,
+      confirmationClosed: false,
       startedAt: performance.now(),
     };
 
@@ -368,13 +528,17 @@
     continueAutoDownload();
   }
 
-  function createIconButton(className, title, svg) {
+  function createIconButton(className, title, iconClassName) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `cyan-fi-action ${className}`;
     button.title = title;
     button.setAttribute('aria-label', title);
-    button.innerHTML = svg;
+
+    const icon = document.createElement('span');
+    icon.className = `cyan-fi-icon ${iconClassName}`;
+    icon.setAttribute('aria-hidden', 'true');
+    button.appendChild(icon);
     return button;
   }
 
@@ -406,17 +570,8 @@
     });
     colorInput.addEventListener('input', () => colorInput.classList.remove('cyan-fi-invalid'));
 
-    const copyButton = createIconButton(
-      'cyan-fi-copy',
-      'Copy PNG',
-      '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>'
-    );
-
-    const downloadButton = createIconButton(
-      'cyan-fi-download',
-      'Download PNG',
-      '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"></path><path d="m8 11 4 4 4-4"></path><path d="M5 20h14"></path></svg>'
-    );
+    const copyButton = createIconButton('cyan-fi-copy', 'Copy PNG', 'cyan-fi-icon-copy');
+    const downloadButton = createIconButton('cyan-fi-download', 'Download PNG', 'cyan-fi-icon-download');
 
     copyButton.addEventListener('click', (event) => {
       event.preventDefault();
@@ -430,6 +585,11 @@
       triggerDownload(card, colorInput, copyItem, downloadItem);
     });
 
+    card.addEventListener('mouseenter', () => {
+      colorInput.value = '';
+      colorInput.classList.remove('cyan-fi-invalid');
+    });
+
     actions.append(colorInput, copyButton, downloadButton);
     card.appendChild(actions);
   }
@@ -439,8 +599,9 @@
       const parent = downloadItem.parentElement;
       if (!parent) return;
 
+      const previousCopyItem = downloadItem.previousElementSibling;
       const copyItem = parent.querySelector(COPY_ITEM_SELECTOR)
-        || downloadItem.previousElementSibling?.matches?.(COPY_ITEM_SELECTOR) && downloadItem.previousElementSibling;
+        || (previousCopyItem?.matches?.(COPY_ITEM_SELECTOR) ? previousCopyItem : null);
       if (!(copyItem instanceof HTMLElement)) return;
 
       enhanceCard(copyItem, downloadItem);
@@ -460,6 +621,7 @@
     observer.observe(document.documentElement, { childList: true, subtree: true });
   }
 
+  installClipboardProxy();
   injectStyle();
   scan();
   startObserver();
