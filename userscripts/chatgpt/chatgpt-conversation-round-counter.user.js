@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.2.4
+// @version      0.2.5
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -46,6 +46,7 @@
         knownUserMessageIds: new Set(),
         liveUserMessageIds: new Map(),
         pendingNewConversationUserIds: new Map(),
+        mappingBaselineReady: false,
     };
 
     let statusButton = null;
@@ -187,6 +188,14 @@
         return method === 'POST' && url.pathname === BATCH_PATH;
     }
 
+    function getConversationMessagesRequestId(method, url) {
+        if (method !== 'GET') {
+            return null;
+        }
+        const match = url.pathname.match(/^\/backend-api\/conversations\/([^/]+)$/);
+        return match?.[1] ?? null;
+    }
+
     function isJsonResponse(response) {
         const contentType = response.headers.get('content-type') || '';
         return contentType.toLowerCase().includes('application/json');
@@ -212,6 +221,26 @@
                 continue;
             }
             const id = getNodeMessageId(node, mappingKey);
+            if (!id || seen.has(id)) {
+                continue;
+            }
+            seen.add(id);
+            ids.push(id);
+        }
+        return ids;
+    }
+
+    function getMessagesUserMessageIds(messages) {
+        if (!Array.isArray(messages)) {
+            return [];
+        }
+        const ids = [];
+        const seen = new Set();
+        for (const item of messages) {
+            if (getNodeRole(item) !== 'user') {
+                continue;
+            }
+            const id = getNodeMessageId(item, null);
             if (!id || seen.has(id)) {
                 continue;
             }
@@ -252,11 +281,68 @@
         state.liveUserMessageIds = trailingLiveIds;
         state.totalRounds = state.knownUserMessageIds.size;
         state.source = 'mapping';
+        state.mappingBaselineReady = true;
         state.domIncrementReady = true;
 
         seedVisibleUserMessageIds();
         setCachedRoundCount(conversationId, state.totalRounds);
         renderUiState();
+    }
+
+    function applyMessagesFallback(conversationId, messageUserIds) {
+        const messageIds = new Set(messageUserIds);
+        const cachedTotal = getCachedRoundCount(conversationId)?.totalRounds ?? null;
+
+        if (!isCurrentPageConversation(conversationId)) {
+            const nextTotal = Math.max(cachedTotal ?? 0, messageIds.size);
+            if (cachedTotal === null || nextTotal > cachedTotal) {
+                setCachedRoundCount(conversationId, nextTotal);
+            }
+            return;
+        }
+
+        for (const id of messageIds) {
+            state.knownUserMessageIds.add(id);
+        }
+
+        for (const id of getVisibleUserMessageIds()) {
+            state.knownUserMessageIds.add(id);
+        }
+
+        if (state.mappingBaselineReady) {
+            seedVisibleUserMessageIds();
+            return;
+        }
+
+        const nextTotal = Math.max(
+            state.totalRounds ?? 0,
+            cachedTotal ?? 0,
+            state.knownUserMessageIds.size
+        );
+
+        state.totalRounds = nextTotal;
+        state.source = 'messages';
+        state.domIncrementReady = true;
+
+        seedVisibleUserMessageIds();
+        setCachedRoundCount(conversationId, state.totalRounds);
+        renderUiState();
+    }
+
+    async function handleConversationMessagesResponse(response, conversationId) {
+        if (!response.ok || !isJsonResponse(response) || !isStableConversationId(conversationId)) {
+            return response;
+        }
+        try {
+            const data = await response.clone().json();
+            if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) {
+                return response;
+            }
+            applyMessagesFallback(conversationId, getMessagesUserMessageIds(data.messages));
+        } catch (error) {
+            diagnosticError('conversation messages response handling failed', error);
+        }
+        return response;
     }
 
     async function handleBatchResponse(response, requestStartedAt) {
@@ -303,13 +389,18 @@
                 return nativeFetch(...args);
             }
 
-            if (!isBatchRequest(meta.method, meta.url)) {
+            const batchRequest = isBatchRequest(meta.method, meta.url);
+            const conversationMessagesId = getConversationMessagesRequestId(meta.method, meta.url);
+            if (!batchRequest && !conversationMessagesId) {
                 return nativeFetch(...args);
             }
 
             const requestStartedAt = Date.now();
             const response = await nativeFetch(...args);
-            return handleBatchResponse(response, requestStartedAt);
+            if (batchRequest) {
+                return handleBatchResponse(response, requestStartedAt);
+            }
+            return handleConversationMessagesResponse(response, conversationMessagesId);
         };
         PAGE_WINDOW[PATCH_FLAG] = true;
     }
@@ -328,6 +419,9 @@
         if (state.totalRounds !== null) {
             if (state.source === 'cached') {
                 return `当前对话：${state.totalRounds} 轮（缓存，等待页面自然校准）`;
+            }
+            if (state.source === 'messages') {
+                return `当前对话：${state.totalRounds} 轮（自然 messages 下限，等待 mapping 全量校准）`;
             }
             return `当前对话：${state.totalRounds} 轮`;
         }
@@ -789,6 +883,7 @@
         state.seenDomUserMessageIds.clear();
         state.knownUserMessageIds.clear();
         state.liveUserMessageIds.clear();
+        state.mappingBaselineReady = false;
     }
 
     function handleNavigation() {
