@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Flaticon 快捷下载助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.1
-// @description  为 Flaticon 图标卡片增加每次悬停清空的可选 HEX 颜色、一键复制 PNG 和一键下载 PNG，同时保留全部原生按钮。
+// @version      0.1.2
+// @description  为 Flaticon 图标卡片增加对齐原生按钮的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js
@@ -29,6 +29,7 @@
   let pendingDownload = null;
   let pendingCopy = null;
   let pendingCopyTimer = null;
+  let suppressNativeCopyToastUntil = 0;
 
   const nativeFormSubmit = HTMLFormElement.prototype.submit;
   const nativeFormRequestSubmit = HTMLFormElement.prototype.requestSubmit;
@@ -98,8 +99,21 @@
 
     const wrappedWrite = async function (items) {
       const copyState = pendingCopy;
-      if (!copyState?.color || !Array.isArray(items)) {
+      if (!copyState || !Array.isArray(items)) {
         return nativeClipboardWrite.call(this, items);
+      }
+
+      if (!copyState.color) {
+        try {
+          const result = await nativeClipboardWrite.call(this, items);
+          suppressNativeCopyToastUntil = performance.now() + 900;
+          queueMicrotask(() => showToast('PNG 已复制'));
+          return result;
+        } finally {
+          pendingCopy = null;
+          window.clearTimeout(pendingCopyTimer);
+          pendingCopyTimer = null;
+        }
       }
 
       try {
@@ -115,7 +129,10 @@
           return new ClipboardItem(entries);
         });
 
-        return await nativeClipboardWrite.call(this, transformed);
+        const result = await nativeClipboardWrite.call(this, transformed);
+        suppressNativeCopyToastUntil = performance.now() + 900;
+        queueMicrotask(() => showToast('PNG 已复制'));
+        return result;
       } finally {
         pendingCopy = null;
         window.clearTimeout(pendingCopyTimer);
@@ -139,12 +156,12 @@
 
       .${CARD_CLASS} > .${ACTIONS_CLASS} {
         position: absolute;
-        top: 10px;
-        left: 10px;
+        top: var(--cyan-fi-actions-top, 10px);
+        left: var(--cyan-fi-actions-left, 10px);
         z-index: 20;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: var(--cyan-fi-actions-gap, 6px);
         opacity: 0;
         pointer-events: none;
         transition: opacity 120ms ease;
@@ -156,63 +173,55 @@
         pointer-events: auto;
       }
 
-      .${ACTIONS_CLASS} .cyan-fi-color {
+      .${ACTIONS_CLASS} .cyan-fi-color,
+      .${ACTIONS_CLASS} .cyan-fi-action {
         box-sizing: border-box;
-        width: 58px;
-        height: 30px;
-        padding: 0 7px;
-        border: 1px solid rgba(0, 0, 0, 0.14);
-        border-radius: 7px;
+        width: var(--cyan-fi-control-size, 34px);
+        height: var(--cyan-fi-control-size, 34px);
+        border: 1px solid #2f6fd6;
+        border-radius: 8px;
+        background: #3b82f6;
+        color: #fff;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.10);
+      }
+
+      .${ACTIONS_CLASS} .cyan-fi-color {
+        min-width: 0;
+        padding: 0 4px;
         outline: none;
-        background: #fff;
-        color: #222;
-        font: 600 12px/30px Arial, sans-serif;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        text-align: center;
+        font: 600 11px/1 Arial, sans-serif;
+        caret-color: currentColor;
+        transition: background-color 100ms ease, color 100ms ease, border-color 100ms ease, box-shadow 100ms ease;
       }
 
       .${ACTIONS_CLASS} .cyan-fi-color::placeholder {
-        color: #8b8b8b;
-        font-weight: 500;
+        color: rgba(255, 255, 255, 0.92);
+        font-weight: 600;
+        opacity: 1;
       }
 
       .${ACTIONS_CLASS} .cyan-fi-color:focus {
-        border-color: #2e90fa;
-        box-shadow: 0 0 0 2px rgba(46, 144, 250, 0.15);
+        border-color: #1d4ed8;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22);
       }
 
       .${ACTIONS_CLASS} .cyan-fi-color.cyan-fi-invalid {
         border-color: #d92d20;
-        box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.12);
+        box-shadow: 0 0 0 2px rgba(217, 45, 32, 0.16);
       }
 
       .${ACTIONS_CLASS} .cyan-fi-action {
-        box-sizing: border-box;
-        width: 34px;
-        height: 34px;
         padding: 0;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border: 1px solid rgba(0, 0, 0, 0.10);
-        border-radius: 8px;
-        background: #fff;
-        color: #424242;
         cursor: pointer;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
       }
 
       .${ACTIONS_CLASS} .cyan-fi-action:hover {
-        background: #f7f7f7;
-      }
-
-      .${ACTIONS_CLASS} .cyan-fi-action.cyan-fi-download {
-        border-color: #52b788;
-        background: #5bc18e;
-        color: #fff;
-      }
-
-      .${ACTIONS_CLASS} .cyan-fi-action.cyan-fi-download:hover {
-        background: #4eb681;
+        background: #2563eb;
+        border-color: #255fca;
       }
 
       .${ACTIONS_CLASS} .cyan-fi-icon {
@@ -327,6 +336,96 @@
     return null;
   }
 
+  function getReadableTextColor(color) {
+    const hex = color.replace('#', '');
+    const red = parseInt(hex.slice(0, 2), 16);
+    const green = parseInt(hex.slice(2, 4), 16);
+    const blue = parseInt(hex.slice(4, 6), 16);
+    const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
+    return luminance > 0.62 ? '#111827' : '#ffffff';
+  }
+
+  function updateColorPreview(input) {
+    if (!(input instanceof HTMLInputElement)) return;
+    const color = normalizeHex(input.value);
+
+    if (!color) {
+      input.style.removeProperty('background-color');
+      input.style.removeProperty('border-color');
+      input.style.removeProperty('color');
+      return;
+    }
+
+    input.style.backgroundColor = color;
+    input.style.borderColor = color;
+    input.style.color = getReadableTextColor(color);
+  }
+
+  function alignQuickActions(card, actions, copyItem, downloadItem) {
+    if (!(card instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
+
+    const nativeButtons = Array.from(
+      copyItem.parentElement?.querySelectorAll('.popover-button') || []
+    ).filter((button) => button instanceof HTMLElement && button.getClientRects().length > 0);
+
+    const fallbackButtons = [
+      copyItem.querySelector('.popover-button'),
+      downloadItem.querySelector('.popover-button'),
+    ].filter((button) => button instanceof HTMLElement);
+
+    const buttons = nativeButtons.length >= 2 ? nativeButtons : fallbackButtons;
+    if (!buttons.length) return;
+
+    const cardRect = card.getBoundingClientRect();
+    const rects = buttons
+      .map((button) => button.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((a, b) => a.top - b.top);
+    if (!rects.length) return;
+
+    const controlSize = Math.round(rects[0].height);
+    const top = Math.round(rects[0].top - cardRect.top);
+    const rightGap = Math.max(8, Math.round(rects[0].left - cardRect.left));
+    const left = Math.max(8, Math.min(12, Math.round(cardRect.width - (rects[0].right - cardRect.left))));
+    let gap = 6;
+
+    if (rects.length >= 2) {
+      gap = Math.max(4, Math.round(rects[1].top - rects[0].bottom));
+    }
+
+    actions.style.setProperty('--cyan-fi-control-size', `${controlSize}px`);
+    actions.style.setProperty('--cyan-fi-actions-top', `${top}px`);
+    actions.style.setProperty('--cyan-fi-actions-left', `${Math.min(left, rightGap)}px`);
+    actions.style.setProperty('--cyan-fi-actions-gap', `${gap}px`);
+  }
+
+  function isLikelyNativeCopyToast(element) {
+    if (!(element instanceof Element)) return false;
+
+    const candidates = [element, ...element.querySelectorAll('[role="alert"], [role="status"], [class*="toast"], [class*="notification"], [class*="snackbar"], [class*="alert"]')];
+    return candidates.some((candidate) => {
+      if (!(candidate instanceof HTMLElement) || candidate.id === TOAST_ID) return false;
+      const text = (candidate.textContent || '').trim().toLowerCase();
+      if (!text || !/(copied|clipboard|copy)/.test(text)) return false;
+      const className = typeof candidate.className === 'string' ? candidate.className.toLowerCase() : '';
+      const role = candidate.getAttribute('role') || '';
+      return role === 'alert' || role === 'status' || /(toast|notification|snackbar|alert|message)/.test(className);
+    });
+  }
+
+  function suppressNativeCopyToast(root) {
+    if (performance.now() > suppressNativeCopyToastUntil) return;
+    if (!(root instanceof Element)) return;
+
+    const candidates = [root, ...root.querySelectorAll('[role="alert"], [role="status"], [class*="toast"], [class*="notification"], [class*="snackbar"], [class*="alert"]')];
+    candidates.forEach((candidate) => {
+      if (!(candidate instanceof HTMLElement) || candidate.id === TOAST_ID) return;
+      if (!isLikelyNativeCopyToast(candidate)) return;
+      candidate.style.setProperty('display', 'none', 'important');
+      candidate.setAttribute('data-cyan-fi-native-toast-hidden', 'true');
+    });
+  }
+
   function getIconId(...elements) {
     for (const element of elements) {
       if (!(element instanceof Element)) continue;
@@ -417,13 +516,12 @@
     const iconId = getIconId(copyItem, downloadItem, card);
     if (color) applyColorHints(card, color, iconId);
 
-    pendingCopy = color ? { color, startedAt: performance.now() } : null;
+    pendingCopy = { color, startedAt: performance.now() };
+    suppressNativeCopyToastUntil = performance.now() + 2200;
     window.clearTimeout(pendingCopyTimer);
-    if (pendingCopy) {
-      pendingCopyTimer = window.setTimeout(() => {
-        if (pendingCopy && performance.now() - pendingCopy.startedAt >= 1800) pendingCopy = null;
-      }, 2000);
-    }
+    pendingCopyTimer = window.setTimeout(() => {
+      if (pendingCopy && performance.now() - pendingCopy.startedAt >= 1800) pendingCopy = null;
+    }, 2000);
 
     nativeButton.click();
   }
@@ -494,7 +592,7 @@
           confirmationClose.click();
           window.setTimeout(() => {
             finishAutoDownload();
-            showToast('PNG 下载已触发');
+            showToast('PNG 已下载');
           }, 80);
         });
       }
@@ -568,7 +666,10 @@
       const color = getValidatedColor(colorInput);
       if (color !== null) colorInput.blur();
     });
-    colorInput.addEventListener('input', () => colorInput.classList.remove('cyan-fi-invalid'));
+    colorInput.addEventListener('input', () => {
+      colorInput.classList.remove('cyan-fi-invalid');
+      updateColorPreview(colorInput);
+    });
 
     const copyButton = createIconButton('cyan-fi-copy', 'Copy PNG', 'cyan-fi-icon-copy');
     const downloadButton = createIconButton('cyan-fi-download', 'Download PNG', 'cyan-fi-icon-download');
@@ -588,10 +689,13 @@
     card.addEventListener('mouseenter', () => {
       colorInput.value = '';
       colorInput.classList.remove('cyan-fi-invalid');
+      updateColorPreview(colorInput);
+      requestAnimationFrame(() => alignQuickActions(card, actions, copyItem, downloadItem));
     });
 
     actions.append(colorInput, copyButton, downloadButton);
     card.appendChild(actions);
+    requestAnimationFrame(() => alignQuickActions(card, actions, copyItem, downloadItem));
   }
 
   function scan() {
