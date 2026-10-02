@@ -15,7 +15,7 @@
    - 支持 `#2563EB`、`2563EB`、`#ABC`、`ABC` 等 3 位或 6 位 HEX 输入。
    - 脚本会把 3 位 HEX 展开为 6 位并统一为带 `#` 的大写形式。
    - 输入框留空时不覆盖 Flaticon 的原始颜色，继续使用网站默认效果。
-   - 每次鼠标重新进入一张图标卡片时，HEX 输入框都会清空并恢复默认蓝色；在同一次 hover 内从输入框移动到 Copy / Download 不会清空。
+   - 每次鼠标重新进入一张图标卡片时，HEX 输入框都会清空并恢复默认蓝色；快捷操作列只由卡片 hover 状态控制，不再因输入框焦点而持续显示。
    - 输入合法 3 位或 6 位 HEX 时，输入框背景会实时变成目标颜色，并根据亮度自动切换黑/白文字；输入为空或尚未构成合法 HEX 时保持默认蓝色。
    - Download 会在原生下载 form 真正提交前再次写入颜色，并同时覆盖 `submit()`、`requestSubmit()` 和 `submit` 事件路径，减少 Flaticon 中间流程重新生成表单导致颜色丢失的问题。
 
@@ -74,7 +74,7 @@
 
 1. Flaticon 搜索结果页正常加载，未 hover 的图标不会显示快捷操作列。
 2. hover 图标后左侧显示同尺寸蓝色 HEX、Copy、Download 三个控件，三项以较紧凑固定间距均匀纵向排列，视觉尺寸应接近右侧原生按钮；Copy / Download 白色线框图标完整显示在按钮正中央；右侧三个原生按钮仍全部存在。
-3. 每次重新离开再 hover 同一图标，HEX 都恢复为空；同一次 hover 内移动到快捷按钮不会清空。
+3. 每次重新离开再 hover 同一图标，HEX 都恢复为空；无论 HEX 是否填写、是否刚执行 Copy / Download，只要鼠标真正离开卡片，左侧快捷操作列都会正常隐藏。
 4. HEX 留空时 Copy PNG 与 Download PNG 都保持 Flaticon 默认颜色。
 5. 输入 `2563EB` 或 `#2563EB` 后不会报错；输入框背景实时变为该颜色，文字在浅色背景用深色、深色背景用白色，并在执行操作时规范化为 `#2563EB`。
 6. 输入非法 HEX 时不会继续执行 Copy / Download，并出现轻量错误提示。
@@ -109,3 +109,9 @@ node --check userscripts/flaticon/flaticon-quick-download.user.js
 - 根据 Console 实测确认，按钮内部 SVG 虽然尺寸、可见性和描边均正常，但其实际坐标会被 Flaticon 全局样式向左上方偏移，导致蓝色按钮看似没有图标、图标却出现在按钮外。
 - 删除 Copy / Download 按钮内部的 `<svg>` DOM 及相关防覆盖样式，改为 CSS `background-image` 的 `data:image/svg+xml` 自绘图标，从根源上隔离 Flaticon 对 `svg` / `path` / `rect` 的全局规则。
 - 保留左侧独立 `flex` 竖列、42 × 42 px 固定尺寸和 8 px 固定间距，不恢复任何右侧按钮坐标读取或动态对齐逻辑。
+
+## v0.1.7 维护记录
+
+- 修复填写 HEX 后执行 Copy / Download、鼠标离开卡片时快捷操作列仍残留的问题。根因是显示 CSS 同时依赖 `:hover` 与 `:focus-within`，HEX 输入框获得焦点后会让操作列在鼠标离开后继续可见。
+- 快捷操作列现在只由卡片 `:hover` 控制；不再使用 `:focus-within` 作为显示条件。
+- 快捷 Copy / Download 执行后，在输入值合法时主动释放 HEX 输入框焦点；非法 HEX 仍保持聚焦，方便用户直接修正。
