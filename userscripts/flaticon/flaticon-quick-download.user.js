@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Flaticon 快捷下载助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.7
+// @version      0.1.8
 // @description  为 Flaticon 图标卡片增加固定均匀排列的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
@@ -158,12 +158,12 @@
 
       .${CARD_CLASS} > .${ACTIONS_CLASS} {
         position: absolute;
-        top: 10px;
+        top: 3px;
         left: 10px;
         z-index: 20;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 4px;
         opacity: 0;
         pointer-events: none;
         transition: opacity 120ms ease;
