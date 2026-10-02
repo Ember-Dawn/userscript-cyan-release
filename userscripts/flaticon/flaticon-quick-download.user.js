@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Flaticon 快捷下载助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.1.3
-// @description  为 Flaticon 图标卡片增加与原生三行严格对齐的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
+// @version      0.1.4
+// @description  为 Flaticon 图标卡片增加固定均匀排列的蓝色 HEX/复制/下载快捷操作，并统一快捷操作提示。
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js
@@ -158,12 +158,12 @@
 
       .${CARD_CLASS} > .${ACTIONS_CLASS} {
         position: absolute;
-        top: var(--cyan-fi-actions-top, 10px);
-        left: var(--cyan-fi-actions-left, 10px);
+        top: 10px;
+        left: 10px;
         z-index: 20;
         display: flex;
         flex-direction: column;
-        gap: var(--cyan-fi-actions-gap, 6px);
+        gap: 8px;
         opacity: 0;
         pointer-events: none;
         transition: opacity 120ms ease;
@@ -178,8 +178,8 @@
       .${ACTIONS_CLASS} .cyan-fi-color,
       .${ACTIONS_CLASS} .cyan-fi-action {
         box-sizing: border-box;
-        width: var(--cyan-fi-control-size, 34px);
-        height: var(--cyan-fi-control-size, 34px);
+        width: 42px;
+        height: 42px;
         border: 1px solid #2f6fd6;
         border-radius: 8px;
         background: #3b82f6;
@@ -228,22 +228,10 @@
 
       .${ACTIONS_CLASS} .cyan-fi-icon {
         display: block;
-        width: 20px;
-        height: 20px;
+        width: 21px;
+        height: 21px;
         color: currentColor;
         pointer-events: none;
-      }
-
-      .${ACTIONS_CLASS} .cyan-fi-icon svg {
-        display: block;
-        width: 100%;
-        height: 100%;
-        overflow: visible;
-        fill: none;
-        stroke: currentColor;
-        stroke-width: 1.9;
-        stroke-linecap: round;
-        stroke-linejoin: round;
       }
 
       html.${AUTO_DOWNLOAD_CLASS} [role="dialog"]:has(#download-free),
@@ -325,66 +313,6 @@
     input.style.backgroundColor = color;
     input.style.borderColor = color;
     input.style.color = getReadableTextColor(color);
-  }
-
-  function getNativeActionRects(card) {
-    if (!(card instanceof HTMLElement)) return [];
-
-    const cardRect = card.getBoundingClientRect();
-    const candidates = Array.from(card.querySelectorAll('.popover-button'))
-      .filter((button) => button instanceof HTMLElement)
-      .map((button) => ({ button, rect: button.getBoundingClientRect() }))
-      .filter(({ button, rect }) =>
-        !button.closest(`.${ACTIONS_CLASS}`)
-        && rect.width > 0
-        && rect.height > 0
-        && rect.right > cardRect.left + cardRect.width * 0.55
-      );
-
-    if (!candidates.length) return [];
-
-    const groups = [];
-    for (const candidate of candidates) {
-      let group = groups.find((item) => Math.abs(item.left - candidate.rect.left) <= 4);
-      if (!group) {
-        group = { left: candidate.rect.left, items: [] };
-        groups.push(group);
-      }
-      group.items.push(candidate);
-    }
-
-    groups.sort((a, b) => {
-      if (b.items.length !== a.items.length) return b.items.length - a.items.length;
-      return b.left - a.left;
-    });
-
-    return groups[0].items
-      .map(({ rect }) => rect)
-      .sort((a, b) => a.top - b.top)
-      .slice(0, 3);
-  }
-
-  function alignQuickActions(card, actions) {
-    if (!(card instanceof HTMLElement) || !(actions instanceof HTMLElement)) return;
-
-    const rects = getNativeActionRects(card);
-    if (!rects.length) return;
-
-    const cardRect = card.getBoundingClientRect();
-    const controlSize = Math.round(rects[0].height);
-    const top = Math.round(rects[0].top - cardRect.top);
-    const nativeRightInset = Math.max(0, Math.round(cardRect.right - rects[0].right));
-    const left = Math.max(8, nativeRightInset);
-    let gap = 6;
-
-    if (rects.length >= 2) {
-      gap = Math.max(0, Math.round(rects[1].top - rects[0].bottom));
-    }
-
-    actions.style.setProperty('--cyan-fi-control-size', `${controlSize}px`);
-    actions.style.setProperty('--cyan-fi-actions-top', `${top}px`);
-    actions.style.setProperty('--cyan-fi-actions-left', `${left}px`);
-    actions.style.setProperty('--cyan-fi-actions-gap', `${gap}px`);
   }
 
   function isLikelyNativeCopyToast(element) {
@@ -673,21 +601,26 @@
   function createSvgIcon(kind) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '21');
+    svg.setAttribute('height', '21');
     svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    svg.style.cssText = 'display:block !important;width:21px !important;height:21px !important;overflow:visible !important;fill:none !important;stroke:#fff !important;stroke-width:2 !important;stroke-linecap:round !important;stroke-linejoin:round !important;';
 
     const add = (name, attrs) => {
       const element = document.createElementNS('http://www.w3.org/2000/svg', name);
       Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, value));
+      element.style.cssText = 'fill:none !important;stroke:#fff !important;stroke-width:2 !important;stroke-linecap:round !important;stroke-linejoin:round !important;';
       svg.appendChild(element);
     };
 
     if (kind === 'copy') {
-      add('rect', { x: '8', y: '8', width: '11', height: '11', rx: '2' });
-      add('path', { d: 'M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2' });
+      add('rect', { x: '9', y: '9', width: '10', height: '10', rx: '1.8' });
+      add('rect', { x: '5', y: '5', width: '10', height: '10', rx: '1.8' });
     } else {
       add('path', { d: 'M12 4v10' });
-      add('path', { d: 'm8.5 10.5 3.5 3.5 3.5-3.5' });
-      add('path', { d: 'M5 16.5v1.5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1.5' });
+      add('polyline', { points: '8.5 11 12 14.5 15.5 11' });
+      add('path', { d: 'M5 17v1.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V17' });
     }
 
     return svg;
@@ -758,12 +691,10 @@
       colorInput.value = '';
       colorInput.classList.remove('cyan-fi-invalid');
       updateColorPreview(colorInput);
-      requestAnimationFrame(() => alignQuickActions(card, actions));
     });
 
     actions.append(colorInput, copyButton, downloadButton);
     card.appendChild(actions);
-    requestAnimationFrame(() => alignQuickActions(card, actions));
   }
 
   function scan() {
