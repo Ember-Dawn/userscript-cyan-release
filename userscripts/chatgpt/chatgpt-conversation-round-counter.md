@@ -2,6 +2,34 @@
 
 `chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。v0.2.x 使用被动 conversation 数据源计数核心：脚本不主动分页抓取历史，而是读取 ChatGPT 页面自己已经请求到的 conversation `mapping`，统计其中全部用户消息节点，并用 DOM 增量维护当前页面的新消息。v0.2.1 进一步修复 F5 首次加载时 Composer badge 可能错过挂载的问题。
 
+## v0.2.6 ChatGPT 消息 DOM 结构兼容
+
+2026-10-04 实测发现，ChatGPT 新版页面已不再保证用户消息节点带有旧版：
+
+```css
+[data-message-author-role="user"][data-message-id]
+```
+
+当页面中该 selector 的匹配数变为 `0` 时，v0.2.5 的全局 MutationObserver 虽然仍在运行，但无法识别新发送的 user message，因此会出现“对话继续进行、轮数却不实时 `+1`”的现象。
+
+新版 DOM 实测可见稳定的用户消息标记包括：
+
+```text
+data-chatgpt-search-unit-key="...:user"
+data-chatgpt-search-message-ids="<message-id>"
+data-user-message-bubble="true"
+data-turn-key="<turn/message-id>"
+```
+
+v0.2.6 将 DOM user message id 提取统一封装，并采用兼容策略：
+
+- 优先识别 `[data-chatgpt-search-unit-key$=":user"][data-chatgpt-search-message-ids]`，从 `data-chatgpt-search-message-ids` 读取并去重 message id；
+- 保留旧版 `[data-message-author-role="user"][data-message-id]`，兼容 ChatGPT A/B rollout 或旧页面结构；
+- `[data-user-message-bubble="true"]` 作为新版辅助锚点，必要时从最近的 `[data-turn-key]` 取得 id；
+- 不使用消息正文、CSS hash class 或可本地化的按钮文字作为计数依据。
+
+后续若再次出现“mapping/messages 初始数字正常，但发送新消息后 badge 不增加”，优先检查上述 DOM 属性是否仍存在，而不是先怀疑缓存或 mapping。建议在 Console 中先比较旧/新 selector 的匹配数量，再观察新发送 user message 时新增节点的 `data-*` 属性。
+
 ## v0.2.5 自然 messages fallback
 
 实测发现，ChatGPT 并不保证每次进入已有对话都会自然发送 `POST /backend-api/conversations/batch`。部分对话只自然请求：
@@ -182,13 +210,15 @@ latestUserMessageId
 
 ## 当前页面实时增量
 
-batch mapping 建立权威基线后，脚本在页面 DOM 中观察：
+batch mapping 或自然 messages fallback 建立基线后，脚本在页面 DOM 中同时兼容新旧两套用户消息标记：
 
 ```css
+[data-chatgpt-search-unit-key$=":user"][data-chatgpt-search-message-ids]
 [data-message-author-role="user"][data-message-id]
+[data-user-message-bubble="true"]
 ```
 
-新出现且 mapping 尚未认识的 user message id：
+新版优先从 `data-chatgpt-search-message-ids` 读取 user message id；旧版继续读取 `data-message-id`；若只命中 `data-user-message-bubble="true"`，则从最近的 `data-turn-key` 作为辅助回退。所有 id 都先去重，再处理新出现且 mapping/messages 基线尚未认识的 user message id：
 
 ```text
 当前总数 +1
@@ -216,7 +246,7 @@ badge 固定为 40 × 24 px，`right: 14px`、`bottom: -1px`，使用 1 px 黑�
 
 ## DOM 与性能策略
 
-- 全局消息 MutationObserver 只处理新增节点中的 user message selector，不承担 Composer UI 维护。
+- 全局消息 MutationObserver 只处理新增节点中的 user message selector，不承担 Composer UI 维护；user message id 提取同时兼容新版 `data-chatgpt-search-*` / `data-user-message-bubble + data-turn-key` 与旧版 `data-message-author-role + data-message-id`。
 - 已有旧对话在只有 GM cache、尚未收到自然 mapping/messages 数据前关闭 DOM 增量；mapping 或 messages fallback 建立去重基线后才启用实时增量。
 - mapping user id、当前页面实时新增 id 和新对话 pending id 只保存在当前页面内存；GM storage 只持久保存总数和更新时间。
 - badge 首次加载先等待文档 `complete`；若 Composer 尚未出现，临时使用全局 `childList + subtree` observer 仅负责等待首次 portal。portal 出现后等待两个 animation frame 再挂载，成功后立即断开该临时 observer。Composer 迁移期间允许 thread portal 暂时保留 `local-chatgpt:*` identity，不要求它立即与最终 URL UUID 相等。
@@ -260,3 +290,5 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 
 15. 对没有自然 batch、但自然 `GET /backend-api/conversations/<id>` 返回 messages 的对话，badge 不应长期卡在旧缓存或 `–`；fallback 只能向上抬高，不得把更高缓存向下覆盖。
 16. messages fallback 生效后继续发送新 user 消息，badge 应能实时 `+1`；后续自然 batch 到达时由 mapping 接管完整校准。
+17. 在新版 ChatGPT DOM 中，即使 `[data-message-author-role="user"]` 匹配数为 `0`，新发送的用户消息只要出现 `data-chatgpt-search-unit-key="...:user" + data-chatgpt-search-message-ids`，badge 仍应只增加一次。
+18. 若新版只保留 `data-user-message-bubble="true"`，其最近的 `data-turn-key` 可作为辅助 user id；同一条消息同时命中新版主锚点、bubble 回退或旧版 selector 时必须按 id 去重，不能重复 `+1`。

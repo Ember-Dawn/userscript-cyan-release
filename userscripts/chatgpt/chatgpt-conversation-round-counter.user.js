@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.2.5
+// @version      0.2.6
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -31,7 +31,14 @@
     const HISTORY_PATCH_FLAG = '__CYAN_ROUND_COUNTER_HISTORY_PATCHED__';
     const MAX_ROUND_COUNT_CACHE_ENTRIES = 300;
     const BATCH_PATH = '/backend-api/conversations/batch';
-    const USER_MESSAGE_SELECTOR = '[data-message-author-role="user"][data-message-id]';
+    const LEGACY_USER_MESSAGE_SELECTOR = '[data-message-author-role="user"][data-message-id]';
+    const SEARCH_USER_MESSAGE_SELECTOR = '[data-chatgpt-search-unit-key$=":user"][data-chatgpt-search-message-ids]';
+    const USER_MESSAGE_BUBBLE_SELECTOR = '[data-user-message-bubble="true"]';
+    const USER_MESSAGE_SELECTOR = [
+        LEGACY_USER_MESSAGE_SELECTOR,
+        SEARCH_USER_MESSAGE_SELECTOR,
+        USER_MESSAGE_BUBBLE_SELECTOR,
+    ].join(', ');
     const DIAGNOSTIC_PREFIX = '[RoundCounter]';
     const UI_INTEGRITY_INTERVAL_MS = 1000;
     const roundCountCache = loadRoundCountCache();
@@ -757,6 +764,36 @@
         uiIntegrityTimer = PAGE_WINDOW.setInterval(verifyUiIntegrity, UI_INTEGRITY_INTERVAL_MS);
     }
 
+    function getDomUserMessageIds(element) {
+        if (!(element instanceof Element)) {
+            return [];
+        }
+
+        const ids = new Set();
+        const addId = (id) => {
+            if (typeof id === 'string' && id) {
+                ids.add(id);
+            }
+        };
+
+        if (element.matches(LEGACY_USER_MESSAGE_SELECTOR)) {
+            addId(element.getAttribute('data-message-id'));
+        }
+
+        if (element.matches(SEARCH_USER_MESSAGE_SELECTOR)) {
+            const rawIds = element.getAttribute('data-chatgpt-search-message-ids') || '';
+            for (const id of rawIds.split(/\s+/)) {
+                addId(id);
+            }
+        }
+
+        if (element.matches(USER_MESSAGE_BUBBLE_SELECTOR)) {
+            addId(element.closest('[data-turn-key]')?.getAttribute('data-turn-key'));
+        }
+
+        return [...ids];
+    }
+
     function getVisibleUserMessageIds() {
         if (!document.querySelectorAll) {
             return [];
@@ -765,12 +802,13 @@
         const seen = new Set();
         const nodes = document.querySelectorAll(USER_MESSAGE_SELECTOR);
         for (const node of nodes) {
-            const id = node.getAttribute('data-message-id');
-            if (!id || seen.has(id)) {
-                continue;
+            for (const id of getDomUserMessageIds(node)) {
+                if (seen.has(id)) {
+                    continue;
+                }
+                seen.add(id);
+                ids.push(id);
             }
-            seen.add(id);
-            ids.push(id);
         }
         return ids;
     }
@@ -829,33 +867,34 @@
 
         const now = Date.now();
         for (const element of candidates) {
-            const id = element.getAttribute('data-message-id');
-            if (!id || state.seenDomUserMessageIds.has(id)) {
-                continue;
-            }
-            state.seenDomUserMessageIds.add(id);
-
-            if (state.currentConversationId === null || isTemporaryConversationId(state.currentConversationId)) {
-                if (!state.pendingNewConversationUserIds.has(id)) {
-                    state.pendingNewConversationUserIds.set(id, now);
-                    renderTemporaryConversationStats();
+            for (const id of getDomUserMessageIds(element)) {
+                if (state.seenDomUserMessageIds.has(id)) {
+                    continue;
                 }
-                continue;
-            }
+                state.seenDomUserMessageIds.add(id);
 
-            if (!state.domIncrementReady || state.knownUserMessageIds.has(id)) {
-                continue;
-            }
+                if (state.currentConversationId === null || isTemporaryConversationId(state.currentConversationId)) {
+                    if (!state.pendingNewConversationUserIds.has(id)) {
+                        state.pendingNewConversationUserIds.set(id, now);
+                        renderTemporaryConversationStats();
+                    }
+                    continue;
+                }
 
-            state.knownUserMessageIds.add(id);
-            state.liveUserMessageIds.set(id, now);
-            if (state.totalRounds === null) {
-                continue;
+                if (!state.domIncrementReady || state.knownUserMessageIds.has(id)) {
+                    continue;
+                }
+
+                state.knownUserMessageIds.add(id);
+                state.liveUserMessageIds.set(id, now);
+                if (state.totalRounds === null) {
+                    continue;
+                }
+                state.totalRounds += 1;
+                state.source = 'live';
+                setCachedRoundCount(state.currentConversationId, state.totalRounds);
+                renderUiState();
             }
-            state.totalRounds += 1;
-            state.source = 'live';
-            setCachedRoundCount(state.currentConversationId, state.totalRounds);
-            renderUiState();
         }
     }
 
