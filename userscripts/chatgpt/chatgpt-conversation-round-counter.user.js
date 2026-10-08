@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.2.6
+// @version      0.2.7
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -79,8 +79,12 @@
         if (totalRounds === null) {
             return null;
         }
+        const maxRounds = Number.isFinite(entry.maxRounds)
+            ? Math.max(totalRounds, 0, Math.trunc(entry.maxRounds))
+            : totalRounds;
         return {
-            totalRounds,
+            totalRounds: maxRounds,
+            maxRounds,
             updatedAt: Number.isFinite(entry.updatedAt) ? entry.updatedAt : Date.now(),
         };
     }
@@ -151,8 +155,14 @@
         if (!isStableConversationId(conversationId) || !Number.isFinite(totalRounds)) {
             return;
         }
+        const previous = getCachedRoundCount(conversationId);
+        const maxRounds = Math.max(previous?.maxRounds ?? 0, Math.max(0, Math.trunc(totalRounds)));
+        if (previous && previous.maxRounds === maxRounds) {
+            return;
+        }
         roundCountCache.entries[conversationId] = {
-            totalRounds: Math.max(0, Math.trunc(totalRounds)),
+            totalRounds: maxRounds,
+            maxRounds,
             updatedAt: Date.now(),
         };
         saveRoundCountCache();
@@ -286,8 +296,12 @@
             state.knownUserMessageIds.add(id);
         }
         state.liveUserMessageIds = trailingLiveIds;
-        state.totalRounds = state.knownUserMessageIds.size;
-        state.source = 'mapping';
+        // A natural batch can contain only a partial mapping after ChatGPT UI updates.
+        // Never let that snapshot erase a higher cumulative count.
+        const historicMaximum = getCachedRoundCount(conversationId)?.maxRounds ?? 0;
+        const snapshotTotal = state.knownUserMessageIds.size;
+        state.totalRounds = Math.max(state.totalRounds ?? 0, historicMaximum, snapshotTotal);
+        state.source = state.totalRounds > snapshotTotal ? 'protected' : 'mapping';
         state.mappingBaselineReady = true;
         state.domIncrementReady = true;
 
@@ -429,6 +443,9 @@
             }
             if (state.source === 'messages') {
                 return `当前对话：${state.totalRounds} 轮（自然 messages 下限，等待 mapping 全量校准）`;
+            }
+            if (state.source === 'protected') {
+                return `当前对话：${state.totalRounds} 轮（历史累计值保护；本次 mapping 较少）`;
             }
             return `当前对话：${state.totalRounds} 轮`;
         }

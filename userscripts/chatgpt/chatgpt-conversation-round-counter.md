@@ -2,6 +2,22 @@
 
 `chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。v0.2.x 使用被动 conversation 数据源计数核心：脚本不主动分页抓取历史，而是读取 ChatGPT 页面自己已经请求到的 conversation `mapping`，统计其中全部用户消息节点，并用 DOM 增量维护当前页面的新消息。v0.2.1 进一步修复 F5 首次加载时 Composer badge 可能错过挂载的问题。
 
+## v0.2.7 历史累计轮数防回退（2026-10-08）
+
+2026-10-08 有用户反馈：持续聊天时轮数已达到 50 多轮，切换其他对话再回来后却只显示十多轮；新消息仍可实时递增。诊断发现降至 18 时 `badge.dataset.source = "messages"`，但这**不能证明** `messages` 导致下降：原有 `messages` fallback 本身使用 `Math.max`，不允许直接降低旧缓存。代码检查确认，v0.2.6 的 `applyMappingSnapshot()` 会无条件按当次 mapping 的 user message id 数重写 `totalRounds`，`setCachedRoundCount()` 也会无条件覆盖同一 conversation 的 GM 缓存。因此，一旦自然 batch 返回的 mapping 比之前少（可能为局部窗口、分支变化或真正数据减少；尚未抓包确定原因），旧累计轮数可能被覆盖并永久遗失。
+
+本版本选择**累计轮数优先、禁止自动回退**：
+
+- 缓存项新增 `maxRounds`（历史最高已记录轮数），同时保留 `totalRounds` 以兼容旧版本；升级读取旧记录时以现存 `totalRounds` 初始化 `maxRounds`，无法凭空恢复升级前已被覆盖的更高值。
+- `setCachedRoundCount()` 统一采用 `max(旧 maxRounds, 新轮数)`，覆盖当前对话、非当前对话 batch、messages fallback 和 DOM 实时新增的全部缓存写入路径；较低结果不重写缓存更新时间。
+- 处理 mapping 时仍按 message id 去重，并保留 batch 请求开始之后的实时消息；显示轮数取 `max(当前轮数, GM 历史最高值, 本次 mapping 计数)`，不会因为局部响应而下降。
+- 若新 mapping 少于被保护的累计值，来源状态设为 `protected`，悬停轮数提示“历史累计值保护”；`mapping` 不再被无条件认为一定覆盖全历史。
+- `messages` 继续只提供局部下限；旧版与新版 DOM 消息 id 识别以及实时 `+1` 逻辑不变。不新增主动网络请求、手动恢复入口或自动分页。
+
+**取舍：** 这是一种累计历史最高值策略。若用户真实删除消息、改变分支或服务器真实减少消息，它也不会自动回退；此外，当只拿到局部基线时，历史 DOM 节点重新挂载仍可能引起少量高估，本版不宣称可严格重建完整历史。此策略保证的是“不因历史响应变少而丢失已经记录的较高轮数”，不是总能获得精确服务器全量值。
+
+排查未来同类问题，先记录 `badge.dataset.source`、badge 数字、当前 GM cache 的 `totalRounds/maxRounds`、自然 batch mapping user id 计数、自然 GET messages user id 计数。若出现 `protected`，表示较小 mapping 已被保护，不需要反复刷新。检查时不要输出聊天正文或鉴权头。
+
 ## v0.2.6 ChatGPT 消息 DOM 结构兼容
 
 2026-10-04 实测发现，ChatGPT 新版页面已不再保证用户消息节点带有旧版：
@@ -42,11 +58,11 @@ GET /backend-api/conversations/<id>?num_turns=...&include_has_versions=true
 
 v0.2.5 在不增加任何网络请求的前提下，把页面自己已经发送的上述 GET 也作为被动 fallback 数据源：
 
-- `batch + mapping` 仍是最高优先级的全量权威校准，可向上或向下覆盖；
+- `batch + mapping` 优先提供全量候选值，但 v0.2.7 起不再允许其向下覆盖历史累计最高值；
 - `conversations/<id> + messages` 只作为局部历史下限，不假定它覆盖完整 conversation；
 - fallback 只允许把当前值/缓存向上抬高，不会用局部 messages 把已有更高值向下覆盖；
 - fallback 会把自然响应和当前可见 DOM 中已知的 user message id 合并为内存去重基线，并启用之后的新消息实时 `+1`；
-- 后续若自然 batch 到达，仍由 mapping 接管并进行完整校准。
+- 后续若自然 batch 到达，仍使用 mapping 校准去重基线，但显示结果受历史累计最高值保护。
 
 因此脚本继续保持“零主动请求”，但不再依赖每个 conversation 都一定会出现 batch。
 
@@ -62,7 +78,7 @@ v0.2.5 在不增加任何网络请求的前提下，把页面自己已经发送�
 - 不按 `current_node` 只统计当前 active path，因此编辑旧消息并重新发送后形成的其他分支也会计入总数。
 - 首选数据源为 ChatGPT 页面自己发送的 `POST /backend-api/conversations/batch`；若某次没有自然 batch，则被动利用页面自己请求的 `GET /backend-api/conversations/<id>` 中 `messages` 作为只增不减的局部下限。脚本不会主动发送这两类请求。
 - 页面进入已有对话时先读取 Tampermonkey GM cache 秒显旧值；自然 batch 到达后用当前 `mapping` 重新校准。
-- batch 校准允许增加也允许减少：缓存只是启动时的临时显示值，当前服务器返回的 mapping 才是权威基线。
+- batch 校准可以更新消息 ID 去重基线，但 v0.2.7 起不允许较少的 mapping 降低已记录的历史最高轮数。
 - mapping 或自然 messages fallback 建立基线后，页面新出现的 user message DOM 使用 message id 去重并实时 `+1`，无需额外网络请求。
 - 支持普通 `/c/<id>` 和 Project `/g/g-p-<project-id>/c/<id>` 路由。
 - 兼容普通新对话的 `/ → /c/local-chatgpt:<uuid> → /c/<final-uuid>` 两阶段绑定。
@@ -150,7 +166,7 @@ batch 请求发出后到响应返回前，用户可能又发送了新消息。�
 3. 得到新的当前总数；
 4. 后续 batch 一旦自然包含这些 id，就回到纯 mapping 基线。
 
-这只是处理请求竞态，不是“只增不减”策略；如果新的权威 mapping 本身确实减少，缓存和显示值允许随之减少。
+这部分处理请求竞态；自 v0.2.7 起另有历史最高轮数保护，即使 mapping 本身减少，缓存和显示值也不再自动下降。
 
 ## 不主动请求网络
 
@@ -187,6 +203,7 @@ cyan_chatgpt_conversation_round_counter_cache_v1
 
 ```text
 totalRounds
+maxRounds  # v0.2.7 新增，历史累计最高值
 updatedAt
 ```
 
@@ -204,7 +221,7 @@ latestUserMessageId
 1. 打开/刷新已有会话时，在自然 mapping/messages 数据到达前立即显示上次总数；
 2. mapping 校准、messages fallback 抬高下限或当前页面实时新增后保存最新总数。
 
-缓存不是单调计数器。自然 batch 到达后，当前 mapping 统计值可以覆盖更高或更低的旧缓存。
+v0.2.7 起缓存按历史最高值单调更新；自然 batch 低于缓存值时不再下调。此前被覆盖的较高数字无法仅凭现存 GM cache 恢复。
 
 普通刷新、强制刷新、浏览器重启，以及只清理 `chatgpt.com` 的 Cookie / Local Storage / IndexedDB / Cache Storage，都不应删除 Tampermonkey GM storage。删除脚本、清除 Tampermonkey/扩展数据、卸载扩展或删除整个浏览器配置文件时则可能丢失缓存。
 
@@ -276,7 +293,7 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 1. 切换已有 `/c/<id>` 时，若页面自然产生 `POST /backend-api/conversations/batch`，脚本使用 mapping 全量校准；若只自然产生 `GET /backend-api/conversations/<id>`，则使用 messages fallback。轮数脚本本身不会主动增加任何请求。
 2. batch 返回 `mapping + current_node` 时，脚本统计整个 mapping 的唯一 user 节点，而不是只统计 current-node active path。
 3. 对存在明显分支的 conversation，badge 应与 mapping 的 `allUserNodeCount` 一致，即使 active-path user 数明显更小。
-4. 刷新已有对话时先显示 GM cache；自然 batch 到达后允许按当前 mapping 向上或向下校准。
+4. 刷新已有对话时先显示 GM cache；自然 batch 到达后 mapping 可以更新去重基线，但显示和 GM 最高值不可下降。
 5. batch 基线建立后继续发送一条 user 消息，badge 只增加一次；后续自然 batch 包含该 id 时不得再次增加。
 6. batch 请求进行期间发送新消息时，即使响应快照尚未包含新 id，也不能把刚增加的实时轮次覆盖掉。
 7. 只有 GM cache、但本次尚未收到 batch 时，滚动历史或 React 重挂载旧消息不得增加轮数。
@@ -292,3 +309,6 @@ node --check userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 16. messages fallback 生效后继续发送新 user 消息，badge 应能实时 `+1`；后续自然 batch 到达时由 mapping 接管完整校准。
 17. 在新版 ChatGPT DOM 中，即使 `[data-message-author-role="user"]` 匹配数为 `0`，新发送的用户消息只要出现 `data-chatgpt-search-unit-key="...:user" + data-chatgpt-search-message-ids`，badge 仍应只增加一次。
 18. 若新版只保留 `data-user-message-bubble="true"`，其最近的 `data-turn-key` 可作为辅助 user id；同一条消息同时命中新版主锚点、bubble 回退或旧版 selector 时必须按 id 去重，不能重复 `+1`。
+
+19. 若自然 batch 返回的 user id 数比已记录的 `maxRounds` 少，badge 不下降，缓存不被改小，来源标记为 `protected`；切换对话后同样保持历史最高值。
+20. 验证旧版 `{totalRounds,updatedAt}` 缓存能正常初始化 `maxRounds`，并验证其他对话的迟到 batch 响应也不能降低缓存。
