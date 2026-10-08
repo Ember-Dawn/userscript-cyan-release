@@ -81,9 +81,12 @@ SPA 路由继续复用本脚本已有的 `pushState`、`replaceState` 和 `popst
 
 - `[data-file-reference="true"]`，包括 ChatGPT 生成文件时出现的“下载本次 ZIP”一类入口；
 - `a[href]`；
-- `button`。
+- `button`；
+- `[role="link"]`，用于兼容新版 DIL 的 `span[data-d-component="pressable"][role="link"]` 下载入口。
 
-脚本会结合文件扩展名、`data-markdown-copy-text`、`aria-label` 和“下载 / Download”标签判断是否高亮。输入框、Composer、可编辑区域和侧边浮层不会参与高亮。
+脚本会结合文件扩展名、`data-markdown-copy-text`、`aria-label` 和“下载 / Download”标签判断是否高亮。兼容新版 DIL 下载链接的 `aria-label="Open 下载 NocoDB Webhook 修复补丁 ZIP"`，只在 `Open` 后明确接“下载 / Download”时去除该前缀，不会把所有 `role="link"` 或普通网页链接都高亮。输入框、Composer、可编辑区域和侧边浮层不会参与高亮。
+
+流式生成可能只新增下载链接内部的文字节点；扫描时也会检查变化节点最近的候选链接祖先，确保外层 `pressable` 已存在的情况下仍能更新高亮。
 
 高亮只改变文字颜色和字重，不创建新的下载按钮，也不改变官方点击或下载行为。
 
@@ -163,4 +166,5 @@ node --check userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 4. 当前对话 Rename 后，Composer 上沿标题会随 `<title>` 更新；
 5. 新对话显示“新对话”，`temporary-chat=true` 显示“临时对话”；
 6. 长标题不会侵入右侧顺序任务按钮和轮数 badge，占用空间不足时单行省略，悬停仍能看到完整标题；
-7. 原有白天模式、正文宽屏、文件入口高亮和临时对话 Composer 背景行为保持不变。
+7. 旧版 `a[href]`、`button`、`[data-file-reference="true"]` 和新版 DIL `span[role="link"]` 的下载入口均能高亮，包括流式补全文案；普通链接不得误高亮；
+8. 原有白天模式、正文宽屏和临时对话 Composer 背景行为保持不变。

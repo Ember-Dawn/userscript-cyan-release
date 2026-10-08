@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.3.1
+// @version      0.3.2
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，显示当前对话名称，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.1';
+    const VERSION = '0.3.2';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -29,7 +29,7 @@
         '[data-markdown-text-style="assistant-message"]',
         '[data-message-author-role="assistant"] .markdown',
     ].join(', ');
-    const FILE_CANDIDATE_SELECTOR = 'button, a[href], [data-file-reference="true"]';
+    const FILE_CANDIDATE_SELECTOR = 'button, a[href], [role="link"], [data-file-reference="true"]';
     const FILE_EXT_RE =
         /\.(md|txt|pdf|docx?|xlsx?|xls|pptx?|csv|zip|json|py|js|ts|tsx|jsx|html?|css|png|jpe?g|webp|gif|svg|yaml|yml|xml)$/i;
 
@@ -490,9 +490,8 @@ html:not(.dark) body {
     function isOfficialDownloadControl(element) {
         if (!element?.matches?.(FILE_CANDIDATE_SELECTOR)) return false;
 
-        const label = getVisibleLabel(element);
-        const lowerLabel = label.toLowerCase();
-        return label.startsWith('下载') || lowerLabel.startsWith('download');
+        const label = getVisibleLabel(element).replace(/^Open\s+(?=下载|download\b)/i, '');
+        return label.startsWith('下载') || /^download\b/i.test(label);
     }
 
     function shouldHighlightFileControl(element) {
@@ -506,8 +505,9 @@ html:not(.dark) body {
         const scope = root?.nodeType === Node.TEXT_NODE ? root.parentElement : root;
         if (!scope) return candidates;
 
-        if (scope instanceof Element && scope.matches(FILE_CANDIDATE_SELECTOR)) {
-            candidates.add(scope);
+        if (scope instanceof Element) {
+            const candidate = scope.closest(FILE_CANDIDATE_SELECTOR);
+            if (candidate) candidates.add(candidate);
         }
 
         if (typeof scope.querySelectorAll === 'function') {
