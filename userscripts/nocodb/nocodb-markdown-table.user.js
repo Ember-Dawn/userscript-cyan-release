@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      0.2.1
+// @version      0.2.2
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -1662,68 +1662,64 @@ function nocodbMarkdownTablePageMain() {
     return tableCount ? parts : null;
   }
 
-  function markdownNodes(session, markdown) {
-    if (!markdown.trim()) return [];
-    const { tiptap } = session;
-    const parser = tiptap.storage?.markdown?.parser;
-    if (!parser || typeof parser.parse !== 'function') throw new Error('markdown-parser-unavailable');
-    const parsed = parser.parse(markdown);
-
-    if (typeof parsed === 'string') {
-      // NocoDB Markdown parser returns HTML, not ProseMirror JSON. Let the
-      // installed Tiptap parse that HTML with its own schema and extensions.
-      // can().chain() builds a throwaway transaction without dispatching it.
-      const state = tiptap.view.state;
-      const originalSize = state.doc.content.size;
-      let extracted = null;
-      const possible = tiptap.can?.();
-      if (!possible || typeof possible.chain !== 'function') throw new Error('tiptap-dry-run-unavailable');
-      const successful = possible.chain()
-        .insertContentAt(originalSize, parsed, { updateSelection: false })
-        .command(({ tr }) => {
-          const addedSize = tr.doc.content.size - originalSize;
-          if (addedSize <= 0) return false;
-          // Appending complete block-level HTML creates independent top-level nodes.
-          const from = tr.doc.content.size - addedSize;
-          const slice = tr.doc.slice(from, tr.doc.content.size);
-          extracted = [...slice.content.content];
-          return extracted.length > 0;
-        })
-        .run();
-      if (!successful || !extracted) throw new Error('markdown-html-conversion-failed');
-      return extracted;
+  // NocoDB's markdown.parser.parse returns HTML. Tiptap's insertContent
+  // converts HTML with its installed schema; no public DOMParser or JSON
+  // conversion is exposed by the host editor.
+  function markdownToHtml(session, markdown) {
+    if (!markdown.trim()) return '';
+    const parser = session.tiptap.storage?.markdown?.parser;
+    if (typeof parser?.parse !== 'function') throw new Error('markdown-parser-unavailable');
+    let html;
+    try {
+      html = parser.parse(markdown);
+    } catch (error) {
+      throw new Error('markdown-to-html-failed', { cause: error });
     }
-
-    // Keep compatibility with Tiptap versions returning nodes or JSON.
-    const topLevel = Array.isArray(parsed) ? parsed :
-      (parsed?.type === 'doc' ? parsed.content || [] : [parsed]);
-    if (!Array.isArray(topLevel) || !topLevel.length) throw new Error('markdown-parser-invalid');
-    return topLevel.map((item) => item?.type?.name && typeof item?.nodeSize === 'number'
-      ? item
-      : tiptap.state.schema.nodeFromJSON(item));
+    if (typeof html !== 'string') throw new Error('markdown-parser-non-html-result');
+    return html;
   }
 
-  // Build every node before dispatch: an invalid Markdown fragment must not
-  // leave partially inserted content in the document.
+  function tableToHtml(model, id) {
+    // CodeBlock's default ProseMirror parseDOM rule recognizes <pre>. The
+    // content marker (not the class/language attr) identifies the table.
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.className = `language-${CODE_BLOCK_LANGUAGE}`;
+    code.textContent = buildStoredText(model, id);
+    pre.appendChild(code);
+    return pre.outerHTML;
+  }
+
   function insertMixedMarkdown(session, parts) {
     const { tiptap } = session;
-    const state = tiptap.view.state;
-    const type = state.schema.nodes.codeBlock;
-    if (!type) return false;
-    const nodes = [];
+    if (!tiptap.state?.schema?.nodes?.codeBlock) throw new Error('codeblock-schema-unavailable');
+    let html = '';
+    const ids = [];
     for (const part of parts) {
       if (part.type === 'markdown') {
-        nodes.push(...markdownNodes(session, part.text));
-      } else {
+        html += markdownToHtml(session, part.text);
+      } else if (part.type === 'table') {
         const id = createTableId();
-        nodes.push(type.create(languageAttrsForNodeType(type, {}), state.schema.text(buildStoredText(part.model, id))));
+        ids.push(id);
+        html += tableToHtml(part.model, id);
       }
     }
-    if (!nodes.length) return false;
-    const fragment = state.schema.nodes.doc.createChecked(null, nodes).content;
-    // Use a single transaction for the full fragment, not one command per segment.
-    const tr = state.tr.replaceSelection(new (state.selection.content().constructor)(fragment, 0, 0));
-    tiptap.view.dispatch(tr.scrollIntoView());
+    if (!html.trim() || !ids.length) throw new Error('mixed-fragment-empty');
+
+    // A single insertContent invocation performs HTML -> ProseMirror parsing
+    // and insertion together. Avoid the former can().chain() dry-run path:
+    // it does not reliably expose an intermediate transaction on NocoDB.
+    let inserted;
+    try {
+      inserted = tiptap.commands.insertContent(html, {
+        parseOptions: { preserveWhitespace: 'full' },
+      });
+    } catch (error) {
+      throw new Error('tiptap-html-insert-failed', { cause: error });
+    }
+    if (!inserted) throw new Error('tiptap-html-insert-rejected');
+    const missing = ids.filter((id) => !documentContainsTableId(tiptap.state.doc, id));
+    if (missing.length) throw new Error(`table-codeblock-not-preserved:${missing.length}`);
     return true;
   }
 
@@ -1927,12 +1923,12 @@ function nocodbMarkdownTablePageMain() {
         try {
           inserted = mixedParts ? insertMixedMarkdown(session, mixedParts) : insertTableCodeBlock(session, model);
         } catch (error) {
-          console.warn('[NocoDB Markdown Table] 混合内容解析或插入失败。', error);
+          console.warn('[NocoDB Markdown Table] 混合内容处理失败，阶段：', error?.message || 'unknown', error);
         }
         if (!inserted) {
           setEditorConnectionState(editorDom, 'insert-failed');
           console.warn('[NocoDB Markdown Table] 已连接 Tiptap，但代码块插入失败。');
-          showToast('Markdown 粘贴失败：混合内容未被插入，请重试或粘贴原始文本。', 'error', 4600);
+          showToast(mixedParts ? '混合 Markdown 粘贴失败：请查看 Console 中的阶段错误；原文可重新粘贴。' : 'Markdown 表格插入失败：请重试。', 'error', 4600);
         }
         return;
       }

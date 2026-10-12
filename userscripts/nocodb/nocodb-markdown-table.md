@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.2.1**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.2.2**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -32,7 +32,8 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - `onPaste` 仅处理 NocoDB Rich Text 编辑区域的用户粘贴；输入框、代码块和表格 NodeView 内部保留宿主默认行为。
 - 单张纯 Markdown 表格继续走原有 `parseMarkdownTable` / `insertTableCodeBlock` 路径，降低回归风险。
 - 混合粘贴走 `splitMixedMarkdown`：按行扫描，将普通 Markdown 与完整表格分段；支持多张表格，保持先后顺序；代码围栏（反引号或波浪号）里的示例不识别为表格。
-- 普通段落/标题/列表先通过当前 NocoDB `storage.markdown.parser.parse` 转成 **HTML 字符串**，再通过 Tiptap `can().chain().insertContentAt(...)` 在不 dispatch 的临时 transaction 中按宿主 Schema 解析 HTML，并提取生成的 ProseMirror 顶层节点；对返回 JSON/Node 的其他版本保留兼容分支。每个表格生成带标记的 codeBlock。所有节点先构建、校验，再用**单次 ProseMirror transaction** 插入，避免多次插入引起 selection 偏移和中间保存。
+- 普通段落/标题/列表由 NocoDB `storage.markdown.parser.parse` 转成 HTML 字符串；表格由 `tableToHtml` 生成 `<pre><code class="language-nocodb-table">` 形式，并将 marker 与 Markdown 表格源码作为代码块纯文本。将全部 HTML 片段按原顺序组合，交由 **Tiptap `commands.insertContent(html)`** 使用宿主自己的 HTML 解析规则完成单次插入；不依赖 `view.someProp('domParser')` / `view.someProp('clipboardParser')`，也不使用不可靠的 `can().chain()` 临时事务提取节点方案。
+- 插入前先完成 Markdown→HTML 转换和表格 HTML 构造；插入后用每张表的新 ID 检查代码块是否保留。若运行时无法识别 `<pre>` 为 `codeBlock`，会给出 `table-codeblock-not-preserved` 的阶段错误。注意该后验检查不是事务性回滚；需在实际 NocoDB 环境验证一次粘贴和撤销行为。
 - 本功能读取剪贴板的 `text/plain`；不尝试从任意 HTML 表格推断 Markdown 结构。没有可识别 Markdown 表格时交回 NocoDB 原生粘贴。
 - 如果宿主 Markdown parser 接口缺失、schema 不兼容或事务失败，不应插入部分内容；显示失败提示，原始剪贴板内容仍可重新粘贴。不要未经验证地用 HTML table 作为兜底，因为 NocoDB CE 会丢失表格结构。
 
@@ -59,3 +60,11 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - 已通过实际 Console 确认 NocoDB 的 Markdown parser 返回 HTML，如 `<h1>标题</h1><p>正文</p>`。使用 Tiptap 的无 dispatch 命令链解析 HTML 并提取节点；再与表格 codeBlock 一次提交。
 - `@version` 从 3.3.0 调整为 0.2.1；Tampermonkey 不一定自动降级，需手动安装。持久化标记仍为 `v1`，不迁移数据。
 - 需在真实 NocoDB CE 回归测试含四张表格、标题、列表、代码围栏的服务器维护 Markdown 文档；特别验证混合粘贴后的撤销和保存。
+
+## v0.2.2 修复记录
+
+- 不再使用 `view.someProp('clipboardParser'/'domParser')`：用户的 NocoDB 环境未暴露这两项接口。
+- 不再依赖 `can().chain()` 的无 dispatch 模拟事务提取节点；统一用 Tiptap 自身 `insertContent(HTML)` 转换并一次插入。
+- 混合内容经 Markdown→HTML 后与表格的 `<pre><code>` 拼接，再交由当前编辑器 HTML parser 处理。
+- Console 报错带有阶段码：`markdown-parser-unavailable`、`markdown-to-html-failed`、`tiptap-html-insert-failed`、`tiptap-html-insert-rejected`、`table-codeblock-not-preserved` 等，方便定位实际环境中的进一步兼容性问题。
+- 仍需在真实 NocoDB 进行端到端验证：特别检查表格作为 `codeBlock` 的保留、四张表的顺序、混合正文格式和撤销。
