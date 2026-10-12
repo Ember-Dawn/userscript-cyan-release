@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.7
+// @version      0.1.8
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -273,6 +273,7 @@
       }
 
       .${CLASS.item} {
+        position: relative;
         display: block;
         width: 100%;
         margin: 0 0 2px;
@@ -289,6 +290,22 @@
         text-overflow: ellipsis;
       }
 
+      /* Indentation guides are decorative and do not change the title hit area. */
+      .${CLASS.item}::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 3px;
+        width: calc(var(--tm-rtoc-guide-depth, 0) * 8px);
+        background: repeating-linear-gradient(
+          to right,
+          transparent 0 7px,
+          rgba(100, 116, 139, 0.25) 7px 8px
+        );
+        pointer-events: none;
+      }
+
       .${CLASS.item}:hover {
         background: rgba(0, 0, 0, 0.05);
       }
@@ -298,12 +315,12 @@
         color: #1d4ed8;
       }
 
-      .tm-rtoc-l1-v1 { padding: 6px 8px;  font-weight: 700; }
-      .tm-rtoc-l2-v1 { padding: 6px 8px 6px 16px; font-weight: 600; }
-      .tm-rtoc-l3-v1 { padding: 6px 8px 6px 24px; }
-      .tm-rtoc-l4-v1 { padding: 6px 8px 6px 32px; }
-      .tm-rtoc-l5-v1 { padding: 6px 8px 6px 40px; }
-      .tm-rtoc-l6-v1 { padding: 6px 8px 6px 48px; }
+      .tm-rtoc-l1-v1 { padding: 6px 8px;  font-weight: 700; --tm-rtoc-guide-depth: 0; }
+      .tm-rtoc-l2-v1 { padding: 6px 8px 6px 16px; font-weight: 600; --tm-rtoc-guide-depth: 1; }
+      .tm-rtoc-l3-v1 { padding: 6px 8px 6px 24px; --tm-rtoc-guide-depth: 2; }
+      .tm-rtoc-l4-v1 { padding: 6px 8px 6px 32px; --tm-rtoc-guide-depth: 3; }
+      .tm-rtoc-l5-v1 { padding: 6px 8px 6px 40px; --tm-rtoc-guide-depth: 4; }
+      .tm-rtoc-l6-v1 { padding: 6px 8px 6px 48px; --tm-rtoc-guide-depth: 5; }
 
       .${CLASS.resizer} {
         position: absolute;
