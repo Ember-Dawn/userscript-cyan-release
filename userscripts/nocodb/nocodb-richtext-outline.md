@@ -651,3 +651,15 @@ transaction.setSelection() / dispatch()
 22. 上述短→长场景中，切换真实滚动容器后正文 scroll listener 与 heading geometry 必须继续正常工作；
 23. 关闭 Rich Text 再打开另一条记录，不残留旧面板或旧 observer。
 24. 检查 H1 ~ H6 的缩进参考线数量分别为 0 ~ 5；线条不盖住文字，hover / active 背景和标题点击跳转正常，调整 TOC 宽度后仍正确。
+
+## 23. v0.2.0：打开时的初始焦点保护（可关闭）
+
+脚本 `CONFIG.preventInitialEditorFocus` 默认 `true`；修改为 `false` 即完全关闭该项增强，恢复宿主原本的初始焦点行为。`initialFocusGuardMs: 2200` 仅表示每次识别到新编辑器后，保护监听最多存在 2.2 秒。
+
+实测诊断显示：编辑器出现后约 980ms 时 `document.activeElement` 为 BODY 且 `scrollTop=0`；约 1148ms 时编辑器获得焦点、`scrollTop` 接近底部。两事件相关，但无法仅凭采样证明所有滚动都源于 focus。
+
+实现仅在每次打开的短窗口内监听正文 `focusin`：检测到编辑器的非用户主动聚焦后调用当前活动元素的 `blur()`，并在当前帧与最多两个后续 animation frame 对真实滚动容器进行顶部校正；不读取/修改 ProseMirror selection、transaction，也不更改 `contenteditable`。用户在弹窗内 `pointerdown` / `wheel` 或按下任意键后立即移除保护；超时或弹窗销毁同样清理所有监听与定时器。该功能与 TOC 是否展开无关。
+
+注意：与之前的“完全不碰焦点”原则相比，本功能**仅在显式启用且初始化窗口内**允许 `blur()`，属于有意且可关闭的例外。若宿主在这段窗口后才聚焦或无焦点地滚动，无法保证拦截；不得为此引入长期轮询锁顶或 ProseMirror 内部状态修改。
+
+新增回归测试：保护开启时打开长文档应尽量停留顶部且正文不自动获得输入焦点；用户主动点击正文后可立即输入、滚动和选择；关闭 TOC 不影响保护；`preventInitialEditorFocus=false` 时不再安装任何保护监听；重复开关弹窗无残留。

@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.1.9
+// @version      0.2.0
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -58,6 +58,9 @@
     buttonGap: 8,
     anchorTop: 9,
     defaultOpen: true,
+    // Set false to restore NocoDB's original initial focus/scroll behavior.
+    preventInitialEditorFocus: true,
+    initialFocusGuardMs: 2200,
     initialBuildDelayMs: 120,
     headingCheckDelayMs: 360,
     compositionRefreshDelayMs: 420,
@@ -1164,6 +1167,56 @@
     }
   }
 
+  // Initial-open-only guard. Never touch ProseMirror selection or editor transactions.
+  function stopInitialFocusGuard(state) {
+    if (!state) return;
+    state.initialFocusGuardActive = false;
+    if (state.initialFocusTimer) window.clearTimeout(state.initialFocusTimer);
+    state.initialFocusTimer = 0;
+    if (state.onInitialFocusIn) state.root.removeEventListener('focusin', state.onInitialFocusIn, true);
+    if (state.onInitialUserPointer) state.root.removeEventListener('pointerdown', state.onInitialUserPointer, true);
+    if (state.onInitialUserWheel) state.root.removeEventListener('wheel', state.onInitialUserWheel, true);
+    if (state.onInitialUserKey) document.removeEventListener('keydown', state.onInitialUserKey, true);
+    state.onInitialFocusIn = null;
+    state.onInitialUserPointer = null;
+    state.onInitialUserWheel = null;
+    state.onInitialUserKey = null;
+  }
+
+  function startInitialFocusGuard(state) {
+    if (!CONFIG.preventInitialEditorFocus || !state || state.destroyed) return;
+    state.initialFocusGuardActive = true;
+    const resetToTop = () => {
+      if (!state.initialFocusGuardActive || state.destroyed) return;
+      syncScrollContainer(state);
+      if (state.scrollContainer instanceof HTMLElement) state.scrollContainer.scrollTop = 0;
+    };
+    const dismissAutoFocus = () => {
+      if (!state.initialFocusGuardActive || !state.editor.contains(document.activeElement)) return;
+      // Blur the automatically focused editor only; leave its caret/selection untouched.
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      resetToTop();
+      // The host may scroll after dispatching focusin; limit correction to two frames.
+      requestAnimationFrame(() => {
+        resetToTop();
+        requestAnimationFrame(resetToTop);
+      });
+    };
+    state.onInitialFocusIn = (event) => {
+      if (event.target === state.editor || state.editor.contains(event.target)) dismissAutoFocus();
+    };
+    state.onInitialUserPointer = () => stopInitialFocusGuard(state);
+    state.onInitialUserWheel = () => stopInitialFocusGuard(state);
+    state.onInitialUserKey = () => stopInitialFocusGuard(state);
+    state.root.addEventListener('focusin', state.onInitialFocusIn, true);
+    state.root.addEventListener('pointerdown', state.onInitialUserPointer, true);
+    state.root.addEventListener('wheel', state.onInitialUserWheel, { capture: true, passive: true });
+    document.addEventListener('keydown', state.onInitialUserKey, true);
+    state.initialFocusTimer = window.setTimeout(() => stopInitialFocusGuard(state), CONFIG.initialFocusGuardMs);
+    // Handle the case where NocoDB focused the editor before we mounted the guard.
+    dismissAutoFocus();
+  }
+
   function createState(root) {
     const refs = collectRefs(root);
     if (!refs) return null;
@@ -1207,6 +1260,12 @@
       resizeFrame: 0,
       onResizeMove: null,
       onResizeEnd: null,
+      initialFocusGuardActive: false,
+      initialFocusTimer: 0,
+      onInitialFocusIn: null,
+      onInitialUserPointer: null,
+      onInitialUserWheel: null,
+      onInitialUserKey: null,
     };
     root.classList.add(CLASS.rootReady);
     applyPanelWidth(state, CONFIG.panelWidth);
@@ -1215,12 +1274,14 @@
     positionUI(state);
     if (CONFIG.defaultOpen) togglePanel(state, true);
     states.set(root, state);
+    startInitialFocusGuard(state);
     return state;
   }
 
   function destroyState(state) {
     if (!state || state.destroyed) return;
     state.destroyed = true;
+    stopInitialFocusGuard(state);
     unbindEditorRuntime(state);
     stopPanelResize(state, false);
     clearScrollTimers(state);
