@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      3.3.0
+// @version      0.2.1
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -1667,10 +1667,37 @@ function nocodbMarkdownTablePageMain() {
     const { tiptap } = session;
     const parser = tiptap.storage?.markdown?.parser;
     if (!parser || typeof parser.parse !== 'function') throw new Error('markdown-parser-unavailable');
-    const json = parser.parse(markdown);
-    if (!json || typeof json !== 'object') throw new Error('markdown-parser-invalid');
-    const topLevel = Array.isArray(json) ? json : (json.type === 'doc' ? json.content || [] : [json]);
-    if (!Array.isArray(topLevel)) throw new Error('markdown-parser-invalid');
+    const parsed = parser.parse(markdown);
+
+    if (typeof parsed === 'string') {
+      // NocoDB Markdown parser returns HTML, not ProseMirror JSON. Let the
+      // installed Tiptap parse that HTML with its own schema and extensions.
+      // can().chain() builds a throwaway transaction without dispatching it.
+      const state = tiptap.view.state;
+      const originalSize = state.doc.content.size;
+      let extracted = null;
+      const possible = tiptap.can?.();
+      if (!possible || typeof possible.chain !== 'function') throw new Error('tiptap-dry-run-unavailable');
+      const successful = possible.chain()
+        .insertContentAt(originalSize, parsed, { updateSelection: false })
+        .command(({ tr }) => {
+          const addedSize = tr.doc.content.size - originalSize;
+          if (addedSize <= 0) return false;
+          // Appending complete block-level HTML creates independent top-level nodes.
+          const from = tr.doc.content.size - addedSize;
+          const slice = tr.doc.slice(from, tr.doc.content.size);
+          extracted = [...slice.content.content];
+          return extracted.length > 0;
+        })
+        .run();
+      if (!successful || !extracted) throw new Error('markdown-html-conversion-failed');
+      return extracted;
+    }
+
+    // Keep compatibility with Tiptap versions returning nodes or JSON.
+    const topLevel = Array.isArray(parsed) ? parsed :
+      (parsed?.type === 'doc' ? parsed.content || [] : [parsed]);
+    if (!Array.isArray(topLevel) || !topLevel.length) throw new Error('markdown-parser-invalid');
     return topLevel.map((item) => item?.type?.name && typeof item?.nodeSize === 'number'
       ? item
       : tiptap.state.schema.nodeFromJSON(item));
