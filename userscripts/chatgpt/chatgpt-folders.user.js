@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.8.0
-// @description  ChatGPT 普通聊天文件夹管理：v0.8.0；适配 rail/peeking/pinned 三态侧边栏，悬浮时即时恢复文件夹并增强账号识别。
+// @version      0.8.1
+// @description  ChatGPT 普通聊天文件夹管理：v0.8.1；修复文件夹聊天拖拽 payload、无效高亮及释放瞬间落点丢失。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.8.0';
+  const VERSION = '0.8.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1392,10 +1392,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const title = c.title || 'Untitled chat';
     const url = normalizeStoredUrl(c.url || ('/c/' + cid));
     return `
-      <div class="cgfm-chat-row" data-chat-id="${escapeAttr(cid)}" data-folder-id="${escapeAttr(folderId)}" data-depth="${depth}" style="--depth:${depth}">
+      <div class="cgfm-chat-row" data-chat-id="${escapeAttr(cid)}" data-folder-id="${escapeAttr(folderId)}" data-depth="${depth}" draggable="true" style="--depth:${depth}">
         <span class="cgfm-spacer"></span>
         <span class="cgfm-chat-icon">${icon('chat')}</span>
-        <a class="cgfm-chat-title" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>
+        <a class="cgfm-chat-title" draggable="false" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>
         <span class="cgfm-row-actions">
           <button class="cgfm-icon" data-action="refresh-chat-title" data-chat-id="${escapeAttr(cid)}" title="刷新标题">${icon('refresh')}</button>
           <button class="cgfm-icon" data-action="remove-chat" data-chat-id="${escapeAttr(cid)}" title="从管理器移除">${icon('x')}</button>
@@ -1821,8 +1821,34 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function onRootDragStart(event) {
     if (!event || !event.target || !rootEl || !rootEl.contains(event.target)) return;
-    const interactive = event.target.closest && event.target.closest('button,input,textarea,select,a,[contenteditable="true"]');
-    if (interactive) return;
+    const interactive = event.target.closest && event.target.closest('button,input,textarea,select,[contenteditable="true"]');
+    if (interactive) { event.preventDefault(); return; }
+    // Folder-managed chats must establish their own drag payload. Browser link dragging
+    // otherwise shows a native preview without consistently producing a usable drop.
+    const chatRow = event.target.closest && event.target.closest('.cgfm-chat-row[data-chat-id]');
+    if (chatRow && rootEl.contains(chatRow)) {
+      const p = getProfile();
+      const id = chatRow.getAttribute('data-chat-id');
+      const chat = p.conversations[id];
+      if (!chat) { event.preventDefault(); return; }
+      closeMenu();
+      const payload = { kind: 'chat', id, title: chat.title, url: chat.url || ('/c/' + id) };
+      dragPayload = payload;
+      dragStartPayload = payload;
+      pointerPayload = null;
+      dropCommitted = false;
+      lastHoveredFolderId = '';
+      lastHoveredFolderAt = 0;
+      clearDropHighlight();
+      try {
+        if (event.dataTransfer) {
+          event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+          event.dataTransfer.setData('text/plain', location.origin + payload.url);
+          event.dataTransfer.effectAllowed = 'move';
+        }
+      } catch (_) {}
+      return;
+    }
     const row = event.target.closest && event.target.closest('.cgfm-folder-row[data-folder-id]');
     if (!row || !rootEl.contains(row)) return;
     const fid = row.getAttribute('data-folder-id');
@@ -2022,7 +2048,20 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return;
     }
 
-    const target = getFolderDropTargetAtCoordinates(state.lastX, state.lastY, state.payload);
+    let target = getFolderDropTargetAtCoordinates(state.lastX, state.lastY, state.payload);
+    // A final frame can race with a sidebar transition/reflow. Reuse the immediately
+    // preceding validated hover only if the pointer is still physically over its row.
+    if (!target && state.targetFolderId && rootEl && rootEl.isConnected) {
+      const row = rootEl.querySelector('.cgfm-folder-row[data-folder-id="' + cssEscape(state.targetFolderId) + '"]');
+      if (row) {
+        const rect = row.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0 &&
+            state.lastX >= rect.left - 4 && state.lastX <= rect.right + 4 &&
+            state.lastY >= rect.top - 4 && state.lastY <= rect.bottom + 4) {
+          target = resolveFolderDropTargetFromElement(row, state.payload, false);
+        }
+      }
+    }
     const payload = state.payload;
     if (target) commitDropPayload(payload, target.folderId);
     suppressNativeChatClick(sourceRow);
@@ -2206,18 +2245,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const shouldFallback = !dropCommitted && lastHoveredFolderId && (Date.now() - lastHoveredFolderAt < 900);
     const payload = dragPayload || dragStartPayload || pointerPayload;
     if (shouldFallback && payload) {
-      commitDropPayload(payload, lastHoveredFolderId);
-      dropCommitted = true;
+      dropCommitted = !!commitDropPayload(payload, lastHoveredFolderId);
     }
     if (rootEl) rootEl.querySelectorAll('.cgfm-dragging-folder').forEach(el => el.classList.remove('cgfm-dragging-folder'));
     resetNativeDragState();
   }
 
   function onRootDragOver(event) {
-    const target = resolveFolderDropTarget(event, true);
-    if (!target) return;
-    event.preventDefault();
     const payload = getDragPayload(event, false);
+    const target = event.target instanceof Element
+      ? resolveFolderDropTargetFromElement(event.target, payload, false) : null;
+    if (!target) { clearDropHighlight(); return; }
+    event.preventDefault();
     try {
       if (event.dataTransfer) event.dataTransfer.dropEffect = payloadKind(payload) === 'folder' ? 'move' : 'copy';
     } catch (_) {}
@@ -2235,18 +2274,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onRootDrop(event) {
-    const target = resolveFolderDropTarget(event, true);
+    const payload = getDragPayload(event, true);
+    const target = event.target instanceof Element
+      ? resolveFolderDropTargetFromElement(event.target, payload, false) : null;
     clearDropHighlight();
     if (!target) return;
     event.preventDefault();
     if (dropCommitted) return;
-    const payload = pointerPayload || getDragPayload(event, true);
-    if (!payload) {
-      toast('没有识别到被拖动的聊天或文件夹。');
-      return;
-    }
-    commitDropPayload(payload, target.folderId);
-    dropCommitted = true;
+    dropCommitted = !!commitDropPayload(payload, target.folderId);
   }
 
   function resolveFolderDropTarget(event, allowUnknownChat) {
@@ -2281,6 +2316,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (kind === 'folder') return moveFolderToFolder(payload.folderId, folderId);
     if (kind === 'chat') return addChatToFolder(payload, folderId);
     toast('没有识别到被拖动的聊天或文件夹。');
+    return false;
   }
 
   function getDragPayload(event, allowRead) {
@@ -2390,15 +2426,15 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const source = p.folders[sourceId];
     const targetId = targetParentId || ROOT_ID;
     const target = p.folders[targetId];
-    if (!source || !target) return;
+    if (!source || !target) return false;
     if (!canMoveFolderTo(sourceId, targetId)) {
       toast('不能把文件夹移动到自己或自己的子文件夹中。');
-      return;
+      return false;
     }
     if (source.parentId === targetId) {
       sortFolderChildren(p, targetId);
       queueRender();
-      return;
+      return false;
     }
     const oldParent = p.folders[source.parentId] || p.folders[ROOT_ID];
     oldParent.childFolderIds = oldParent.childFolderIds.filter(id => id !== sourceId);
@@ -2412,12 +2448,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     queueRender();
     schedulePersist('move-folder');
     toast(targetId === ROOT_ID ? '文件夹已移动到顶层。' : '文件夹已移动。');
+    return true;
   }
 
   function addChatToFolder(chat, folderId) {
     const p = getProfile();
     const f = p.folders[folderId];
-    if (!f || !chat || !chat.id) return;
+    if (!f || !chat || !chat.id) return false;
     const existing = p.conversations[chat.id];
     if (existing && existing.folderId && p.folders[existing.folderId]) {
       p.folders[existing.folderId].chatIds = p.folders[existing.folderId].chatIds.filter(x => x !== chat.id);
@@ -2434,6 +2471,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     queueRender();
     schedulePersist('add-chat');
     toast('聊天已加入文件夹。');
+    return true;
   }
 
 

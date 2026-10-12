@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.8.0  
+> 当前说明版本：v0.8.1  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -383,6 +383,14 @@ v0.6.4 起 idle 预创建设置弹窗只在 `mounted` 已成功后进行。原�
 
 不要恢复独立 `max-height` / `overflow:auto`，否则会出现两个侧边栏滚动条。
 
+### v0.8.1：聊天拖拽提交一致性修复
+
+- `renderChat()` 为脚本文件夹内聊天行提供明确的 HTML5 `draggable` 来源，并禁止内层 anchor 抢走原生拖拽起点；`onRootDragStart()` 为聊天建立 `kind: "chat"` 的内部 payload 与 `dataTransfer`，排除独立操作按钮，避免出现浏览器拖拽预览正常但没有有效聊天 payload 的情况。
+- `onRootDragOver()` 只在已有已验证的文件夹/聊天 payload 且目标可接收时高亮，取消以“未知聊天”提前高亮的行为；`onRootDrop()` 在同一份 payload 上再次验证并提交，避免高亮与提交条件分离。
+- `commitDropPayload()` 返回成功标志，`dropCommitted` 仅在实际提交成功后标记，避免失败事件被误认为完成。
+- 新版 Recent 自定义 pointer 拖拽仍优先在 `pointerup` 坐标重新命中；若瞬间重新命中失败，只在上次高亮的合法目标行仍连接且释放点落在其可视区域（允许 4px 边界误差）时回退，不向其他位置误投放。
+- 原有账号隔离、WebDAV schema、本地键、rail/peeking/pinned 生命周期均不变。
+
 ## 9. 文件夹与聊天交互
 
 ### 9.1 文件夹创建、重命名、颜色、删除
@@ -448,7 +456,7 @@ payload：
 
 兼容路径仍保留 HTML5 drag/drop：
 
-- 脚本自身“文件夹 → 文件夹”拖拽继续使用现有 HTML5 DnD；
+- 脚本自身“文件夹 → 文件夹”及“文件夹内聊天 → 文件夹”拖拽使用带显式 payload 的 HTML5 DnD；
 - 旧版 `/c/` anchor 仍可按需临时设置 `draggable=true`；
 - 新版 anchor-based / button-based conversation row 都不设置 `draggable=true`；
 - root-level dragover/drop 与 dragend fallback 只服务脚本文件夹拖拽和 legacy/浏览器兼容路径。
