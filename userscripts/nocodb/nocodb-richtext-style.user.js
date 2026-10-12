@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
-// @version      0.1.3
-// @description  NocoDB Rich Text 视觉样式增强：H1-H6 彩虹标题、加粗与特定符号文本改色，并统一放宽顶层段落和列表之后的间距；不修改原文内容。
+// @version      0.1.4
+// @description  NocoDB Rich Text 视觉样式增强：H1-H6 彩虹标题、加粗与特定符号文本改色，并将顶层段落和列表间距设为 NocoDB 默认值；不修改原文内容。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
 // @run-at       document-idle
@@ -27,7 +27,7 @@
    * 2. 将 Rich Text 编辑器里的加粗文本 strong 改成 #cc6566。
    * 3. 将形如 【xxx】 的文本显示为 #3366ff。
    * 4. 将形如 「xxx」 的文本显示为 #c88445。
-   * 5. 将弹窗编辑器顶层段落和顶层有序/无序列表之后的间距统一设为 1.0em，同时不额外放大纯空段落。
+   * 5. 将弹窗编辑器普通顶层段落的下间距设为 4px、顶层有序/无序列表设为 0px，与当前 NocoDB 默认值一致。
    *
    * 技术路线：
    * 1. 标题、加粗文字和段落间距使用普通 CSS，只改变显示层。
@@ -113,12 +113,16 @@
         color: ${COLOR_BOLD} !important;
       }
 
-      /* 统一放宽顶层段落和顶层列表之后的间距；不影响列表内部 li > p 和其他嵌套段落。 */
-      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror > p,
+      /* 使用当前 NocoDB 实测默认值；保留独立覆盖规则，避免影响列表内部 li > p。 */
+      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror > p {
+        margin-top: 0 !important;
+        margin-bottom: 4px !important;
+      }
+
       .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror > ol,
       .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror > ul {
         margin-top: 0 !important;
-        margin-bottom: 1.0em !important;
+        margin-bottom: 0 !important;
       }
 
       /* 手动空行仍按原本高度显示，避免连续空行被额外放大。 */
