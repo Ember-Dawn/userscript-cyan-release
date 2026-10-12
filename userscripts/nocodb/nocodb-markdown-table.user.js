@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      3.2.0
+// @version      3.3.0
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -41,7 +41,7 @@
  * 二、界面原则
  * -----------------------------------------------------------------------------
  * - 浏览状态只显示表格本身；
- * - 鼠标移入时，右上角显示删除与铅笔编辑按钮；
+ * - 鼠标移入时，右上角显示复制、编辑与删除按钮；
  * - 删除按钮使用贴近按钮的小型二次确认浮层，确认后才删除整个表格代码块；
  * - 双击任意单元格也可以进入编辑状态；
  * - 编辑状态顶部仅保留“新增行 / 新增列 / 取消 / 保存”；
@@ -89,6 +89,8 @@ function nocodbMarkdownTablePageMain() {
   const NODEVIEW_CLASS = 'tm-nocodb-markdown-table-v31';
 
   const MAX_SOURCE_CHARS = 100000;
+  const MAX_MIXED_SOURCE_CHARS = 300000;
+  const MAX_MIXED_TABLES = 24;
   const MAX_COLUMNS = 40;
   const MAX_BODY_ROWS = 200;
   const MAX_CELLS = 4000;
@@ -226,7 +228,8 @@ function nocodbMarkdownTablePageMain() {
       }
 
       .tm-nmt-edit-trigger-v31,
-      .tm-nmt-delete-trigger-v31 {
+      .tm-nmt-delete-trigger-v31,
+      .tm-nmt-copy-trigger-v31 {
         position: absolute;
         top: 7px;
         z-index: 4;
@@ -249,18 +252,24 @@ function nocodbMarkdownTablePageMain() {
       }
 
       .tm-nmt-edit-trigger-v31 {
-        right: 7px;
+        right: 43px;
+      }
+
+      .tm-nmt-copy-trigger-v31 {
+        right: 79px;
       }
 
       .tm-nmt-delete-trigger-v31 {
-        right: 43px;
+        right: 7px;
         color: #b91c1c;
       }
 
       .${NODEVIEW_CLASS}:hover .tm-nmt-edit-trigger-v31,
       .${NODEVIEW_CLASS}:hover .tm-nmt-delete-trigger-v31,
+      .${NODEVIEW_CLASS}:hover .tm-nmt-copy-trigger-v31,
       .${NODEVIEW_CLASS}:focus-within .tm-nmt-edit-trigger-v31,
-      .${NODEVIEW_CLASS}:focus-within .tm-nmt-delete-trigger-v31 {
+      .${NODEVIEW_CLASS}:focus-within .tm-nmt-delete-trigger-v31,
+      .${NODEVIEW_CLASS}:focus-within .tm-nmt-copy-trigger-v31 {
         opacity: 1;
         visibility: visible;
         transform: translateY(0);
@@ -271,12 +280,17 @@ function nocodbMarkdownTablePageMain() {
         background: #f3f4f6;
       }
 
+      .tm-nmt-copy-trigger-v31:hover {
+        background: #f3f4f6;
+      }
+
       .tm-nmt-delete-trigger-v31:hover {
         background: #fef2f2;
       }
 
       .tm-nmt-edit-trigger-v31 svg,
-      .tm-nmt-delete-trigger-v31 svg {
+      .tm-nmt-delete-trigger-v31 svg,
+      .tm-nmt-copy-trigger-v31 svg {
         width: 15px;
         height: 15px;
         pointer-events: none;
@@ -285,7 +299,7 @@ function nocodbMarkdownTablePageMain() {
       .tm-nmt-delete-confirm-v31 {
         position: absolute;
         top: 37px;
-        right: 73px;
+        right: 7px;
         z-index: 6;
         width: 190px;
         max-width: calc(100% - 16px);
@@ -926,6 +940,35 @@ function nocodbMarkdownTablePageMain() {
     return button;
   }
 
+  function makeCopyTrigger(onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tm-nmt-copy-trigger-v31';
+    button.title = '复制 Markdown 表格';
+    button.setAttribute('aria-label', '复制 Markdown 表格');
+    button.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+        <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" stroke="currentColor" stroke-width="1.3"/>
+      </svg>`;
+    button.addEventListener('pointerdown', (event) => stopPointerEvent(event));
+    button.addEventListener('click', (event) => {
+      stopPointerEvent(event);
+      onClick();
+    });
+    return button;
+  }
+
+  async function copyMarkdownTable(model) {
+    const markdown = serializeMarkdownTable(model);
+    try {
+      await navigator.clipboard.writeText(markdown);
+      showToast('已复制 Markdown 表格', 'success', 1600);
+    } catch (_) {
+      showToast('复制失败：请检查剪贴板权限。', 'error', 3600);
+    }
+  }
+
   function makeDeleteTrigger(onClick) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -1465,8 +1508,9 @@ function nocodbMarkdownTablePageMain() {
 
       if (!editing) {
         if (isEditable()) {
-          dom.appendChild(makeDeleteTrigger(showDeleteConfirm));
+          dom.appendChild(makeCopyTrigger(() => copyMarkdownTable(stored.model)));
           dom.appendChild(makeEditTrigger(enterEditing));
+          dom.appendChild(makeDeleteTrigger(showDeleteConfirm));
           if (confirmingDelete) renderDeleteConfirm();
         }
         const scroll = document.createElement('div');
@@ -1565,6 +1609,95 @@ function nocodbMarkdownTablePageMain() {
         session.tableNodeViewCount = Math.max(0, session.tableNodeViewCount - 1);
       },
     };
+  }
+
+  // Parse a clipboard document into prose segments and complete Markdown table segments.
+  // Fenced code blocks are opaque: examples inside them must not become tables.
+  function splitMixedMarkdown(source) {
+    if (typeof source !== 'string' || source.length > MAX_MIXED_SOURCE_CHARS) return null;
+    const lines = normalizeSourceLines(source);
+    const parts = [];
+    let prose = [];
+    let fence = null;
+    let tableCount = 0;
+    const flush = () => {
+      if (prose.length) parts.push({ type: 'markdown', text: prose.join('\n') });
+      prose = [];
+    };
+    const fenceMatch = (line) => line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    for (let i = 0; i < lines.length;) {
+      const line = lines[i];
+      const marker = fenceMatch(line);
+      if (fence) {
+        prose.push(line);
+        if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+        i += 1;
+        continue;
+      }
+      if (marker) {
+        fence = { char: marker[1][0], length: marker[1].length };
+        prose.push(line);
+        i += 1;
+        continue;
+      }
+      // A table requires two adjoining table lines, then greedily extends through body rows.
+      if (i + 1 < lines.length && line.includes('|') && lines[i + 1].includes('|')) {
+        let end = i + 2;
+        while (end < lines.length && lines[end].trim() && lines[end].includes('|')) end += 1;
+        const candidate = lines.slice(i, end).join('\n');
+        const model = parseMarkdownTable(candidate);
+        if (model) {
+          tableCount += 1;
+          if (tableCount > MAX_MIXED_TABLES) return null;
+          flush();
+          parts.push({ type: 'table', model });
+          i = end;
+          continue;
+        }
+      }
+      prose.push(line);
+      i += 1;
+    }
+    flush();
+    return tableCount ? parts : null;
+  }
+
+  function markdownNodes(session, markdown) {
+    if (!markdown.trim()) return [];
+    const { tiptap } = session;
+    const parser = tiptap.storage?.markdown?.parser;
+    if (!parser || typeof parser.parse !== 'function') throw new Error('markdown-parser-unavailable');
+    const json = parser.parse(markdown);
+    if (!json || typeof json !== 'object') throw new Error('markdown-parser-invalid');
+    const topLevel = Array.isArray(json) ? json : (json.type === 'doc' ? json.content || [] : [json]);
+    if (!Array.isArray(topLevel)) throw new Error('markdown-parser-invalid');
+    return topLevel.map((item) => item?.type?.name && typeof item?.nodeSize === 'number'
+      ? item
+      : tiptap.state.schema.nodeFromJSON(item));
+  }
+
+  // Build every node before dispatch: an invalid Markdown fragment must not
+  // leave partially inserted content in the document.
+  function insertMixedMarkdown(session, parts) {
+    const { tiptap } = session;
+    const state = tiptap.view.state;
+    const type = state.schema.nodes.codeBlock;
+    if (!type) return false;
+    const nodes = [];
+    for (const part of parts) {
+      if (part.type === 'markdown') {
+        nodes.push(...markdownNodes(session, part.text));
+      } else {
+        const id = createTableId();
+        nodes.push(type.create(languageAttrsForNodeType(type, {}), state.schema.text(buildStoredText(part.model, id))));
+      }
+    }
+    if (!nodes.length) return false;
+    const fragment = state.schema.nodes.doc.createChecked(null, nodes).content;
+    // Use a single transaction for the full fragment, not one command per segment.
+    const tr = state.tr.replaceSelection(new (state.selection.content().constructor)(fragment, 0, 0));
+    tiptap.view.dispatch(tr.scrollIntoView());
+    return true;
   }
 
   function documentContainsTableId(doc, id) {
@@ -1751,7 +1884,7 @@ function nocodbMarkdownTablePageMain() {
     return target.closest(EDITOR_SELECTOR);
   }
 
-  function queueTableInsert(editorDom, model) {
+  function queueTableInsert(editorDom, model, mixedParts = null) {
     let attempts = 0;
 
     const tryInsert = () => {
@@ -1763,11 +1896,16 @@ function nocodbMarkdownTablePageMain() {
       const session = ensureSession(editorDom, false);
       if (session) {
         editorDom.focus({ preventScroll: true });
-        const inserted = insertTableCodeBlock(session, model);
+        let inserted = false;
+        try {
+          inserted = mixedParts ? insertMixedMarkdown(session, mixedParts) : insertTableCodeBlock(session, model);
+        } catch (error) {
+          console.warn('[NocoDB Markdown Table] 混合内容解析或插入失败。', error);
+        }
         if (!inserted) {
           setEditorConnectionState(editorDom, 'insert-failed');
           console.warn('[NocoDB Markdown Table] 已连接 Tiptap，但代码块插入失败。');
-          showToast('Markdown 表格转换失败：NocoDB 拒绝插入表格代码块。', 'error', 4000);
+          showToast('Markdown 粘贴失败：混合内容未被插入，请重试或粘贴原始文本。', 'error', 4600);
         }
         return;
       }
@@ -1798,13 +1936,14 @@ function nocodbMarkdownTablePageMain() {
 
     const text = event.clipboardData?.getData('text/plain') || '';
     const model = parseMarkdownTable(text);
-    if (!model) return;
+    const mixedParts = model ? null : splitMixedMarkdown(text);
+    if (!model && !mixedParts) return;
 
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
 
-    queueTableInsert(editorDom, model);
+    queueTableInsert(editorDom, model, mixedParts);
   }
 
   function discoverEditorsWithin(node) {
@@ -1851,6 +1990,7 @@ function nocodbMarkdownTablePageMain() {
     parseMarkerLine,
     buildMarkerLine,
     splitMarkdownRow,
+    splitMixedMarkdown,
   };
 
   if (TEST_MODE) {
