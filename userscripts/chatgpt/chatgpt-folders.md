@@ -1,7 +1,7 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.8.1  
+> 当前说明版本：v0.8.2  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
@@ -295,16 +295,13 @@ v0.6.3 的修复包括：
 - `mount()` 拒绝 root 自身或 descendant 作为 parent；
 - `ensureMountedLight()` 只有在 `expectedParent` 安全时才认为 parent changed。
 
-### 7.4 app-shell 三态监听与即时恢复
+### 7.4 app-shell 三态监听、宿主替换与即时恢复
 
-新版 hover peeking 不一定触发 sidebar toggle click。若仍只依赖 80/220/500/900ms 点击后检查或稀疏恢复定时器，官方悬浮 sidebar 会先出现，`#cgfm-root` 则可能晚几百毫秒甚至更久才恢复。
+新版 hover peeking 不一定触发 sidebar toggle click。仅监听 `data-slate-sidebar-peeking` 与 `inert` 会漏掉 ChatGPT 替换 conversation content / scroll 宿主，或原生 React 单独移除脚本根节点的情况；有限的稀疏重试无法在长期打开的标签页里及时修复。
 
-允许两个长期但极窄的 `MutationObserver`：
+v0.8.2 保留两个极窄的 attributes-only observer，并增设 **一个结构 observer**，只对左侧 app-shell 稳定祖先、conversation content 通往 shell 的直接祖先以及 `[data-app-action-sidebar-scroll]` 注册 `{ childList: true }`，**不启用 subtree**，不遍历 Recents 聊天行或监控 `document.body`。结构回调只有在 root 已脱离、宿主被替换或 root 脱离可信滚动宿主时才发起恢复检查；`requestAnimationFrame` 合并重复事件。重建宿主后重新绑定这些观察目标。
 
-- 只观察 `[data-app-shell-left-panel-appearance]` 自身的 `data-slate-sidebar-peeking` 属性；
-- 只观察当前 `[data-slate-sidebar-content="true"]` 自身的 `inert` 属性。
-
-observer 不观察 subtree，不监听 conversation list 的 childList，也不扫描最近聊天；回调只经 `requestAnimationFrame` 合并后调用一次 `ensureMountedLight()`。这样 hover 进入/退出 peeking 时可在下一帧同步文件夹显隐，而不会恢复“长期观察整个 sidebar/document”的高开销方案。
+`ensureMountedLight()` 在根节点仍存在且宿主未变时仅更新拖拽/菜单 hooks、宽度和显隐；被移除或宿主发生变化时才重新调用 `mount()`，继续复用原有 `#cgfm-root`。首次 mount 才全量渲染；已有完整内容的恢复挂载不清空重绘文件夹树，从而减少 hover 时闪烁。首次 hydration-safe 的 1200ms 稳定等待不变。
 
 ### 7.5 首次挂载与 React hydration
 
@@ -356,7 +353,7 @@ boot 使用有限延迟检查：
 - `visibilitychange` 恢复可见
 - sidebar toggle 后少量延迟检查
 
-禁止为了“更稳”恢复观察整个 sidebar/document subtree 的 MutationObserver；v0.8.0 仅保留 7.4 所述两个 attributes-only 窄范围 observer。
+禁止为了“更稳”恢复观察整个 sidebar/document subtree 的 MutationObserver；v0.8.2 的结构监听仅观察少量原生宿主的直属子节点变化，且回调必须先确认根节点/宿主失效。
 
 ### 7.7 设置弹窗预创建
 
@@ -382,6 +379,13 @@ v0.6.4 起 idle 预创建设置弹窗只在 `mounted` 已成功后进行。原�
 ```
 
 不要恢复独立 `max-height` / `overflow:auto`，否则会出现两个侧边栏滚动条。
+
+### v0.8.2：悬浮侧边栏文件夹恢复修复
+
+- 监听 app-shell 关键宿主的直接子节点替换，以发现原生 conversation subtree 或脚本 `#cgfm-root` 被卸载；不观察全局 subtree。
+- 结构变化仅在根节点脱离或宿主不再匹配时触发合帧恢复；重绑原有 peeking / inert 观察器。
+- 恢复挂载继续复用已经渲染的文件夹根节点，避免每次 React 替换宿主都执行 `innerHTML` 全量重绘。
+- 保持 v0.8.1 拖拽修复、三态宽度策略及首次 hydration-safe 延迟机制不变。
 
 ### v0.8.1：聊天拖拽提交一致性修复
 

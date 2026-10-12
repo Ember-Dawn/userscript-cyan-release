@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.8.1
-// @description  ChatGPT 普通聊天文件夹管理：v0.8.1；修复文件夹聊天拖拽 payload、无效高亮及释放瞬间落点丢失。
+// @version      0.8.2
+// @description  ChatGPT 普通聊天文件夹管理：v0.8.2；改善侧边栏悬浮时文件夹消失与延迟恢复。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.8.1';
+  const VERSION = '0.8.2';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -129,6 +129,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let appShellContentObserver = null;
   let appShellObservedContent = null;
   let appShellStateRaf = 0;
+  let appShellStructureObserver = null;
+  let appShellObservedStructureNodes = [];
   let storageWriteSeq = 0;
   let lastSeenStorageRevision = '';
   let lastSeenStorageProjection = '';
@@ -1310,8 +1312,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (recentAnchor && recentAnchor.parentElement === parent) parent.insertBefore(rootEl, recentAnchor);
       else parent.appendChild(rootEl);
     }
-    render();
+    // Reuse the already-rendered root after React replaces its former host. Full
+    // tree rendering is only needed for the initial mount or an empty root.
+    if (!mounted || !rootEl.firstElementChild) render();
     syncSidebarVisibility();
+    bindAppShellSidebarStateWatcher();
     setupNativeDragCache();
     setupNativeMenuHook();
     mounted = true;
@@ -3908,6 +3913,50 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     });
   }
 
+  function bindAppShellStructureWatcher(panel, content) {
+    const shell = document.getElementById('app-shell-sidebar');
+    if (!panel || !shell || !panel.contains(shell)) {
+      if (appShellStructureObserver) appShellStructureObserver.disconnect();
+      appShellStructureObserver = null;
+      appShellObservedStructureNodes = [];
+      return;
+    }
+
+    // Observe direct child replacement along the small app-shell host chain,
+    // plus the scroll host that directly contains #cgfm-root. No subtree scan,
+    // and no observation of the Recents chat list.
+    const nodes = [];
+    const add = el => { if (el && !nodes.includes(el)) nodes.push(el); };
+    add(panel.parentElement); // recover if ChatGPT replaces the entire left panel
+    add(panel);
+    let node = content || shell;
+    while (node && node !== panel) {
+      add(node);
+      node = node.parentElement;
+    }
+    const scroll = shell.querySelector('[data-app-action-sidebar-scroll]');
+    if (scroll) add(scroll); // detect detached #cgfm-root and replaced Recents host
+
+    if (nodes.length === appShellObservedStructureNodes.length &&
+        nodes.every((item, i) => item === appShellObservedStructureNodes[i])) return;
+    if (appShellStructureObserver) appShellStructureObserver.disconnect();
+    appShellStructureObserver = new MutationObserver(() => {
+      // React-owned nodes may change often. Only refresh for a lost host/root;
+      // peeking/inert visibility changes have their own attribute observers.
+      const currentPanel = document.querySelector('[data-app-shell-left-panel-appearance]');
+      const currentContent = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
+      const rootDetached = mounted && rootEl && !rootEl.isConnected;
+      const expectedScroll = document.querySelector('#app-shell-sidebar [data-app-action-sidebar-scroll]');
+      const wrongHost = mounted && rootEl && expectedScroll && rootEl.parentElement !== expectedScroll &&
+        !expectedScroll.contains(rootEl);
+      const hostReplaced = currentPanel !== appShellObservedPanel || currentContent !== appShellObservedContent;
+      const rootParentGone = mounted && rootEl && rootEl.parentElement && !rootEl.parentElement.isConnected;
+      if (rootDetached || hostReplaced || rootParentGone || wrongHost) scheduleAppShellStateRefresh();
+    });
+    for (const item of nodes) appShellStructureObserver.observe(item, { childList: true });
+    appShellObservedStructureNodes = nodes;
+  }
+
   function bindAppShellSidebarStateWatcher() {
     const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
     const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
@@ -3937,6 +3986,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         });
       }
     }
+    bindAppShellStructureWatcher(panel, content);
   }
 
   function scheduleSidebarVisibilityCheck() {
