@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
-// @version      0.1.5
+// @version      0.1.6
 // @description  NocoDB Rich Text 视觉样式增强：H1-H6 彩虹标题、加粗与特定符号文本改色，将顶层段落与列表间距设为 NocoDB 默认值，并显示列表层级引导线；不修改原文内容。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -28,7 +28,7 @@
    * 3. 将形如 【xxx】 的文本显示为 #3366ff。
    * 4. 将形如 「xxx」 的文本显示为 #c88445。
    * 5. 将弹窗编辑器普通顶层段落的下间距设为 4px、顶层有序/无序列表设为 0px，与当前 NocoDB 默认值一致。
-   * 6. 为顶层及嵌套的有序/无序列表绘制浅色层级引导线，不改变列表内容和缩进。
+   * 6. 仅为二级及更深层级的有序/无序列表绘制浅色层级引导线，不改变列表内容和缩进。
    *
    * 技术路线：
    * 1. 标题、加粗文字和段落间距使用普通 CSS，只改变显示层。
@@ -132,20 +132,18 @@
         margin-bottom: 0 !important;
       }
 
-      /* 列表层级引导线：仅覆盖编辑器中的顶层列表及 li 直系嵌套列表。
-         伪元素绝对定位在列表的缩进区，不参与正文布局、不接管鼠标事件。 */
-      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror > :is(ul, ol),
+      /* 仅在二级及更深层列表绘制引导线，顶层列表不显示。
+         将线放在嵌套列表的左边界外侧，避开列表符号和有序列表编号。 */
       .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror :is(ul, ol) > li > :is(ul, ol) {
         position: relative;
       }
 
-      .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror > :is(ul, ol)::before,
       .ant-modal-content .expanded-cell-input .nc-rich-text-content .tiptap.ProseMirror :is(ul, ol) > li > :is(ul, ol)::before {
         content: '';
         position: absolute;
-        top: 1.5em;
-        bottom: 0.35em;
-        left: 0.55em;
+        top: 0;
+        bottom: 0;
+        left: -0.5em;
         width: 1px;
         background-color: currentColor;
         opacity: 0.22;
