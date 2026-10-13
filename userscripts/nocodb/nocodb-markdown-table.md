@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.1（原位单元格编辑实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.2（原位拖拽选区实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -19,11 +19,12 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 
 旧标记 `[[NOCODB_MARKDOWN_TABLE_V1]]` 继续支持读取。不要在复制功能或 Markdown 正常导出中暴露该内部标记。每张新增表格生成独立 ID；保存通过 ProseMirror transaction 替换原代码块，沿用 NocoDB 的持久化流程。
 
-## UI 与交互（v0.3.1）
+## UI 与交互（v0.3.2）
 
 - **只有一套表格 DOM**：阅读与编辑不再切换界面，单击表头或单元格即在原位获得光标（`contenteditable=plaintext-only`）；不再创建隔离的 Tiptap 实例、弹出编辑框、切换旧版 `<input>` 界面或尝试回退。
-- 仅保留表格悬停的复制与删除按钮；删除需二次确认。取消表格整体「编辑」按钮、双击进入编辑态、顶部行列工具栏。
-- `Tab` / `Shift+Tab` 在表头及普通单元格间跳转；最后一个单元格按 `Tab` 可新增一行。`Enter` 阻止产生多段落，`Esc` 离开当前单元格焦点；右键单元格弹出插入/删除行列菜单。
+- 仅保留表格悬停的复制与删除按钮；删除需二次确认，编辑中也允许删除（取消不丢草稿）。取消表格整体「编辑」按钮、双击进入编辑态、顶部行列工具栏。
+- `Tab` / `Shift+Tab` 在表头及普通单元格间跳转；最后一个单元格按 `Tab` 可新增一行。`Enter` 移动至下一行同列；最后一行按 `Enter` 新增行并聚焦同列。`Esc` 离开单元格或清除选区；右键菜单通过 `document.body` Portal 按鼠标视口坐标定位。
+- 从一个单元格按住左键拖到另一个单元格形成矩形选区，同一单元格内拖动仍选择文字。完整覆盖数据行时 Delete/Backspace 删除相应行；覆盖表头及所有数据行的部分列时删除列；其他矩形区域仅清空内容。整表选择只清空数据、不删除全部列。单击或 Esc 清除选区。此为实验性操作，需验证原位焦点与输入法。
 - 修改保存在 NodeView 的本地草稿；点击表格外部时与之前一样检测变化并用单个 ProseMirror transaction 更新代码块。未修改不产生事务；保存失败保留草稿并阻止当前外部点击。
 - 单元格只支持**单行纯文本内容**；文字中的 Markdown 标记以源码形式保留，不在单元格嵌套新的富文本编辑器。复杂单元格、合并单元格、拖动列宽均不在 GFM 功能范围。
 - 内部依旧通过 `nocodb-table` `codeBlock` 承载。由于 NocoDB 原生 LongText Schema 不支持 `table`，本版本**不是裸 GFM 文本直接保存在底层 LongText 字段**；复制及配合导出脚本的最终输出是标准 Markdown 表格。
@@ -85,3 +86,9 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 3. 点击外部自动保存，重新打开记录核对内容；无改动点击外部不应产生事务。
 4. 测试复制 GFM、删除确认、两个以上表格、中文输入法、粘贴文字以及保存失败时草稿保留。
 5. 使用原始包含 4 张表格及 Bash 围栏代码的文档检查混合粘贴，特别检查换行和列表层级；这些场景不因本次表格 UI 重构而自动视为通过。
+
+## v0.3.2 已知限制
+
+- 本版只重构表格拖拽、快捷键、删除按钮与右键菜单。**混合 Markdown 粘贴仍采用 HTML 合并插入机制**，包含代码围栏时可能发生字符、换行或列表结构变化；不能声称已实现逐字符无损。涉及命令的完整文档须在测试记录中粘贴并核对后再正式使用。
+- 鼠标拖拽区域选择不等于原生 ProseMirror 多单元格选择；选区属于表格 NodeView 本地状态。按 Delete 后修改进入本地草稿，点击表格外才提交。
+- 不实现合并单元格、任意列宽或非 GFM 结构。

@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      0.3.1
+// @version      0.3.2
 // @description  在 NocoDB Rich Text 中内嵌显示 Markdown 表格并直接编辑单元格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -370,6 +370,9 @@ function nocodbMarkdownTablePageMain() {
       .tm-nmt-inline-content { display: block; min-height: 28px; padding: 7px 10px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; outline: none; cursor: text; }
       .tm-nmt-inline-content:focus { box-shadow: inset 0 0 0 2px var(--nc-primary-color, #3883e2); border-radius: 2px; }
       .tm-nmt-inline-context { z-index: 2147483646; min-width: 172px; }
+      .tm-nmt-inline-cell.tm-nmt-range-selected { background: color-mix(in srgb, var(--nc-primary-color, #3883e2) 18%, var(--nc-bg-default, #fff)) !important; }
+      .tm-nmt-inline-cell.tm-nmt-range-selected .tm-nmt-inline-content { box-shadow: inset 0 0 0 1px var(--nc-primary-color, #3883e2); }
+      .tm-nmt-inline-table.tm-nmt-drag-selecting { user-select: none; -webkit-user-select: none; }
       .tm-nmt-toast-v31 {
         position: fixed;
         right: 22px;
@@ -856,6 +859,11 @@ function nocodbMarkdownTablePageMain() {
     let outsidePointerDownHandler = null;
     let outsideDeleteConfirmHandler = null;
     let destroyed = false;
+    let contextMenu = null;
+    let selectionRange = null;
+    let dragAnchor = null;
+    let dragPointerId = null;
+    let dragMoved = false;
 
     const dom = document.createElement('div');
     dom.className = NODEVIEW_CLASS;
@@ -882,7 +890,7 @@ function nocodbMarkdownTablePageMain() {
       outsidePointerDownHandler = (event) => {
         if (!editing || destroyed) return;
         const target = event.target;
-        if (target instanceof Node && dom.contains(target)) return;
+        if (target instanceof Node && (dom.contains(target) || contextMenu?.contains(target))) return;
 
         const saved = saveEditing();
         if (saved) return;
@@ -923,7 +931,9 @@ function nocodbMarkdownTablePageMain() {
     }
 
     function showDeleteConfirm() {
-      if (!isEditable() || editing || destroyed) return;
+      if (!isEditable() || destroyed) return;
+      closeContextMenu();
+      clearSelectionRange();
       confirmingDelete = true;
       rerender();
       startOutsideDeleteConfirm();
@@ -1014,6 +1024,85 @@ function nocodbMarkdownTablePageMain() {
       dom.appendChild(panel);
     }
 
+    function closeContextMenu() {
+      if (!contextMenu) return;
+      contextMenu.remove();
+      contextMenu = null;
+    }
+
+    function clearSelectionRange() {
+      selectionRange = null;
+      dragAnchor = null;
+      dragPointerId = null;
+      dragMoved = false;
+      dom.querySelectorAll('.tm-nmt-range-selected').forEach(el => el.classList.remove('tm-nmt-range-selected'));
+      dom.querySelector('.tm-nmt-inline-table')?.classList.remove('tm-nmt-drag-selecting');
+    }
+
+    function normalizedSelection() {
+      if (!selectionRange) return null;
+      const { start, end } = selectionRange;
+      return {
+        r1: Math.min(start.row, end.row),
+        r2: Math.max(start.row, end.row),
+        c1: Math.min(start.col, end.col),
+        c2: Math.max(start.col, end.col),
+      };
+    }
+
+    function paintSelection() {
+      const range = normalizedSelection();
+      dom.querySelectorAll('.tm-nmt-inline-cell').forEach(cell => {
+        const value = cell.querySelector('.tm-nmt-inline-content');
+        const row = Number(value?.dataset.row);
+        const col = Number(value?.dataset.col);
+        cell.classList.toggle('tm-nmt-range-selected', !!range &&
+          row >= range.r1 && row <= range.r2 && col >= range.c1 && col <= range.c2);
+      });
+    }
+
+    // Selection remains independent of the browser's text selection. A drag that
+    // never leaves its first cell retains normal text-selection behaviour.
+    function extendCellRange(row, col) {
+      if (!dragAnchor) return;
+      if (row === dragAnchor.row && col === dragAnchor.col && !dragMoved) return;
+      dragMoved = true;
+      selectionRange = { start: { ...dragAnchor }, end: { row, col } };
+      dom.querySelector('.tm-nmt-inline-table')?.classList.add('tm-nmt-drag-selecting');
+      window.getSelection()?.removeAllRanges();
+      paintSelection();
+    }
+
+    function finishCellDrag() {
+      dragAnchor = null;
+      dragPointerId = null;
+      dom.querySelector('.tm-nmt-inline-table')?.classList.remove('tm-nmt-drag-selecting');
+    }
+
+    function deleteSelectedCells() {
+      const range = normalizedSelection();
+      if (!range || !isEditable()) return false;
+      if (!editing) enterEditing();
+      if (!draft) return false;
+      const entireRows = range.c1 === 0 && range.c2 === draft.headers.length - 1 && range.r1 >= 0;
+      const entireColumns = range.r1 === -1 && range.r2 === draft.rows.length - 1;
+      if (entireRows) {
+        for (let r = range.r2; r >= range.r1; r--) deleteRow(draft, r);
+      } else if (entireColumns && range.c2 - range.c1 + 1 < draft.headers.length) {
+        for (let c = range.c2; c >= range.c1; c--) deleteColumn(draft, c);
+      } else {
+        for (let r = range.r1; r <= range.r2; r++) {
+          for (let c = range.c1; c <= range.c2; c++) {
+            if (r === -1) draft.headers[c] = '';
+            else draft.rows[r][c] = '';
+          }
+        }
+      }
+      clearSelectionRange();
+      rerender();
+      return true;
+    }
+
     function enterEditing() {
       if (!isEditable()) return;
       stopOutsideDeleteConfirm();
@@ -1102,6 +1191,7 @@ function nocodbMarkdownTablePageMain() {
     // serialized back to the established Markdown-in-codeBlock carrier atomically.
     function rerender() {
       if (destroyed) return;
+      closeContextMenu();
       dom.replaceChildren();
       dom.dataset.nocodbMarkdownTableId = stored.id || 'new';
       dom.classList.toggle('is-editing', editing);
@@ -1128,18 +1218,19 @@ function nocodbMarkdownTablePageMain() {
         if (!isEditable()) return;
         event.preventDefault();
         event.stopPropagation();
-        const old = dom.querySelector('.tm-nmt-inline-context');
-        old?.remove();
+        closeContextMenu();
         const menu = document.createElement('div');
         menu.className = 'tm-nmt-menu-v31 tm-nmt-inline-context';
         menu.style.position = 'fixed';
-        menu.style.left = `${Math.max(8, Math.min(event.clientX, innerWidth - 215))}px`;
-        menu.style.top = `${Math.max(8, Math.min(event.clientY, innerHeight - 240))}px`;
+        menu.style.left = '0px';
+        menu.style.top = '0px';
         const action = (label, operation, options = {}) => {
           menu.append(makeMenuItem(label, () => {
+            closeContextMenu();
             if (!editing) enterEditing();
             if (!draft || !operation(draft)) { alertLimit('无法完成操作：已达到行列限制。'); return; }
-              rerender();
+            clearSelectionRange();
+            rerender();
           }, options));
         };
         action('在上方插入行', m => insertRow(m, Math.max(0, row)));
@@ -1148,12 +1239,12 @@ function nocodbMarkdownTablePageMain() {
         action('在右侧插入列', m => insertColumn(m, col + 1));
         if (row >= 0) action('删除当前行', m => deleteRow(m, row), { danger: true });
         if (current.headers.length > 1) action('删除当前列', m => deleteColumn(m, col), { danger: true });
-        dom.appendChild(menu);
-        const dismiss = e => {
-          if (!menu.contains(e.target)) menu.remove();
-          document.removeEventListener('pointerdown', dismiss, true);
-        };
-        document.addEventListener('pointerdown', dismiss, true);
+        document.body.appendChild(menu);
+        contextMenu = menu;
+        const rect = menu.getBoundingClientRect();
+        const margin = 8;
+        menu.style.left = `${Math.max(margin, Math.min(event.clientX, innerWidth - rect.width - margin))}px`;
+        menu.style.top = `${Math.max(margin, Math.min(event.clientY, innerHeight - rect.height - margin))}px`;
       };
       const makeCell = (value, row, col, isHeader) => {
         const td = document.createElement(isHeader ? 'th' : 'td');
@@ -1170,6 +1261,15 @@ function nocodbMarkdownTablePageMain() {
         span.setAttribute('aria-label', `第 ${row + 2} 行，第 ${col + 1} 列`);
         span.addEventListener('focus', () => {
           if (!editing) enterEditing();
+        });
+        span.addEventListener('pointerdown', e => {
+          if (e.button !== 0 || !isEditable()) return;
+          clearSelectionRange();
+          dragAnchor = { row, col };
+          dragPointerId = e.pointerId;
+        });
+        span.addEventListener('pointerenter', e => {
+          if (dragAnchor && e.buttons === 1 && dragPointerId === e.pointerId) extendCellRange(row, col);
         });
         span.addEventListener('input', () => {
           if (!editing) enterEditing();
@@ -1197,8 +1297,31 @@ function nocodbMarkdownTablePageMain() {
         });
         span.addEventListener('keydown', e => {
           e.stopPropagation();
-          if (e.key === 'Enter') e.preventDefault();
-          if (e.key === 'Escape') { e.preventDefault(); span.blur(); return; }
+          if (e.key === 'Escape') {
+            if (selectionRange) { e.preventDefault(); clearSelectionRange(); return; }
+            e.preventDefault(); span.blur(); return;
+          }
+          if (e.key === 'Backspace' || e.key === 'Delete') {
+            if (selectionRange) {
+              e.preventDefault();
+              deleteSelectedCells();
+              return;
+            }
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            if (e.isComposing || e.repeat) return;
+            if (!editing) enterEditing();
+            if (!draft) return;
+            if (row === -1) { focusCell(0, col); return; }
+            if (row < draft.rows.length - 1) { focusCell(row + 1, col); return; }
+            if (insertRow(draft, draft.rows.length)) {
+              const nextRow = draft.rows.length - 1;
+              rerender();
+              focusCell(nextRow, col);
+            } else alertLimit('无法新增行：已达到表格大小限制。');
+            return;
+          }
           if (e.key !== 'Tab') return;
           e.preventDefault();
           const index = targets.findIndex(x => x.row === row && x.col === col);
@@ -1228,6 +1351,37 @@ function nocodbMarkdownTablePageMain() {
       dom.appendChild(scroll);
     }
 
+    const onDragPointerMove = event => {
+      if (!dragAnchor || event.pointerId !== dragPointerId || event.buttons !== 1) return;
+      const cell = document.elementFromPoint(event.clientX, event.clientY)?.closest('.tm-nmt-inline-content');
+      if (!cell || !dom.contains(cell)) return;
+      extendCellRange(Number(cell.dataset.row), Number(cell.dataset.col));
+      if (dragMoved) event.preventDefault();
+    };
+    const onDragPointerEnd = event => {
+      if (event.pointerId === dragPointerId) finishCellDrag();
+    };
+    const onSelectionKeydown = event => {
+      if (!selectionRange || !dom.isConnected) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearSelectionRange();
+      } else if ((event.key === 'Delete' || event.key === 'Backspace') &&
+        !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        deleteSelectedCells();
+      }
+    };
+    const onContextDismiss = event => {
+      if (contextMenu && !contextMenu.contains(event.target)) closeContextMenu();
+    };
+    document.addEventListener('pointermove', onDragPointerMove, true);
+    document.addEventListener('pointerup', onDragPointerEnd, true);
+    document.addEventListener('pointercancel', onDragPointerEnd, true);
+    document.addEventListener('keydown', onSelectionKeydown, true);
+    document.addEventListener('pointerdown', onContextDismiss, true);
     rerender();
 
     return {
@@ -1273,6 +1427,12 @@ function nocodbMarkdownTablePageMain() {
       },
       destroy() {
         if (destroyed) return;
+        closeContextMenu();
+        document.removeEventListener('pointermove', onDragPointerMove, true);
+        document.removeEventListener('pointerup', onDragPointerEnd, true);
+        document.removeEventListener('pointercancel', onDragPointerEnd, true);
+        document.removeEventListener('keydown', onSelectionKeydown, true);
+        document.removeEventListener('pointerdown', onContextDismiss, true);
         stopOutsideAutoSave();
         stopOutsideDeleteConfirm();
         destroyed = true;
