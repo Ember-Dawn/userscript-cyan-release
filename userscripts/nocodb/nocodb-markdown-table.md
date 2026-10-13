@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.0（实验性表格编辑引擎）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.1（原位单元格编辑实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -19,13 +19,14 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 
 旧标记 `[[NOCODB_MARKDOWN_TABLE_V1]]` 继续支持读取。不要在复制功能或 Markdown 正常导出中暴露该内部标记。每张新增表格生成独立 ID；保存通过 ProseMirror transaction 替换原代码块，沿用 NocoDB 的持久化流程。
 
-## UI 与交互
+## UI 与交互（v0.3.1）
 
-- 浏览时只显示表格；悬停右上角依次显示 **复制、编辑、删除**。
-- 复制只写入规范化的 Markdown 表格源码（无内部标记和代码围栏），优先使用 `navigator.clipboard.writeText`；成功或失败显示 Toast。编辑模式不提供复制入口，以免复制未保存内容。
-- 双击单元格或点击编辑按钮进入编辑态；顶部提供新增行、新增列、取消、保存；行列细项在对应三点菜单。
-- 点击编辑中的表格外部自动保存；未修改时直接退出；保存失败保留编辑态并尽量阻止外部切换。删除需要二次确认。
-- 所有列均左对齐；输入对齐分隔符 `:---`、`:---:`、`---:` 时可以读取，但重新保存统一使用 `---`。
+- **只有一套表格 DOM**：阅读与编辑不再切换界面，单击表头或单元格即在原位获得光标（`contenteditable=plaintext-only`）；不再创建隔离的 Tiptap 实例、弹出编辑框、切换旧版 `<input>` 界面或尝试回退。
+- 仅保留表格悬停的复制与删除按钮；删除需二次确认。取消表格整体「编辑」按钮、双击进入编辑态、顶部行列工具栏。
+- `Tab` / `Shift+Tab` 在表头及普通单元格间跳转；最后一个单元格按 `Tab` 可新增一行。`Enter` 阻止产生多段落，`Esc` 离开当前单元格焦点；右键单元格弹出插入/删除行列菜单。
+- 修改保存在 NodeView 的本地草稿；点击表格外部时与之前一样检测变化并用单个 ProseMirror transaction 更新代码块。未修改不产生事务；保存失败保留草稿并阻止当前外部点击。
+- 单元格只支持**单行纯文本内容**；文字中的 Markdown 标记以源码形式保留，不在单元格嵌套新的富文本编辑器。复杂单元格、合并单元格、拖动列宽均不在 GFM 功能范围。
+- 内部依旧通过 `nocodb-table` `codeBlock` 承载。由于 NocoDB 原生 LongText Schema 不支持 `table`，本版本**不是裸 GFM 文本直接保存在底层 LongText 字段**；复制及配合导出脚本的最终输出是标准 Markdown 表格。
 
 ## Markdown 粘贴处理
 
@@ -69,20 +70,18 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - Console 报错带有阶段码：`markdown-parser-unavailable`、`markdown-to-html-failed`、`tiptap-html-insert-failed`、`tiptap-html-insert-rejected`、`table-codeblock-not-preserved` 等，方便定位实际环境中的进一步兼容性问题。
 - 仍需在真实 NocoDB 进行端到端验证：特别检查表格作为 `codeBlock` 的保留、四张表的顺序、混合正文格式和撤销。
 
-## v0.3.0：独立 Tiptap 表格编辑原型（需实际浏览器验收）
+## v0.3.1 原位编辑重构
 
-- 原 NocoDB Rich Text 实例保持原样，不增删其 schema 节点。点击编辑时尝试利用 NocoDB 页面现有的 `Editor` 构造器及 `Node.create` 创建 **隔离的 Tiptap 表格实例**，其中包含 `table/tableRow/tableHeader/tableCell` 节点；仅编辑表格，不接管全文。
-- 不通过 CDN 加载第三方库；无法在当前 NocoDB 运行时取得构造器或节点工厂、创建失败时，记录警告并自动回退为 v0.2.2 的基础 input 编辑表格，以免阻断原有功能。
-- 表格编辑通过独立实例 `onUpdate` 提取纯文本单元格数据并同步到本地草稿；点击保存或外部自动保存时，再由宿主 ProseMirror transaction 一次性替换代码块。取消则丢弃草稿。
-- 独立表格支持单元格内编辑、Tab/Shift+Tab 导航；右键可以新增/删除行列；顶部保留新增行、列以及保存/取消；没有实现合并单元格、拖动列宽等非 GFM 功能。
-- **本版尚未实现 GFM 表格直接作为 LongText 富文本的裸文本存储**：宿主 Schema 仍不支持 `table`，旧有 `nocodb-table` codeBlock 目前仍是防止数据被压平的载体。复制和正常导出仍为标准 GFM 表格。无需做旧表格迁移，但该载体需要后续验证后才能考虑替换；不能因为用户没有旧数据就直接取消载体。
-- 解决粘贴时一种重要保真风险：混合 Markdown 的 fenced 代码块先由分段器独立提取，以 `textContent` 创建 `<pre><code>`，不再把其中的 `#####` 注释和换行交给 MarkdownIt 的 HTML 修正器处理。**尚须真实 NocoDB 粘贴验证**。列表的有序/无序类型和视觉间距尚未完成宿主端验收，不能标为已修复。
-- 自动化只完成脚本语法测试、实际上传文档的 4 表格/2 代码围栏分段测试、Bash 注释换行保留测试及表格文本往返测试；**没有验证独立 Tiptap 运行、保存、页面刷新、焦点和撤销**。不建议直接替换重要生产数据上的旧脚本；先复制记录进行测试。
+- 废弃 v0.3.0 独立 Tiptap 实验引擎以及失败回退，不再加载第二个编辑器实例。取消旧版输入框模式，不在阅读与编辑时重建不同的表格视图。
+- 直接复用 NodeView 内部显示的 `table`，可编辑单元格不经独立弹窗；失焦或单击外部仍沿用已有草稿保存路径。
+- 本次只重构表格交互。混合 Markdown 粘贴中列表类型、代码围栏、CSS 间距等之前发现的实际页面差异**尚未全部完成端到端修复**，不可宣称已全部解决。
+- 本地完成 JavaScript 语法及静态结构检查；需要在真实 NocoDB 页面用测试记录验证焦点、中文输入法、Tab、右键菜单、自动保存及刷新后恢复。
+- NocoDB 原生编辑器不支持表格节点，本脚本仍使用特殊代码块格式来确保数据在 NocoDB LongText 中可持久化；关闭脚本后应能恢复表格 Markdown 源码，但不会出现原生 HTML 表格。
 
-### 首轮浏览器测试顺序
+### 浏览器验收建议
 
-1. 复制一条测试记录，确认编辑器打开，普通正文仍然可输入。
-2. 贴入最小 GFM 表格，点击表格编辑按钮：如果 Console 输出 `无法初始化独立 Tiptap`，记录具体错误；UI 会回退到旧版 input 模式。
-3. 如果启动成功，直接编辑单元格，Tab/Shift+Tab 切换，右键增删行列；点击取消确认无写入；再次编辑、保存、刷新确认恢复。
-4. 用含 4 张表格和 2 个 fenced 代码块的服务器维护 Markdown 测试混合粘贴，特别检查 Bash `#####` 注释与后继变量赋值行有无粘连。
-5. 检查 Markdown 复制、导出和其他脚本共存，若遇到异常立即关闭本脚本，原始字段数据不进行迁移。
+1. 在测试记录粘贴简单 GFM 表格，**单击**任意单元格，应立即出现原位光标，没有工具栏或第二编辑区域。
+2. 编辑表头与数据行，测试 Tab/Shift+Tab、末尾 Tab 新增行、右键增删行列。
+3. 点击外部自动保存，重新打开记录核对内容；无改动点击外部不应产生事务。
+4. 测试复制 GFM、删除确认、两个以上表格、中文输入法、粘贴文字以及保存失败时草稿保留。
+5. 使用原始包含 4 张表格及 Bash 围栏代码的文档检查混合粘贴，特别检查换行和列表层级；这些场景不因本次表格 UI 重构而自动视为通过。
