@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js
-// @version      0.1.6
+// @version      0.1.7
 // @description  NocoDB Rich Text 视觉样式增强：H1-H6 彩虹标题、加粗与特定符号文本改色，将顶层段落与列表间距设为 NocoDB 默认值，并显示列表层级引导线；不修改原文内容。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -143,7 +143,7 @@
         position: absolute;
         top: 0;
         bottom: 0;
-        left: -0.5em;
+        left: -1em;
         width: 1px;
         background-color: currentColor;
         opacity: 0.22;
