@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.3（原位编辑、历史及节点级粘贴实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.4（原位编辑撤销隔离与 Markdown 剪贴板实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -105,3 +105,12 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - 粘贴成功后保存并重新打开，逐字符核对 Bash 代码。事务内保真检查不等于数据库往返保真。
 - 在单元格内编辑连续文字后 Ctrl+Z/Ctrl+Y；分别测试行列删除、拖拽清空、Enter 新增行的撤销/重做；再点击表格外保存，检查 NocoDB 自身撤销整张表格修改。
 - 验证菜单 SVG、鼠标附近定位、焦点、中文输入法、删除确认及外部保存。
+
+## v0.3.4 Undo/Redo 与 Markdown 剪贴板
+
+- 在表格焦点或拖拽单元格选区中，通过捕获阶段拦截 Ctrl/Cmd+Z、Ctrl/Cmd+Y、Ctrl/Cmd+Shift+Z；同时拦截单元格内 `beforeinput` 的 `historyUndo/historyRedo`，即使草稿历史为空也不让快捷键落入 NocoDB 原生文档历史。正文外的原生历史不接管。
+- 草稿历史保存表格快照与当前单元格光标偏移，撤销/重做后恢复对应光标。切换单元格立即中断连续输入合并；中文输入法期间不执行撤销命令。真实浏览器的输入法、鼠标选区需要现场验收。
+- 只在当前表格有矩形拖拽选区时拦截 Ctrl/Cmd+C、Ctrl/Cmd+X 对应的原生 `copy`/`cut` 事件；`text/plain` 输出标准 GFM Markdown，附带 `text/html` 表格，不包含内部 `nocodb-table` 标记。单元格纯文字选择、普通正文或正文与表格混合选区保持原生行为；本版**不支持**混合正文 + 表格的统一 Markdown 复制。
+- 选中全表（含表头及全部数据）剪切时，成功写入剪贴板后删除整张 NodeView 对应的 ProseMirror 节点；其余矩形选区剪切仅清空所选单元格，并作为一个草稿撤销步骤。全表删除后的撤销交给 NocoDB 原生文档历史。
+- v0.3.3 已通过用户验证的节点级混合 Markdown 粘贴引擎不作修改。
+- 回归测试：依次编辑两格、连续撤销两次、第三次不应影响 NocoDB 历史；检查光标；整表/部分单元格拖选后 Ctrl+C、Ctrl+X，检查 Clipboard `text/plain` 的 GFM 格式、完整性，以及失败剪切是否保留内容。

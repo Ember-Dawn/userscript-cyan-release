@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      0.3.3
+// @version      0.3.4
 // @description  在 NocoDB Rich Text 中内嵌显示 Markdown 表格并直接编辑单元格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -897,6 +897,8 @@ function nocodbMarkdownTablePageMain() {
     const undoStack = [];
     const redoStack = [];
     let lastTextEdit = { row: null, col: null, time: 0 };
+    let activeCell = null;
+    let composing = false;
 
     const dom = document.createElement('div');
     dom.className = NODEVIEW_CLASS;
@@ -1112,35 +1114,157 @@ function nocodbMarkdownTablePageMain() {
       dom.querySelector('.tm-nmt-inline-table')?.classList.remove('tm-nmt-drag-selecting');
     }
 
-    function recordUndo(before) {
+    function captureCaret() {
+      const cell = document.activeElement?.closest?.('.tm-nmt-inline-content');
+      if (!cell || !dom.contains(cell)) return activeCell ? { ...activeCell } : null;
+      const location = { row: Number(cell.dataset.row), col: Number(cell.dataset.col), anchor: 0, focus: 0 };
+      const selection = window.getSelection();
+      if (selection?.rangeCount && cell.contains(selection.anchorNode) && cell.contains(selection.focusNode)) {
+        const offset = (node, value) => {
+          const r = document.createRange();
+          r.selectNodeContents(cell);
+          r.setEnd(node, value);
+          return r.toString().length;
+        };
+        try {
+          location.anchor = offset(selection.anchorNode, selection.anchorOffset);
+          location.focus = offset(selection.focusNode, selection.focusOffset);
+        } catch (_) {}
+      } else if (activeCell?.row === location.row && activeCell?.col === location.col) {
+        location.anchor = activeCell.anchor;
+        location.focus = activeCell.focus;
+      }
+      return location;
+    }
+
+    function setCaret(place) {
+      if (!place) return;
+      const cell = dom.querySelector(`.tm-nmt-inline-content[data-row="${place.row}"][data-col="${place.col}"]`);
+      if (!cell) return;
+      cell.focus({ preventScroll: true });
+      // Cells are plaintext-only; use a DOM Range so redo/undo does not reset to column zero.
+      const nodes = [];
+      const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node);
+      if (!nodes.length) cell.appendChild(document.createTextNode(''));
+      const textNodes = nodes.length ? nodes : [cell.firstChild];
+      const point = value => {
+        let remaining = Math.max(0, value ?? 0);
+        for (const node of textNodes) {
+          if (remaining <= node.textContent.length) return { node, offset: remaining };
+          remaining -= node.textContent.length;
+        }
+        const node = textNodes[textNodes.length - 1];
+        return { node, offset: node.textContent.length };
+      };
+      try {
+        const a = point(place.anchor), f = point(place.focus);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        if (typeof sel.setBaseAndExtent === 'function') sel.setBaseAndExtent(a.node, a.offset, f.node, f.offset);
+        else { const r = document.createRange(); r.setStart(f.node, f.offset); r.collapse(true); sel.addRange(r); }
+      } catch (_) {}
+      activeCell = { ...place };
+    }
+
+    function recordUndo(before, caret = captureCaret()) {
       if (!before) return;
       if (undoStack.length >= 80) undoStack.shift();
-      undoStack.push(cloneModel(before));
+      undoStack.push({ model: cloneModel(before), caret: caret && { ...caret } });
       redoStack.length = 0;
     }
 
-    function restoreHistory(source, target, row, col) {
+    function restoreHistory(source, target) {
       if (!editing || !draft || !source.length) return false;
-      target.push(cloneModel(draft));
-      draft = source.pop();
+      const currentCaret = captureCaret();
+      target.push({ model: cloneModel(draft), caret: currentCaret });
+      const item = source.pop();
+      draft = cloneModel(item.model);
       lastTextEdit.time = 0;
       clearSelectionRange();
       rerender();
-      const focus = dom.querySelector(`.tm-nmt-inline-content[data-row="${row}"][data-col="${col}"]`);
-      focus?.focus({ preventScroll: true });
+      setCaret(item.caret || currentCaret);
       return true;
     }
 
-    function handleTableHistory(event, row, col) {
-      if (!editing || !draft || !(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing) return false;
-      const key = event.key.toLowerCase();
-      const undo = key === 'z' && !event.shiftKey;
-      const redo = (key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey);
-      if (!undo && !redo) return false;
+    function historyCommand(event) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing || composing) return null;
+      const key = event.key?.toLowerCase();
+      if (key === 'z') return event.shiftKey ? 'redo' : 'undo';
+      if (key === 'y' && !event.shiftKey) return 'redo';
+      return null;
+    }
+
+    function handleTableHistory(event) {
+      const command = historyCommand(event);
+      if (!command || !isEditable()) return false;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      restoreHistory(undo ? undoStack : redoStack, undo ? redoStack : undoStack, row, col);
+      if (editing && draft) restoreHistory(command === 'undo' ? undoStack : redoStack, command === 'undo' ? redoStack : undoStack);
+      return true; // no draft history must NEVER fall through to NocoDB undo
+    }
+
+    function selectionIsWholeTable(range, model) {
+      return !!range && range.r1 === -1 && range.r2 === model.rows.length - 1 &&
+        range.c1 === 0 && range.c2 === model.headers.length - 1;
+    }
+
+    function selectedMarkdown(range, model) {
+      const cells = [];
+      for (let r = range.r1; r <= range.r2; r++) {
+        cells.push((r === -1 ? model.headers : model.rows[r]).slice(range.c1, range.c2 + 1));
+      }
+      return serializeMarkdownTable({ headers: cells[0], rows: cells.slice(1) });
+    }
+
+    function selectedHtml(range, model) {
+      const table = document.createElement('table');
+      for (let r = range.r1; r <= range.r2; r++) {
+        const tr = document.createElement('tr');
+        (r === -1 ? model.headers : model.rows[r]).slice(range.c1, range.c2 + 1).forEach(text => {
+          const td = document.createElement(r === range.r1 ? 'th' : 'td');
+          td.textContent = text;
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      }
+      return table.outerHTML;
+    }
+
+    function cutSelectedRange(range) {
+      const model = draft || stored.model;
+      if (selectionIsWholeTable(range, model)) return deleteTable();
+      if (!editing) enterEditing();
+      const previous = cloneModel(draft);
+      for (let r = range.r1; r <= range.r2; r++) {
+        for (let c = range.c1; c <= range.c2; c++) {
+          if (r === -1) draft.headers[c] = '';
+          else draft.rows[r][c] = '';
+        }
+      }
+      if (modelHash(previous) !== modelHash(draft)) recordUndo(previous);
+      lastTextEdit.time = 0;
+      clearSelectionRange();
+      rerender();
+      return true;
+    }
+
+    function handleSelectedClipboard(event) {
+      const range = normalizedSelection();
+      if (!range || !isEditable() || !event.clipboardData) return false;
+      const model = draft || stored.model;
+      const data = selectedMarkdown(range, model);
+      const html = selectedHtml(range, model);
+      try {
+        event.clipboardData.setData('text/plain', data);
+        event.clipboardData.setData('text/html', html);
+      } catch (_) { return false; }
+      if (event.clipboardData.getData('text/plain') !== data) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (event.type === 'cut') cutSelectedRange(range);
       return true;
     }
 
@@ -1341,7 +1465,13 @@ function nocodbMarkdownTablePageMain() {
         span.setAttribute('aria-label', `第 ${row + 2} 行，第 ${col + 1} 列`);
         span.addEventListener('focus', () => {
           if (!editing) enterEditing();
+          activeCell = { row, col, anchor: 0, focus: 0 };
+          lastTextEdit.time = 0;
         });
+        span.addEventListener('compositionstart', () => { composing = true; });
+        span.addEventListener('compositionend', () => { composing = false; lastTextEdit.time = 0; });
+        span.addEventListener('keyup', () => { activeCell = captureCaret(); });
+        span.addEventListener('mouseup', () => { activeCell = captureCaret(); });
         span.addEventListener('pointerdown', e => {
           if (e.button !== 0 || !isEditable()) return;
           clearSelectionRange();
@@ -1359,7 +1489,9 @@ function nocodbMarkdownTablePageMain() {
           if (previous === clean) return;
           const now = Date.now();
           if (lastTextEdit.row !== row || lastTextEdit.col !== col || now - lastTextEdit.time > 850) {
-            recordUndo(draft);
+            const caret = captureCaret();
+            const beforeCaret = caret ? { ...caret, anchor: Math.min(caret.anchor, String(previous).length), focus: Math.min(caret.focus, String(previous).length) } : null;
+            recordUndo(draft, beforeCaret);
           }
           lastTextEdit = { row, col, time: now };
           if (row === -1) draft.headers[col] = clean;
@@ -1383,7 +1515,7 @@ function nocodbMarkdownTablePageMain() {
           }
         });
         span.addEventListener('keydown', e => {
-          if (handleTableHistory(e, row, col)) return;
+          if (handleTableHistory(e)) return;
           e.stopPropagation();
           if (e.key === 'Escape') {
             if (selectionRange) { e.preventDefault(); clearSelectionRange(); return; }
@@ -1450,7 +1582,12 @@ function nocodbMarkdownTablePageMain() {
       if (event.pointerId === dragPointerId) finishCellDrag();
     };
     const onSelectionKeydown = event => {
-      if (!selectionRange || !dom.isConnected) return;
+      if (!dom.isConnected) return;
+      const inside = dom.contains(event.target);
+      // Capture precedes NocoDB's bubbling keymap. The selection also needs
+      // a dedicated scope because a dragged range may no longer own DOM focus.
+      if ((inside || selectionRange) && handleTableHistory(event)) return;
+      if (!selectionRange) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         clearSelectionRange();
@@ -1464,11 +1601,27 @@ function nocodbMarkdownTablePageMain() {
     };
     const onContextDismiss = event => {
       if (contextMenu && !contextMenu.contains(event.target)) closeContextMenu();
+      if (selectionRange && !dom.contains(event.target) && !contextMenu?.contains(event.target)) clearSelectionRange();
     };
     document.addEventListener('pointermove', onDragPointerMove, true);
     document.addEventListener('pointerup', onDragPointerEnd, true);
     document.addEventListener('pointercancel', onDragPointerEnd, true);
+    const onHistoryBeforeInput = event => {
+      if (!dom.contains(event.target) || !['historyUndo', 'historyRedo'].includes(event.inputType)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (editing && draft && !composing) restoreHistory(event.inputType === 'historyUndo' ? undoStack : redoStack,
+        event.inputType === 'historyUndo' ? redoStack : undoStack);
+    };
+    const onTableClipboard = event => {
+      if (!selectionRange || !dom.isConnected || !['copy','cut'].includes(event.type)) return;
+      handleSelectedClipboard(event);
+    };
     document.addEventListener('keydown', onSelectionKeydown, true);
+    document.addEventListener('beforeinput', onHistoryBeforeInput, true);
+    document.addEventListener('copy', onTableClipboard, true);
+    document.addEventListener('cut', onTableClipboard, true);
     document.addEventListener('pointerdown', onContextDismiss, true);
     rerender();
 
@@ -1520,6 +1673,9 @@ function nocodbMarkdownTablePageMain() {
         document.removeEventListener('pointerup', onDragPointerEnd, true);
         document.removeEventListener('pointercancel', onDragPointerEnd, true);
         document.removeEventListener('keydown', onSelectionKeydown, true);
+        document.removeEventListener('beforeinput', onHistoryBeforeInput, true);
+        document.removeEventListener('copy', onTableClipboard, true);
+        document.removeEventListener('cut', onTableClipboard, true);
         document.removeEventListener('pointerdown', onContextDismiss, true);
         stopOutsideAutoSave();
         stopOutsideDeleteConfirm();
