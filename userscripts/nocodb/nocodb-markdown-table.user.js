@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      0.3.4
+// @version      0.3.5
 // @description  在 NocoDB Rich Text 中内嵌显示 Markdown 表格并直接编辑单元格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -899,6 +899,9 @@ function nocodbMarkdownTablePageMain() {
     let lastTextEdit = { row: null, col: null, time: 0 };
     let activeCell = null;
     let composing = false;
+    let pendingTextInput = null;
+    let editBaseHash = null;
+    let tableKeyboardOwner = false;
 
     const dom = document.createElement('div');
     dom.className = NODEVIEW_CLASS;
@@ -928,7 +931,7 @@ function nocodbMarkdownTablePageMain() {
         if (target instanceof Node && (dom.contains(target) || contextMenu?.contains(target))) return;
 
         const saved = saveEditing();
-        if (saved) return;
+        if (saved) { tableKeyboardOwner = false; return; }
 
         // 保存失败时保留编辑状态，并阻止关闭弹窗、切换记录等外部操作。
         event.preventDefault();
@@ -1065,6 +1068,10 @@ function nocodbMarkdownTablePageMain() {
       contextMenu = null;
     }
 
+    function cloneRange(range) {
+      return range ? { start: { ...range.start }, end: { ...range.end } } : null;
+    }
+
     function clearSelectionRange() {
       selectionRange = null;
       dragAnchor = null;
@@ -1167,24 +1174,50 @@ function nocodbMarkdownTablePageMain() {
       activeCell = { ...place };
     }
 
-    function recordUndo(before, caret = captureCaret()) {
+    function recordUndo(before, caret = captureCaret(), range = cloneRange(selectionRange)) {
       if (!before) return;
       if (undoStack.length >= 80) undoStack.shift();
-      undoStack.push({ model: cloneModel(before), caret: caret && { ...caret } });
+      undoStack.push({ model: cloneModel(before), caret: caret && { ...caret }, range: cloneRange(range) });
       redoStack.length = 0;
     }
 
     function restoreHistory(source, target) {
       if (!editing || !draft || !source.length) return false;
       const currentCaret = captureCaret();
-      target.push({ model: cloneModel(draft), caret: currentCaret });
+      target.push({ model: cloneModel(draft), caret: currentCaret, range: cloneRange(selectionRange) });
       const item = source.pop();
       draft = cloneModel(item.model);
       lastTextEdit.time = 0;
+      pendingTextInput = null;
       clearSelectionRange();
       rerender();
-      setCaret(item.caret || currentCaret);
+      if (item.range) {
+        selectionRange = cloneRange(item.range);
+        paintSelection();
+      }
+      // Even when a range is highlighted, a real, connected cell must own focus.
+      const fallback = item.range?.start || item.caret || currentCaret || { row: -1, col: 0 };
+      const cell = closestExistingCell(fallback.row, fallback.col);
+      if (cell) setCaret({ row: cell.row, col: cell.col,
+        anchor: item.range ? 0 : (item.caret?.anchor ?? 0),
+        focus: item.range ? 0 : (item.caret?.focus ?? 0) });
+      tableKeyboardOwner = true;
       return true;
+    }
+
+    function closestExistingCell(row, col) {
+      const model = draft || stored.model;
+      const safeRow = Math.max(-1, Math.min(row, model.rows.length - 1));
+      const safeCol = Math.max(0, Math.min(col, model.headers.length - 1));
+      const candidate = dom.querySelector(`.tm-nmt-inline-content[data-row="${safeRow}"][data-col="${safeCol}"]`);
+      return candidate ? { row: safeRow, col: safeCol } : null;
+    }
+
+    function restoreFocusAfterStructuralEdit(preferred) {
+      const position = closestExistingCell(preferred?.row ?? -1, preferred?.col ?? 0);
+      if (!position) return;
+      setCaret({ ...position, anchor: 0, focus: 0 });
+      tableKeyboardOwner = true;
     }
 
     function historyCommand(event) {
@@ -1243,10 +1276,12 @@ function nocodbMarkdownTablePageMain() {
           else draft.rows[r][c] = '';
         }
       }
-      if (modelHash(previous) !== modelHash(draft)) recordUndo(previous);
+      if (modelHash(previous) !== modelHash(draft)) recordUndo(previous, captureCaret(), cloneRange(selectionRange));
       lastTextEdit.time = 0;
+      const preferred = { row: range.r1, col: range.c1 };
       clearSelectionRange();
       rerender();
+      restoreFocusAfterStructuralEdit(preferred);
       return true;
     }
 
@@ -1298,10 +1333,13 @@ function nocodbMarkdownTablePageMain() {
           }
         }
       }
-      if (modelHash(beforeSelectionDelete) !== modelHash(draft)) recordUndo(beforeSelectionDelete);
+      if (modelHash(beforeSelectionDelete) !== modelHash(draft))
+        recordUndo(beforeSelectionDelete, captureCaret(), cloneRange(selectionRange));
       lastTextEdit.time = 0;
+      const preferred = { row: range.r1, col: range.c1 };
       clearSelectionRange();
       rerender();
+      restoreFocusAfterStructuralEdit(preferred);
       return true;
     }
 
@@ -1310,7 +1348,9 @@ function nocodbMarkdownTablePageMain() {
       stopOutsideDeleteConfirm();
       confirmingDelete = false;
       editing = true;
+      tableKeyboardOwner = true;
       draft = cloneModel(stored.model);
+      editBaseHash = stored.sourceHash;
       undoStack.length = 0;
       redoStack.length = 0;
       lastTextEdit.time = 0;
@@ -1324,12 +1364,19 @@ function nocodbMarkdownTablePageMain() {
 
     function saveEditing() {
       if (!draft) return true;
+      if (editBaseHash !== null && stored.sourceHash !== editBaseHash) {
+        showToast('保存已阻止：底层表格发生变化，编辑草稿仍保留。', 'error', 4200);
+        return false;
+      }
 
       // 没有实际修改时只退出编辑，不产生无意义的 ProseMirror transaction。
       if (modelHash(draft) === modelHash(stored.model)) {
         stopOutsideAutoSave();
         editing = false;
         draft = null;
+        pendingTextInput = null;
+        editBaseHash = null;
+        tableKeyboardOwner = false;
         rerender();
         return true;
       }
@@ -1374,6 +1421,9 @@ function nocodbMarkdownTablePageMain() {
       stopOutsideAutoSave();
       editing = false;
       draft = null;
+      pendingTextInput = null;
+      editBaseHash = null;
+      tableKeyboardOwner = false;
 
       try {
         editorView.dispatch(
@@ -1384,6 +1434,7 @@ function nocodbMarkdownTablePageMain() {
       } catch (_) {
         editing = true;
         draft = nextModel;
+        editBaseHash = stored.sourceHash;
         startOutsideAutoSave();
         showToast('保存失败：NocoDB 拒绝了本次表格更新。', 'error', 3600);
         rerender();
@@ -1465,11 +1516,22 @@ function nocodbMarkdownTablePageMain() {
         span.setAttribute('aria-label', `第 ${row + 2} 行，第 ${col + 1} 列`);
         span.addEventListener('focus', () => {
           if (!editing) enterEditing();
-          activeCell = { row, col, anchor: 0, focus: 0 };
+          tableKeyboardOwner = true;
+          activeCell = captureCaret() || { row, col, anchor: 0, focus: 0 };
           lastTextEdit.time = 0;
         });
-        span.addEventListener('compositionstart', () => { composing = true; });
-        span.addEventListener('compositionend', () => { composing = false; lastTextEdit.time = 0; });
+        span.addEventListener('beforeinput', e => {
+          if (e.inputType === 'historyUndo' || e.inputType === 'historyRedo') return;
+          if (!editing) enterEditing();
+          if (e.isComposing || composing) return;
+          pendingTextInput = {
+            row, col,
+            caret: captureCaret(),
+            before: draft ? cloneModel(draft) : null,
+          };
+        });
+        span.addEventListener('compositionstart', () => { composing = true; pendingTextInput = null; });
+        span.addEventListener('compositionend', () => { composing = false; lastTextEdit.time = 0; pendingTextInput = null; });
         span.addEventListener('keyup', () => { activeCell = captureCaret(); });
         span.addEventListener('mouseup', () => { activeCell = captureCaret(); });
         span.addEventListener('pointerdown', e => {
@@ -1488,11 +1550,13 @@ function nocodbMarkdownTablePageMain() {
           const previous = row === -1 ? draft.headers[col] : draft.rows[row][col];
           if (previous === clean) return;
           const now = Date.now();
+          const pending = pendingTextInput?.row === row && pendingTextInput?.col === col ? pendingTextInput : null;
           if (lastTextEdit.row !== row || lastTextEdit.col !== col || now - lastTextEdit.time > 850) {
-            const caret = captureCaret();
-            const beforeCaret = caret ? { ...caret, anchor: Math.min(caret.anchor, String(previous).length), focus: Math.min(caret.focus, String(previous).length) } : null;
-            recordUndo(draft, beforeCaret);
+            // beforeinput captures the actual caret BEFORE the browser changes text.
+            const caret = pending?.caret || activeCell || captureCaret();
+            recordUndo(pending?.before || draft, caret);
           }
+          pendingTextInput = null;
           lastTextEdit = { row, col, time: now };
           if (row === -1) draft.headers[col] = clean;
           else draft.rows[row][col] = clean;
@@ -1586,7 +1650,7 @@ function nocodbMarkdownTablePageMain() {
       const inside = dom.contains(event.target);
       // Capture precedes NocoDB's bubbling keymap. The selection also needs
       // a dedicated scope because a dragged range may no longer own DOM focus.
-      if ((inside || selectionRange) && handleTableHistory(event)) return;
+      if ((inside || selectionRange || (tableKeyboardOwner && editing && document.activeElement === document.body)) && handleTableHistory(event)) return;
       if (!selectionRange) return;
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -1602,6 +1666,7 @@ function nocodbMarkdownTablePageMain() {
     const onContextDismiss = event => {
       if (contextMenu && !contextMenu.contains(event.target)) closeContextMenu();
       if (selectionRange && !dom.contains(event.target) && !contextMenu?.contains(event.target)) clearSelectionRange();
+      if (!dom.contains(event.target) && !contextMenu?.contains(event.target)) tableKeyboardOwner = false;
     };
     document.addEventListener('pointermove', onDragPointerMove, true);
     document.addEventListener('pointerup', onDragPointerEnd, true);
@@ -1641,10 +1706,9 @@ function nocodbMarkdownTablePageMain() {
         stored = nextStored;
 
         if (changed && editing) {
-          stopOutsideAutoSave();
-          editing = false;
-          draft = null;
-          showToast('表格已在其他位置更新，未保存的编辑已取消。', 'error', 3600);
+          // An actual external update must not silently discard unsaved user input.
+          // Keep the draft visible and refuse to overwrite the changed node on save.
+          showToast('表格底层内容已变化，当前草稿已保留；请先复制草稿再处理冲突。', 'error', 4200);
         }
         if (changed && confirmingDelete) {
           stopOutsideDeleteConfirm();

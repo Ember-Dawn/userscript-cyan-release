@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.4（原位编辑撤销隔离与 Markdown 剪贴板实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.5（表格焦点、选区与撤销状态修复实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -44,6 +44,23 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - 行列增删、Enter/Tab 插入行、拖拽范围 Delete 进入同一草稿历史。退出表格并提交后，整次代码块替换由 NocoDB ProseMirror 自身历史管理，表格草稿历史不跨保存保留。
 - 右键菜单使用本地白名单 SVG 路径绘制 16px 自绘图标，不加载远程图标字体。
 - 不存在完整实时协同编辑的合并保障；保存时依旧应保护草稿，不因外部事件静默丢弃。
+
+## v0.3.5 焦点与撤销一致性修复
+
+- 多单元格选区 Delete/Backspace 或剪切后，先记录选区与草稿快照，再重建表格并**主动聚焦有效单元格**；删除整行/列时对位置进行边界裁剪，防止 DOM 重建后焦点丢失、Ctrl+Z 误进入 NocoDB 原生历史。
+- 草稿历史快照包含矩形选区；Undo 恢复删除前的表格内容、选区高亮与真实单元格焦点。Redo 恢复删除后的内容和焦点。脚本不会把未提交草稿 Undo 转成宿主 ProseMirror 事务。
+- 单元格普通输入使用 `beforeinput` 获取编辑前光标及草稿；`input` 在浏览器完成编辑后记录相应撤销步骤，修复 Backspace 后撤销光标落后一位的问题；中文 IME 组合阶段不抓取中间撤销快照。
+- Ctrl/Cmd+Z/Y/Shift+Z 在表格键盘焦点或有效选区内接管；即使草稿栈为空也不得转交宿主 Undo。表格外点击结束接管后仍按现有方式自动提交，NocoDB 自身管理已提交事务的历史。
+- `NodeView.update()` 检测到非本地表格数据变化时**保留未提交草稿**并告警；保存时用编辑基线哈希阻止覆盖冲突数据，避免此前的“未保存的编辑已取消”直接丢失用户输入。出现冲突时应先复制草稿，并确认后续处理方案。
+- 此版本仅改动表格事件、历史、焦点和保存冲突保护；v0.3.3 已经验证正常的 ProseMirror 节点级混合 Markdown 粘贴逻辑不变，剪贴板标准 GFM 输出逻辑不变。
+
+### v0.3.5 必测场景
+
+1. 光标在文字结尾 Backspace 删除一个字，Ctrl+Z 恢复后光标回到结尾，再 Ctrl+Y 正常重做。
+2. 拖选两个以上单元格，按 Delete 清空，再 Ctrl+Z 恢复原来的矩形选区和内容；连续 Ctrl+Z 不撤销宿主整张表格。
+3. 选中整行/列 Delete，Ctrl+Z 恢复结构，Ctrl+Y 重做；焦点始终处于有效单元格。
+4. 点击表格外执行提交，正文中使用 Ctrl+Z 依然由 NocoDB 历史管理。
+5. 代码块中 `#####`、反斜杠、空行及表格混合粘贴保持原样。
 
 ## 性能和边界
 
