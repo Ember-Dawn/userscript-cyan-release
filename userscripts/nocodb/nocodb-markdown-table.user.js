@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      0.3.5
+// @version      0.3.6
 // @description  在 NocoDB Rich Text 中内嵌显示 Markdown 表格并直接编辑单元格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -885,11 +885,11 @@ function nocodbMarkdownTablePageMain() {
     let stored = initialStored;
     let editing = false;
     let draft = null;
-    let confirmingDelete = false;
     let outsidePointerDownHandler = null;
-    let outsideDeleteConfirmHandler = null;
     let destroyed = false;
     let contextMenu = null;
+    let contextMenuHost = null;
+    let contextMenuHostPosition = null;
     let selectionRange = null;
     let dragAnchor = null;
     let dragPointerId = null;
@@ -942,51 +942,14 @@ function nocodbMarkdownTablePageMain() {
       document.addEventListener('pointerdown', outsidePointerDownHandler, true);
     }
 
-    function stopOutsideDeleteConfirm() {
-      if (!outsideDeleteConfirmHandler) return;
-      document.removeEventListener('pointerdown', outsideDeleteConfirmHandler, true);
-      outsideDeleteConfirmHandler = null;
-    }
-
-    function hideDeleteConfirm() {
-      stopOutsideDeleteConfirm();
-      if (!confirmingDelete) return;
-      confirmingDelete = false;
-      rerender();
-    }
-
-    function startOutsideDeleteConfirm() {
-      if (outsideDeleteConfirmHandler || destroyed) return;
-
-      outsideDeleteConfirmHandler = (event) => {
-        if (!confirmingDelete || destroyed) return;
-        const target = event.target;
-        if (target instanceof Node && dom.contains(target)) return;
-        hideDeleteConfirm();
-      };
-
-      document.addEventListener('pointerdown', outsideDeleteConfirmHandler, true);
-    }
-
-    function showDeleteConfirm() {
-      if (!isEditable() || destroyed) return;
-      closeContextMenu();
-      clearSelectionRange();
-      confirmingDelete = true;
-      rerender();
-      startOutsideDeleteConfirm();
-    }
-
+    // Deletion is immediate. The current unsaved draft becomes the undo-restored
+    // table via a non-history replacement before the history-tracked deletion.
     function deleteTable() {
+      if (!isEditable() || destroyed) return false;
+      closeContextMenu();
       let position;
-      try {
-        position = getPos();
-      } catch (_) {
-        position = null;
-      }
-
+      try { position = getPos(); } catch (_) { position = null; }
       if (!Number.isInteger(position)) {
-        hideDeleteConfirm();
         showToast('删除失败：无法定位原表格代码块。', 'error', 3600);
         return false;
       }
@@ -994,78 +957,73 @@ function nocodbMarkdownTablePageMain() {
       const state = editorView.state;
       const liveNode = state.doc.nodeAt(position);
       const liveStored = liveNode ? parseStoredText(liveNode.textContent || '') : null;
-      const sameTable =
-        liveNode &&
-        liveNode.type === currentNode.type &&
-        liveStored &&
-        liveStored.id === stored.id &&
-        liveStored.sourceHash === stored.sourceHash;
-
-      if (!sameTable) {
-        hideDeleteConfirm();
-        showToast('删除失败：原表格代码块已发生变化。', 'error', 3600);
+      if (!liveNode || liveNode.type !== currentNode.type || !liveStored ||
+          liveStored.id !== stored.id || liveStored.sourceHash !== stored.sourceHash ||
+          (editing && editBaseHash !== stored.sourceHash)) {
+        showToast('删除失败：表格底层内容已变化，当前草稿已保留。', 'error', 4200);
         return false;
       }
 
-      stopOutsideDeleteConfirm();
-      confirmingDelete = false;
+      // Do not discard the draft on deletion: a single host Undo must restore
+      // the most recent cell contents, not the pre-edit carrier.
+      let nodeToDelete = liveNode;
+      if (editing && draft && modelHash(draft) !== modelHash(stored.model)) {
+        try {
+          const text = buildStoredText(cloneModel(draft), stored.id || createTableId());
+          nodeToDelete = liveNode.type.create(
+            languageAttrsForNodeType(liveNode.type, liveNode.attrs || {}),
+            state.schema.text(text), liveNode.marks,
+          );
+        } catch (_) {
+          showToast('删除失败：无法保留未提交的单元格修改。', 'error', 3600);
+          return false;
+        }
+      }
 
+      // A non-history update establishes the version that Undo should restore.
+      // Deletion itself is one separate, history-tracked ProseMirror transaction.
       try {
-        editorView.dispatch(
-          state.tr.delete(position, position + liveNode.nodeSize).scrollIntoView(),
-        );
-        showToast('已删除表格', 'success', 1600);
+        stopOutsideAutoSave();
+        editing = false;
+        draft = null;
+        pendingTextInput = null;
+        editBaseHash = null;
+        tableKeyboardOwner = false;
+        if (nodeToDelete !== liveNode) {
+          editorView.dispatch(editorView.state.tr.replaceWith(
+            position, position + liveNode.nodeSize, nodeToDelete,
+          ).setMeta('addToHistory', false));
+        }
+        const deleteState = editorView.state;
+        const actualNode = deleteState.doc.nodeAt(position);
+        if (!actualNode || actualNode.type !== nodeToDelete.type ||
+            actualNode.textContent !== nodeToDelete.textContent) {
+          showToast('删除已中止：提交后表格节点发生变化。', 'error', 4200);
+          return false;
+        }
+        editorView.dispatch(deleteState.tr.delete(position, position + actualNode.nodeSize)
+          .setMeta('closeHistory', true).scrollIntoView());
+        editorView.focus();
+        showToast('已删除表格，可使用 Ctrl+Z 撤销', 'success', 1900);
         return true;
-      } catch (_) {
-        confirmingDelete = true;
-        rerender();
-        startOutsideDeleteConfirm();
-        showToast('删除失败：NocoDB 拒绝了本次表格删除。', 'error', 3600);
+      } catch (error) {
+        // If the preparatory transaction succeeded, the revised table stays in
+        // the host editor. Never silently remove or overwrite the draft twice.
+        showToast('删除未完成：请检查当前表格是否仍存在。', 'error', 4200);
+        console.warn('[NocoDB Markdown Table] 删除表格事务失败', error);
         return false;
       }
-    }
-
-    function renderDeleteConfirm() {
-      const panel = document.createElement('div');
-      panel.className = 'tm-nmt-delete-confirm-v31';
-      panel.setAttribute('role', 'dialog');
-      panel.setAttribute('aria-label', '确认删除表格');
-
-      const title = document.createElement('div');
-      title.className = 'tm-nmt-delete-confirm-title-v31';
-      title.textContent = '确认删除这个 Markdown 表格？';
-
-      const actions = document.createElement('div');
-      actions.className = 'tm-nmt-delete-confirm-actions-v31';
-
-      const cancelButton = document.createElement('button');
-      cancelButton.type = 'button';
-      cancelButton.textContent = '取消';
-      cancelButton.addEventListener('pointerdown', (event) => stopPointerEvent(event));
-      cancelButton.addEventListener('click', (event) => {
-        stopPointerEvent(event);
-        hideDeleteConfirm();
-      });
-
-      const deleteButton = document.createElement('button');
-      deleteButton.type = 'button';
-      deleteButton.className = 'tm-nmt-delete-confirm-submit-v31';
-      deleteButton.textContent = '确认删除';
-      deleteButton.addEventListener('pointerdown', (event) => stopPointerEvent(event));
-      deleteButton.addEventListener('click', (event) => {
-        stopPointerEvent(event);
-        deleteTable();
-      });
-
-      actions.append(cancelButton, deleteButton);
-      panel.append(title, actions);
-      dom.appendChild(panel);
     }
 
     function closeContextMenu() {
       if (!contextMenu) return;
       contextMenu.remove();
       contextMenu = null;
+      if (contextMenuHost && contextMenuHostPosition !== null) {
+        contextMenuHost.style.position = contextMenuHostPosition;
+      }
+      contextMenuHost = null;
+      contextMenuHostPosition = null;
     }
 
     function cloneRange(range) {
@@ -1345,8 +1303,6 @@ function nocodbMarkdownTablePageMain() {
 
     function enterEditing() {
       if (!isEditable()) return;
-      stopOutsideDeleteConfirm();
-      confirmingDelete = false;
       editing = true;
       tableKeyboardOwner = true;
       draft = cloneModel(stored.model);
@@ -1454,8 +1410,7 @@ function nocodbMarkdownTablePageMain() {
       const current = draft || stored.model;
       if (isEditable()) {
         dom.appendChild(makeCopyTrigger(() => copyMarkdownTable(draft || stored.model)));
-        dom.appendChild(makeDeleteTrigger(showDeleteConfirm));
-        if (confirmingDelete) renderDeleteConfirm();
+        dom.appendChild(makeDeleteTrigger(deleteTable));
       }
       const scroll = document.createElement('div');
       scroll.className = 'tm-nmt-scroll-v31';
@@ -1477,15 +1432,19 @@ function nocodbMarkdownTablePageMain() {
         closeContextMenu();
         const menu = document.createElement('div');
         menu.className = 'tm-nmt-menu-v31 tm-nmt-inline-context';
-        menu.style.position = 'fixed';
+        menu.style.position = 'absolute';
         menu.style.left = '0px';
         menu.style.top = '0px';
         const action = (label, operation, options = {}) => {
           menu.append(makeMenuItem(label, () => {
-            closeContextMenu();
-            if (!mutateDraft(operation)) { alertLimit('无法完成操作：已达到行列限制。'); return; }
+            // Apply the operation before dismissing the portal, then restore
+            // focus to an existing cell. Menu commands remain draft-only.
+            if (!mutateDraft(operation)) { closeContextMenu(); alertLimit('无法完成操作：已达到行列限制。'); return; }
+            const preferred = { row: Math.max(0, Math.min(row, draft.rows.length - 1)),
+              col: Math.max(0, Math.min(col, draft.headers.length - 1)) };
             clearSelectionRange();
             rerender();
+            restoreFocusAfterStructuralEdit(preferred);
           }, options));
         };
         action('在上方插入行', m => insertRow(m, Math.max(0, row)));
@@ -1494,12 +1453,24 @@ function nocodbMarkdownTablePageMain() {
         action('在右侧插入列', m => insertColumn(m, col + 1));
         if (row >= 0) action('删除当前行', m => deleteRow(m, row), { danger: true });
         if (current.headers.length > 1) action('删除当前列', m => deleteColumn(m, col), { danger: true });
-        document.body.appendChild(menu);
+        // Keep the portal inside NocoDB's rich-text overlay so click-away
+        // handlers do not interpret menu actions as closing the editor.
+        const host = session.editorDom.closest('.nc-rich-text-content') || session.editorDom.parentElement;
+        if (!host) return;
+        contextMenuHost = host;
+        contextMenuHostPosition = host.style.position;
+        if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+        host.appendChild(menu);
         contextMenu = menu;
+        const hostRect = host.getBoundingClientRect();
         const rect = menu.getBoundingClientRect();
         const margin = 8;
-        menu.style.left = `${Math.max(margin, Math.min(event.clientX, innerWidth - rect.width - margin))}px`;
-        menu.style.top = `${Math.max(margin, Math.min(event.clientY, innerHeight - rect.height - margin))}px`;
+        const x = Math.max(hostRect.left + margin,
+          Math.min(event.clientX, Math.min(hostRect.right, innerWidth) - rect.width - margin));
+        const y = Math.max(hostRect.top + margin,
+          Math.min(event.clientY, Math.min(hostRect.bottom, innerHeight) - rect.height - margin));
+        menu.style.left = `${(x - hostRect.left) / (hostRect.width / host.clientWidth || 1) + host.scrollLeft}px`;
+        menu.style.top = `${(y - hostRect.top) / (hostRect.height / host.clientHeight || 1) + host.scrollTop}px`;
       };
       const makeCell = (value, row, col, isHeader) => {
         const td = document.createElement(isHeader ? 'th' : 'td');
@@ -1710,11 +1681,6 @@ function nocodbMarkdownTablePageMain() {
           // Keep the draft visible and refuse to overwrite the changed node on save.
           showToast('表格底层内容已变化，当前草稿已保留；请先复制草稿再处理冲突。', 'error', 4200);
         }
-        if (changed && confirmingDelete) {
-          stopOutsideDeleteConfirm();
-          confirmingDelete = false;
-        }
-
         if (changed) rerender();
         return true;
       },
@@ -1742,7 +1708,6 @@ function nocodbMarkdownTablePageMain() {
         document.removeEventListener('cut', onTableClipboard, true);
         document.removeEventListener('pointerdown', onContextDismiss, true);
         stopOutsideAutoSave();
-        stopOutsideDeleteConfirm();
         destroyed = true;
         session.tableNodeViewCount = Math.max(0, session.tableNodeViewCount - 1);
       },

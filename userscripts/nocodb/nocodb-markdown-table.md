@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.5（表格焦点、选区与撤销状态修复实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.6（表格直接删除与右键菜单焦点修复实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -22,8 +22,8 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 ## UI 与交互（v0.3.2）
 
 - **只有一套表格 DOM**：阅读与编辑不再切换界面，单击表头或单元格即在原位获得光标（`contenteditable=plaintext-only`）；不再创建隔离的 Tiptap 实例、弹出编辑框、切换旧版 `<input>` 界面或尝试回退。
-- 仅保留表格悬停的复制与删除按钮；删除需二次确认，编辑中也允许删除（取消不丢草稿）。取消表格整体「编辑」按钮、双击进入编辑态、顶部行列工具栏。
-- `Tab` / `Shift+Tab` 在表头及普通单元格间跳转；最后一个单元格按 `Tab` 可新增一行。`Enter` 移动至下一行同列；最后一行按 `Enter` 新增行并聚焦同列。`Esc` 离开单元格或清除选区；右键菜单通过 `document.body` Portal 按鼠标视口坐标定位。
+- 仅保留表格悬停的复制与删除按钮；删除无需二次确认；编辑中删除时先保留最新草稿为可撤销恢复的表格版本。取消表格整体「编辑」按钮、双击进入编辑态、顶部行列工具栏。
+- `Tab` / `Shift+Tab` 在表头及普通单元格间跳转；最后一个单元格按 `Tab` 可新增一行。`Enter` 移动至下一行同列；最后一行按 `Enter` 新增行并聚焦同列。`Esc` 离开单元格或清除选区；右键菜单挂载在 Rich Text 编辑器容器内，按鼠标坐标换算定位，避免触发 NocoDB 弹窗外部点击关闭。
 - 从一个单元格按住左键拖到另一个单元格形成矩形选区，同一单元格内拖动仍选择文字。完整覆盖数据行时 Delete/Backspace 删除相应行；覆盖表头及所有数据行的部分列时删除列；其他矩形区域仅清空内容。整表选择只清空数据、不删除全部列。单击或 Esc 清除选区。此为实验性操作，需验证原位焦点与输入法。
 - 修改保存在 NodeView 的本地草稿；点击表格外部时与之前一样检测变化并用单个 ProseMirror transaction 更新代码块。未修改不产生事务；保存失败保留草稿并阻止当前外部点击。
 - 单元格只支持**单行纯文本内容**；文字中的 Markdown 标记以源码形式保留，不在单元格嵌套新的富文本编辑器。复杂单元格、合并单元格、拖动列宽均不在 GFM 功能范围。
@@ -61,6 +61,13 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 3. 选中整行/列 Delete，Ctrl+Z 恢复结构，Ctrl+Y 重做；焦点始终处于有效单元格。
 4. 点击表格外执行提交，正文中使用 Ctrl+Z 依然由 NocoDB 历史管理。
 5. 代码块中 `#####`、反斜杠、空行及表格混合粘贴保持原样。
+
+## v0.3.6 删除与右键菜单修复
+
+- 表格右上角删除按钮立即删除，无二次确认。若用户在单元格内存在未提交草稿，删除前先用 `addToHistory: false` 的 ProseMirror transaction 更新内部表格载体，再用历史事务删除；正常情况下 NocoDB 原生一次 Undo 应恢复包含最新草稿的表格。此链路仍须在宿主实际历史插件中测试。若准备事务成功但删除事务失败，更新后的表格可能保留在编辑器中，脚本会显示错误，不假称已删除。
+- 删除后主动将键盘焦点交还 NocoDB 编辑器；未改变内部 `nocodb-table` 持久化形式与混合 Markdown 节点级粘贴引擎。
+- 右键菜单仍然采用浮层，但由 `document.body` 改为 Rich Text 编辑器容器内部挂载。使用容器矩形、缩放和滚动偏移换算坐标；不再使点击菜单项被 NocoDB 识别为编辑器外点击。行列操作仅修改草稿，刷新单元格后恢复有效焦点，不立即提交保存。
+- 必须在实际 NocoDB 页面回归：编辑 Cell 后直接删除再 Ctrl+Z，检查恢复的是否为修改后表格；逐一测试右键全部行列操作，确认弹窗不关闭、菜单不偏移、焦点和 Ctrl+Z 正常；点击真正外部位置仍自动保存。
 
 ## 性能和边界
 
