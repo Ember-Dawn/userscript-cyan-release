@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.2.2**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.0（实验性表格编辑引擎）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -68,3 +68,21 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - 混合内容经 Markdown→HTML 后与表格的 `<pre><code>` 拼接，再交由当前编辑器 HTML parser 处理。
 - Console 报错带有阶段码：`markdown-parser-unavailable`、`markdown-to-html-failed`、`tiptap-html-insert-failed`、`tiptap-html-insert-rejected`、`table-codeblock-not-preserved` 等，方便定位实际环境中的进一步兼容性问题。
 - 仍需在真实 NocoDB 进行端到端验证：特别检查表格作为 `codeBlock` 的保留、四张表的顺序、混合正文格式和撤销。
+
+## v0.3.0：独立 Tiptap 表格编辑原型（需实际浏览器验收）
+
+- 原 NocoDB Rich Text 实例保持原样，不增删其 schema 节点。点击编辑时尝试利用 NocoDB 页面现有的 `Editor` 构造器及 `Node.create` 创建 **隔离的 Tiptap 表格实例**，其中包含 `table/tableRow/tableHeader/tableCell` 节点；仅编辑表格，不接管全文。
+- 不通过 CDN 加载第三方库；无法在当前 NocoDB 运行时取得构造器或节点工厂、创建失败时，记录警告并自动回退为 v0.2.2 的基础 input 编辑表格，以免阻断原有功能。
+- 表格编辑通过独立实例 `onUpdate` 提取纯文本单元格数据并同步到本地草稿；点击保存或外部自动保存时，再由宿主 ProseMirror transaction 一次性替换代码块。取消则丢弃草稿。
+- 独立表格支持单元格内编辑、Tab/Shift+Tab 导航；右键可以新增/删除行列；顶部保留新增行、列以及保存/取消；没有实现合并单元格、拖动列宽等非 GFM 功能。
+- **本版尚未实现 GFM 表格直接作为 LongText 富文本的裸文本存储**：宿主 Schema 仍不支持 `table`，旧有 `nocodb-table` codeBlock 目前仍是防止数据被压平的载体。复制和正常导出仍为标准 GFM 表格。无需做旧表格迁移，但该载体需要后续验证后才能考虑替换；不能因为用户没有旧数据就直接取消载体。
+- 解决粘贴时一种重要保真风险：混合 Markdown 的 fenced 代码块先由分段器独立提取，以 `textContent` 创建 `<pre><code>`，不再把其中的 `#####` 注释和换行交给 MarkdownIt 的 HTML 修正器处理。**尚须真实 NocoDB 粘贴验证**。列表的有序/无序类型和视觉间距尚未完成宿主端验收，不能标为已修复。
+- 自动化只完成脚本语法测试、实际上传文档的 4 表格/2 代码围栏分段测试、Bash 注释换行保留测试及表格文本往返测试；**没有验证独立 Tiptap 运行、保存、页面刷新、焦点和撤销**。不建议直接替换重要生产数据上的旧脚本；先复制记录进行测试。
+
+### 首轮浏览器测试顺序
+
+1. 复制一条测试记录，确认编辑器打开，普通正文仍然可输入。
+2. 贴入最小 GFM 表格，点击表格编辑按钮：如果 Console 输出 `无法初始化独立 Tiptap`，记录具体错误；UI 会回退到旧版 input 模式。
+3. 如果启动成功，直接编辑单元格，Tab/Shift+Tab 切换，右键增删行列；点击取消确认无写入；再次编辑、保存、刷新确认恢复。
+4. 用含 4 张表格和 2 个 fenced 代码块的服务器维护 Markdown 测试混合粘贴，特别检查 Bash `#####` 注释与后继变量赋值行有无粘连。
+5. 检查 Markdown 复制、导出和其他脚本共存，若遇到异常立即关闭本脚本，原始字段数据不进行迁移。

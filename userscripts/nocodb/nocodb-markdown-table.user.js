@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      0.2.2
+// @version      0.3.0
 // @description  在 NocoDB Rich Text 中自动转换、内嵌显示并轻量编辑 Markdown 表格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -58,7 +58,8 @@
  * - 全局 MutationObserver 只发现新增或移除的 Rich Text 编辑器；
  * - 不扫描正文代码块，不轮询，不监听滚动，不做坐标测量；
  * - 使用 ProseMirror codeBlock NodeView，在正文排版流中显示表格；
- * - 浏览状态只渲染普通 table，编辑状态才创建 input 和菜单；
+ * - 浏览状态渲染普通 table，编辑状态优先创建独立 Tiptap table 文档；
+ * - 宿主未暴露 Tiptap Node 工厂时回退为 input 编辑，不尝试替换宿主 editor；
  * - 表格更新仅替换对应的一个 codeBlock 节点。
  *
  * 四、格式边界
@@ -526,6 +527,26 @@ function nocodbMarkdownTablePageMain() {
         opacity: 1;
       }
 
+      .tm-nmt-isolated-editor .ProseMirror {
+        outline: none;
+        min-height: 60px;
+      }
+      .tm-nmt-isolated-editor table {
+        border-collapse: collapse;
+        width: 100%;
+        table-layout: fixed;
+      }
+      .tm-nmt-isolated-editor th,
+      .tm-nmt-isolated-editor td {
+        border: 1px solid var(--nc-border-gray-medium, #c6c8ce);
+        padding: 5px 9px;
+        min-width: 60px;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+      .tm-nmt-isolated-editor th { background: var(--nc-bg-gray-light, #f6f7f9); }
+      .tm-nmt-isolated-editor td p,
+      .tm-nmt-isolated-editor th p { margin: 0 !important; padding: 0 !important; }
       .tm-nmt-toast-v31 {
         position: fixed;
         right: 22px;
@@ -1116,6 +1137,97 @@ function nocodbMarkdownTablePageMain() {
     container.appendChild(table);
   }
 
+  // Construct a *separate* Tiptap editor on demand. It never replaces NocoDB's
+  // host editor. The host does not register table nodes, so its schema must not
+  // receive this table document. Persist only via the existing codeBlock bridge.
+  function createIsolatedTableEditor(session, mount, model, onChange) {
+    const host = session.tiptap;
+    const EditorCtor = host?.constructor;
+    const extensions = host?.extensionManager?.extensions || [];
+    const pick = (name) => extensions.find((extension) => extension.name === name);
+    const base = ['doc', 'text', 'paragraph'].map(pick);
+    const anyNode = pick('paragraph');
+    const NodeFactory = anyNode?.constructor;
+    if (base.some((item) => !item) || typeof NodeFactory?.create !== 'function' || typeof EditorCtor !== 'function') {
+      throw new Error('isolated-tiptap-runtime-unavailable');
+    }
+    const node = (name, content, tag) => NodeFactory.create({
+      name,
+      group: name === 'table' ? 'block' : undefined,
+      content,
+      tableRole: name === 'table' ? 'table' : name === 'tableRow' ? 'row' : 'cell',
+      isolating: true,
+      parseHTML() { return [{ tag }]; },
+      renderHTML({ HTMLAttributes }) { return [tag, HTMLAttributes, 0]; },
+    });
+    const Cell = node('tableCell', 'paragraph+', 'td');
+    const Header = node('tableHeader', 'paragraph+', 'th');
+    const Row = node('tableRow', '(tableCell | tableHeader)+', 'tr');
+    const Table = node('table', 'tableRow+', 'table');
+    const textContent = (text) => ({
+      type: 'paragraph',
+      content: text ? [{ type: 'text', text: String(text) }] : [],
+    });
+    const data = {
+      type: 'doc', content: [{ type: 'table', content: [
+        { type: 'tableRow', content: model.headers.map((value) => ({ type: 'tableHeader', content: [textContent(value)] })) },
+        ...model.rows.map((row) => ({ type: 'tableRow', content: row.map((value) => ({ type: 'tableCell', content: [textContent(value)] })) })),
+      ] }],
+    };
+    let locked = false;
+    const readModel = (editor) => {
+      const table = editor.getJSON()?.content?.find((item) => item.type === 'table');
+      if (!table?.content?.length) throw new Error('isolated-table-missing');
+      const values = table.content.map((row) => (row.content || []).map((cell) =>
+        (cell.content || []).map((paragraph) => (paragraph.content || []).map((part) => part.text || '').join('')).join(' ')
+      ));
+      const width = values[0]?.length || 0;
+      if (!width || values.some((row) => row.length !== width)) throw new Error('isolated-table-not-rectangular');
+      if (width > MAX_COLUMNS || values.length - 1 > MAX_BODY_ROWS || values.length * width > MAX_CELLS) {
+        throw new Error('isolated-table-exceeds-limits');
+      }
+      return { headers: values[0], rows: values.slice(1) };
+    };
+    const isolated = new EditorCtor({
+      element: mount,
+      extensions: [...base, Table, Row, Cell, Header],
+      content: data,
+      editable: true,
+      autofocus: false,
+      onUpdate({ editor }) {
+        if (locked) return;
+        try { onChange(readModel(editor)); }
+        catch (error) { console.warn('[NocoDB Markdown Table] 编辑草稿超限或无效', error); }
+      },
+    });
+    const stopHost = (event) => event.stopPropagation();
+    for (const type of ['keydown', 'keyup', 'keypress', 'beforeinput', 'input', 'paste', 'copy', 'cut']) {
+      mount.addEventListener(type, stopHost);
+    }
+    mount.addEventListener('keydown', (event) => {
+      if (event.key !== 'Tab') return;
+      const cells = [...mount.querySelectorAll('th, td')];
+      const selected = event.target?.closest?.('th, td');
+      const index = cells.indexOf(selected);
+      if (index < 0) return;
+      const next = cells[index + (event.shiftKey ? -1 : 1)];
+      if (!next) return;
+      event.preventDefault();
+      const target = next.querySelector('p') || next;
+      const pos = isolated.view.posAtDOM(target, 0);
+      isolated.commands.setTextSelection(pos);
+      isolated.commands.focus();
+    }, true);
+    return {
+      editor: isolated,
+      read() { return readModel(isolated); },
+      destroy() {
+        locked = true;
+        isolated.destroy();
+      },
+    };
+  }
+
   function createTableNodeView(session, initialNode, editorView, getPos, initialStored) {
     session.tableNodeViewCount += 1;
 
@@ -1129,6 +1241,7 @@ function nocodbMarkdownTablePageMain() {
     let outsidePointerDownHandler = null;
     let outsideDeleteConfirmHandler = null;
     let destroyed = false;
+    let nativeEditor = null;
 
     const dom = document.createElement('div');
     dom.className = NODEVIEW_CLASS;
@@ -1300,6 +1413,8 @@ function nocodbMarkdownTablePageMain() {
     }
 
     function cancelEditing() {
+      nativeEditor?.destroy();
+      nativeEditor = null;
       stopOutsideAutoSave();
       editing = false;
       draft = null;
@@ -1314,6 +1429,14 @@ function nocodbMarkdownTablePageMain() {
 
     function saveEditing() {
       if (!draft) return true;
+      if (nativeEditor) {
+        try { draft = nativeEditor.read(); }
+        catch (error) {
+          console.warn('[NocoDB Markdown Table] 独立表格草稿读取失败', error);
+          showToast('保存失败：表格结构无效或超过行列上限。', 'error', 3600);
+          return false;
+        }
+      }
 
       // 没有实际修改时只退出编辑，不产生无意义的 ProseMirror transaction。
       if (modelHash(draft) === modelHash(stored.model)) {
@@ -1362,6 +1485,8 @@ function nocodbMarkdownTablePageMain() {
         return false;
       }
 
+      nativeEditor?.destroy();
+      nativeEditor = null;
       stopOutsideAutoSave();
       editing = false;
       draft = null;
@@ -1502,6 +1627,8 @@ function nocodbMarkdownTablePageMain() {
 
     function rerender() {
       if (destroyed) return;
+      nativeEditor?.destroy();
+      nativeEditor = null;
       dom.replaceChildren();
       dom.dataset.nocodbMarkdownTableId = stored.id || 'legacy';
       dom.classList.toggle('is-editing', editing);
@@ -1552,8 +1679,60 @@ function nocodbMarkdownTablePageMain() {
 
       const scroll = document.createElement('div');
       scroll.className = 'tm-nmt-scroll-v31';
-      renderEditingTable(scroll);
+      const mount = document.createElement('div');
+      mount.className = 'tm-nmt-isolated-editor';
+      scroll.appendChild(mount);
       dom.appendChild(scroll);
+      try {
+        nativeEditor = createIsolatedTableEditor(session, mount, draft, (next) => {
+          // Table edits stay in a draft; writing to the host is explicit/atomic.
+          if (next.headers.length > MAX_COLUMNS || next.rows.length > MAX_BODY_ROWS ||
+              (next.rows.length + 1) * next.headers.length > MAX_CELLS) {
+            showToast('表格超过 Markdown 行列上限，请撤销本次输入。', 'error', 3200);
+            return;
+          }
+          draft = next;
+        });
+        mount.addEventListener('contextmenu', (event) => {
+          const cell = event.target?.closest?.('td, th');
+          if (!cell || !mount.contains(cell) || !draft) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const row = cell.parentElement;
+          const rowIndex = [...row.parentElement.children].indexOf(row);
+          const columnIndex = [...row.children].indexOf(cell);
+          const dataIndex = cell.tagName === 'TH' ? -1 : rowIndex;
+          const oldMenu = dom.querySelector('.tm-nmt-native-context-menu');
+          oldMenu?.remove();
+          const menu = document.createElement('div');
+          menu.className = 'tm-nmt-menu-v31 tm-nmt-native-context-menu';
+          menu.style.position = 'fixed';
+          menu.style.left = `${Math.min(event.clientX, innerWidth - 180)}px`;
+          menu.style.top = `${Math.min(event.clientY, innerHeight - 200)}px`;
+          const action = (label, run) => {
+            menu.append(makeMenuItem(label, () => {
+              if (!draft || !run()) alertLimit('已达到 Markdown 表格的行列上限。');
+              rerender();
+            }));
+          };
+          action('在上方新增行', () => insertRow(draft, Math.max(0, dataIndex)));
+          action('在下方新增行', () => insertRow(draft, Math.max(0, dataIndex + 1)));
+          action('在左侧新增列', () => insertColumn(draft, columnIndex));
+          action('在右侧新增列', () => insertColumn(draft, columnIndex + 1));
+          if (dataIndex >= 0) action('删除当前行', () => deleteRow(draft, dataIndex));
+          if (draft.headers.length > 1) action('删除当前列', () => deleteColumn(draft, columnIndex));
+          dom.appendChild(menu);
+          const dismiss = (e) => {
+            if (!menu.contains(e.target)) menu.remove();
+            document.removeEventListener('pointerdown', dismiss, true);
+          };
+          document.addEventListener('pointerdown', dismiss, true);
+        });
+      } catch (error) {
+        console.warn('[NocoDB Markdown Table] 无法初始化独立 Tiptap，退回基础表格编辑器。', error);
+        mount.remove();
+        renderEditingTable(scroll);
+      }
     }
 
     rerender();
@@ -1574,6 +1753,8 @@ function nocodbMarkdownTablePageMain() {
         stored = nextStored;
 
         if (changed && editing) {
+          nativeEditor?.destroy();
+          nativeEditor = null;
           stopOutsideAutoSave();
           editing = false;
           draft = null;
@@ -1603,6 +1784,8 @@ function nocodbMarkdownTablePageMain() {
       },
       destroy() {
         if (destroyed) return;
+        nativeEditor?.destroy();
+        nativeEditor = null;
         stopOutsideAutoSave();
         stopOutsideDeleteConfirm();
         destroyed = true;
@@ -1615,37 +1798,42 @@ function nocodbMarkdownTablePageMain() {
   // Fenced code blocks are opaque: examples inside them must not become tables.
   function splitMixedMarkdown(source) {
     if (typeof source !== 'string' || source.length > MAX_MIXED_SOURCE_CHARS) return null;
-    const lines = normalizeSourceLines(source);
+    // Do not trim trailing whitespace in fenced code. It is executable content.
+    const lines = source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n');
     const parts = [];
     let prose = [];
-    let fence = null;
     let tableCount = 0;
     const flush = () => {
       if (prose.length) parts.push({ type: 'markdown', text: prose.join('\n') });
       prose = [];
     };
-    const fenceMatch = (line) => line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    const fenceMatch = (line) => line.match(/^ {0,3}(`{3,}|~{3,})([^`]*)$/);
     for (let i = 0; i < lines.length;) {
       const line = lines[i];
-      const marker = fenceMatch(line);
-      if (fence) {
-        prose.push(line);
-        if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
-        i += 1;
-        continue;
+      const open = fenceMatch(line);
+      if (open) {
+        let close = i + 1;
+        while (close < lines.length) {
+          const match = lines[close].match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+          if (match && match[1][0] === open[1][0] && match[1].length >= open[1].length) break;
+          close += 1;
+        }
+        if (close < lines.length) {
+          flush();
+          parts.push({
+            type: 'fence',
+            language: open[2].trim().split(/\s+/)[0] || '',
+            // Preserve original line breaks and indentation literally.
+            text: lines.slice(i + 1, close).join('\n'),
+          });
+          i = close + 1;
+          continue;
+        }
       }
-      if (marker) {
-        fence = { char: marker[1][0], length: marker[1].length };
-        prose.push(line);
-        i += 1;
-        continue;
-      }
-      // A table requires two adjoining table lines, then greedily extends through body rows.
       if (i + 1 < lines.length && line.includes('|') && lines[i + 1].includes('|')) {
         let end = i + 2;
         while (end < lines.length && lines[end].trim() && lines[end].includes('|')) end += 1;
-        const candidate = lines.slice(i, end).join('\n');
-        const model = parseMarkdownTable(candidate);
+        const model = parseMarkdownTable(lines.slice(i, end).join('\n'));
         if (model) {
           tableCount += 1;
           if (tableCount > MAX_MIXED_TABLES) return null;
@@ -1698,6 +1886,15 @@ function nocodbMarkdownTablePageMain() {
     for (const part of parts) {
       if (part.type === 'markdown') {
         html += markdownToHtml(session, part.text);
+      } else if (part.type === 'fence') {
+        // Never feed fenced source to markdown-it's patched HTML renderer:
+        // it may normalize or concatenate pre/code lines in some NocoDB builds.
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        if (part.language) code.className = `language-${part.language.replace(/[^a-zA-Z0-9_+.#-]/g, '')}`;
+        code.textContent = part.text;
+        pre.appendChild(code);
+        html += pre.outerHTML;
       } else if (part.type === 'table') {
         const id = createTableId();
         ids.push(id);
