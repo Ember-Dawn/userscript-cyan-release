@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @version      0.3.2
+// @version      0.3.3
 // @description  在 NocoDB Rich Text 中内嵌显示 Markdown 表格并直接编辑单元格
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -342,6 +342,7 @@ function nocodbMarkdownTablePageMain() {
         min-height: 31px;
         display: flex;
         align-items: center;
+        gap: 9px;
         padding: 5px 9px;
         border: 0;
         border-radius: 5px;
@@ -351,6 +352,13 @@ function nocodbMarkdownTablePageMain() {
         font-size: 12px;
         text-align: left;
         cursor: pointer;
+      }
+
+      .tm-nmt-menu-item-v31 svg {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+        pointer-events: none;
       }
 
       .tm-nmt-menu-item-v31:hover {
@@ -802,7 +810,29 @@ function nocodbMarkdownTablePageMain() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `tm-nmt-menu-item-v31${options.danger ? ' is-danger' : ''}`;
-    button.textContent = label;
+    const icons = {
+      '在上方插入行': '<path d="M4 11h16M4 17h16M12 3v6m-3-3h6"/>',
+      '在下方插入行': '<path d="M4 7h16M4 13h16M12 15v6m-3-3h6"/>',
+      '在左侧插入列': '<path d="M13 4v16M19 4v16M3 12h7m-3-3 3 3-3 3"/>',
+      '在右侧插入列': '<path d="M5 4v16M11 4v16m3-8h7m-3-3 3 3-3 3"/>',
+      '删除当前行': '<path d="M4 8h16M4 16h16m-9-6 4 4m0-4-4 4"/>',
+      '删除当前列': '<path d="M7 4v16m10-16v16m-7-9 4 4m0-4-4 4"/>',
+    };
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '16');
+    svg.setAttribute('height', '16');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '1.8');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    // Icon geometry is a fixed local whitelist, never interpolated from page text.
+    svg.innerHTML = icons[label] || '<path d="M12 5v14M5 12h14"/>';
+    const textLabel = document.createElement('span');
+    textLabel.textContent = label;
+    button.append(svg, textLabel);
     button.disabled = Boolean(options.disabled);
     button.addEventListener('pointerdown', (event) => stopPointerEvent(event));
     button.addEventListener('click', (event) => {
@@ -864,6 +894,9 @@ function nocodbMarkdownTablePageMain() {
     let dragAnchor = null;
     let dragPointerId = null;
     let dragMoved = false;
+    const undoStack = [];
+    const redoStack = [];
+    let lastTextEdit = { row: null, col: null, time: 0 };
 
     const dom = document.createElement('div');
     dom.className = NODEVIEW_CLASS;
@@ -1079,11 +1112,54 @@ function nocodbMarkdownTablePageMain() {
       dom.querySelector('.tm-nmt-inline-table')?.classList.remove('tm-nmt-drag-selecting');
     }
 
+    function recordUndo(before) {
+      if (!before) return;
+      if (undoStack.length >= 80) undoStack.shift();
+      undoStack.push(cloneModel(before));
+      redoStack.length = 0;
+    }
+
+    function restoreHistory(source, target, row, col) {
+      if (!editing || !draft || !source.length) return false;
+      target.push(cloneModel(draft));
+      draft = source.pop();
+      lastTextEdit.time = 0;
+      clearSelectionRange();
+      rerender();
+      const focus = dom.querySelector(`.tm-nmt-inline-content[data-row="${row}"][data-col="${col}"]`);
+      focus?.focus({ preventScroll: true });
+      return true;
+    }
+
+    function handleTableHistory(event, row, col) {
+      if (!editing || !draft || !(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing) return false;
+      const key = event.key.toLowerCase();
+      const undo = key === 'z' && !event.shiftKey;
+      const redo = (key === 'z' && event.shiftKey) || (key === 'y' && !event.shiftKey);
+      if (!undo && !redo) return false;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      restoreHistory(undo ? undoStack : redoStack, undo ? redoStack : undoStack, row, col);
+      return true;
+    }
+
+    function mutateDraft(operation) {
+      if (!editing) enterEditing();
+      if (!draft) return false;
+      const before = cloneModel(draft);
+      const result = operation(draft);
+      if (result && modelHash(before) !== modelHash(draft)) recordUndo(before);
+      lastTextEdit.time = 0;
+      return result;
+    }
+
     function deleteSelectedCells() {
       const range = normalizedSelection();
       if (!range || !isEditable()) return false;
       if (!editing) enterEditing();
       if (!draft) return false;
+      const beforeSelectionDelete = cloneModel(draft);
       const entireRows = range.c1 === 0 && range.c2 === draft.headers.length - 1 && range.r1 >= 0;
       const entireColumns = range.r1 === -1 && range.r2 === draft.rows.length - 1;
       if (entireRows) {
@@ -1098,6 +1174,8 @@ function nocodbMarkdownTablePageMain() {
           }
         }
       }
+      if (modelHash(beforeSelectionDelete) !== modelHash(draft)) recordUndo(beforeSelectionDelete);
+      lastTextEdit.time = 0;
       clearSelectionRange();
       rerender();
       return true;
@@ -1109,6 +1187,9 @@ function nocodbMarkdownTablePageMain() {
       confirmingDelete = false;
       editing = true;
       draft = cloneModel(stored.model);
+      undoStack.length = 0;
+      redoStack.length = 0;
+      lastTextEdit.time = 0;
       dom.classList.add('is-editing');
       startOutsideAutoSave();
     }
@@ -1227,8 +1308,7 @@ function nocodbMarkdownTablePageMain() {
         const action = (label, operation, options = {}) => {
           menu.append(makeMenuItem(label, () => {
             closeContextMenu();
-            if (!editing) enterEditing();
-            if (!draft || !operation(draft)) { alertLimit('无法完成操作：已达到行列限制。'); return; }
+            if (!mutateDraft(operation)) { alertLimit('无法完成操作：已达到行列限制。'); return; }
             clearSelectionRange();
             rerender();
           }, options));
@@ -1275,6 +1355,13 @@ function nocodbMarkdownTablePageMain() {
           if (!editing) enterEditing();
           const clean = span.innerText.replace(/\r?\n/g, ' ');
           if (span.textContent !== clean) span.textContent = clean;
+          const previous = row === -1 ? draft.headers[col] : draft.rows[row][col];
+          if (previous === clean) return;
+          const now = Date.now();
+          if (lastTextEdit.row !== row || lastTextEdit.col !== col || now - lastTextEdit.time > 850) {
+            recordUndo(draft);
+          }
+          lastTextEdit = { row, col, time: now };
           if (row === -1) draft.headers[col] = clean;
           else draft.rows[row][col] = clean;
         });
@@ -1296,6 +1383,7 @@ function nocodbMarkdownTablePageMain() {
           }
         });
         span.addEventListener('keydown', e => {
+          if (handleTableHistory(e, row, col)) return;
           e.stopPropagation();
           if (e.key === 'Escape') {
             if (selectionRange) { e.preventDefault(); clearSelectionRange(); return; }
@@ -1315,7 +1403,7 @@ function nocodbMarkdownTablePageMain() {
             if (!draft) return;
             if (row === -1) { focusCell(0, col); return; }
             if (row < draft.rows.length - 1) { focusCell(row + 1, col); return; }
-            if (insertRow(draft, draft.rows.length)) {
+            if (mutateDraft(m => insertRow(m, m.rows.length))) {
               const nextRow = draft.rows.length - 1;
               rerender();
               focusCell(nextRow, col);
@@ -1327,7 +1415,7 @@ function nocodbMarkdownTablePageMain() {
           const index = targets.findIndex(x => x.row === row && x.col === col);
           const next = targets[index + (e.shiftKey ? -1 : 1)];
           if (next) { next.element.focus(); return; }
-          if (!e.shiftKey && editing && draft && insertRow(draft, draft.rows.length)) {
+          if (!e.shiftKey && editing && draft && mutateDraft(m => insertRow(m, m.rows.length))) {
             const nextRow = draft.rows.length - 1;
             rerender();
             focusCell(nextRow, 0);
@@ -1497,73 +1585,87 @@ function nocodbMarkdownTablePageMain() {
     return tableCount ? parts : null;
   }
 
-  // NocoDB's markdown.parser.parse returns HTML. Tiptap's insertContent
-  // converts HTML with its installed schema; no public DOMParser or JSON
-  // conversion is exposed by the host editor.
-  function markdownToHtml(session, markdown) {
-    if (!markdown.trim()) return '';
-    const parser = session.tiptap.storage?.markdown?.parser;
-    if (typeof parser?.parse !== 'function') throw new Error('markdown-parser-unavailable');
-    let html;
-    try {
-      html = parser.parse(markdown);
-    } catch (error) {
-      throw new Error('markdown-to-html-failed', { cause: error });
-    }
-    if (typeof html !== 'string') throw new Error('markdown-parser-non-html-result');
-    return html;
-  }
-
-  function tableToHtml(model, id) {
-    // CodeBlock's default ProseMirror parseDOM rule recognizes <pre>. The
-    // content marker (not the class/language attr) identifies the table.
-    const pre = document.createElement('pre');
-    const code = document.createElement('code');
-    code.className = `language-${CODE_BLOCK_LANGUAGE}`;
-    code.textContent = buildStoredText(model, id);
-    pre.appendChild(code);
-    return pre.outerHTML;
-  }
-
   function insertMixedMarkdown(session, parts) {
     const { tiptap } = session;
-    if (!tiptap.state?.schema?.nodes?.codeBlock) throw new Error('codeblock-schema-unavailable');
-    let html = '';
-    const ids = [];
+    const view = tiptap.view;
+    const state = view?.state;
+    const schema = state?.schema;
+    const codeType = schema?.nodes?.codeBlock;
+    if (!codeType) throw new Error('codeblock-schema-unavailable');
+
+    // Reuse NocoDB's own markdown clipboard parser for prose, but never route
+    // fenced code or table payloads through the HTML parser. The clipboard
+    // parser returns a ProseMirror Slice, including nested list structure.
+    const parseClipboard = view.someProp?.('clipboardTextParser');
+    if (typeof parseClipboard !== 'function') throw new Error('markdown-clipboard-parser-unavailable');
+    const nodes = [];
+    const expected = [];
+    let tableCount = 0;
     for (const part of parts) {
       if (part.type === 'markdown') {
-        html += markdownToHtml(session, part.text);
+        if (!part.text.trim()) continue;
+        let slice;
+        try {
+          slice = parseClipboard(part.text, state.selection.$from, false, view);
+        } catch (error) {
+          throw new Error('prose-clipboard-parser-failed', { cause: error });
+        }
+        if (!slice?.content || !slice.content.childCount) {
+          throw new Error('prose-clipboard-parser-empty');
+        }
+        // Reject open slices rather than silently deforming list boundaries.
+        // A standalone markdown fragment is expected to be block-complete.
+        slice.content.forEach(node => nodes.push(node));
       } else if (part.type === 'fence') {
-        // Never feed fenced source to markdown-it's patched HTML renderer:
-        // it may normalize or concatenate pre/code lines in some NocoDB builds.
-        const pre = document.createElement('pre');
-        const code = document.createElement('code');
-        if (part.language) code.className = `language-${part.language.replace(/[^a-zA-Z0-9_+.#-]/g, '')}`;
-        code.textContent = part.text;
-        pre.appendChild(code);
-        html += pre.outerHTML;
+        const attrs = languageAttrsForNodeType(codeType, { language: part.language });
+        const node = codeType.create(attrs, part.text ? schema.text(part.text) : null);
+        nodes.push(node);
+        expected.push({ text: part.text, tableId: null });
       } else if (part.type === 'table') {
         const id = createTableId();
-        ids.push(id);
-        html += tableToHtml(part.model, id);
+        const text = buildStoredText(part.model, id);
+        const attrs = languageAttrsForNodeType(codeType, { language: CODE_BLOCK_LANGUAGE });
+        nodes.push(codeType.create(attrs, schema.text(text)));
+        expected.push({ text, tableId: id });
+        tableCount++;
       }
     }
-    if (!html.trim() || !ids.length) throw new Error('mixed-fragment-empty');
-
-    // A single insertContent invocation performs HTML -> ProseMirror parsing
-    // and insertion together. Avoid the former can().chain() dry-run path:
-    // it does not reliably expose an intermediate transaction on NocoDB.
-    let inserted;
+    if (!nodes.length || !tableCount) throw new Error('mixed-fragment-empty');
+    // Compose the entire replacement before dispatching. If parsing/validation
+    // fails, the original editor document remains unchanged.
+    let fragment;
     try {
-      inserted = tiptap.commands.insertContent(html, {
-        parseOptions: { preserveWhitespace: 'full' },
-      });
+      fragment = schema.nodes.doc.create(null, nodes).content;
     } catch (error) {
-      throw new Error('tiptap-html-insert-failed', { cause: error });
+      throw new Error('mixed-fragment-invalid', { cause: error });
     }
-    if (!inserted) throw new Error('tiptap-html-insert-rejected');
-    const missing = ids.filter((id) => !documentContainsTableId(tiptap.state.doc, id));
-    if (missing.length) throw new Error(`table-codeblock-not-preserved:${missing.length}`);
+    let transaction;
+    try {
+      const tr = state.tr.replaceSelection(
+        new (state.selection.content().constructor)(fragment, 0, 0),
+      );
+      transaction = tr;
+    } catch (error) {
+      throw new Error('mixed-transaction-build-failed', { cause: error });
+    }
+    // Verify the resulting document before applying it, including every
+    // backslash, hash, indentation and newline in fenced code blocks.
+    const seen = expected.map(() => false);
+    transaction.doc.descendants(node => {
+      if (node.type !== codeType) return;
+      for (let i = 0; i < expected.length; i++) {
+        if (seen[i] || node.textContent !== expected[i].text) continue;
+        if (expected[i].tableId && parseStoredText(node.textContent)?.id !== expected[i].tableId) continue;
+        seen[i] = true;
+        break;
+      }
+    });
+    if (seen.some(ok => !ok)) throw new Error('codeblock-content-integrity-failed');
+    try {
+      view.dispatch(transaction.scrollIntoView());
+    } catch (error) {
+      throw new Error('mixed-transaction-dispatch-failed', { cause: error });
+    }
     return true;
   }
 

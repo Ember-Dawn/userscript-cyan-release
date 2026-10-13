@@ -2,7 +2,7 @@
 
 ## 适用范围
 
-脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.2（原位拖拽选区实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
+脚本：`userscripts/nocodb/nocodb-markdown-table.user.js`，当前版本 **0.3.3（原位编辑、历史及节点级粘贴实验版）**。适用于 NocoDB CE LongText 的 Rich Text / Tiptap 编辑器。脚本在网页主 JavaScript 环境连接 Tiptap，使用 ProseMirror `codeBlock` NodeView 显示、编辑表格。与 Markdown 导出、大纲和视觉增强脚本共存时，遵循根目录 `AGENTS.md` 以及 `userscripts/nocodb/README.md` 的跨脚本约定。
 
 ## 表格持久化结构
 
@@ -29,15 +29,21 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - 单元格只支持**单行纯文本内容**；文字中的 Markdown 标记以源码形式保留，不在单元格嵌套新的富文本编辑器。复杂单元格、合并单元格、拖动列宽均不在 GFM 功能范围。
 - 内部依旧通过 `nocodb-table` `codeBlock` 承载。由于 NocoDB 原生 LongText Schema 不支持 `table`，本版本**不是裸 GFM 文本直接保存在底层 LongText 字段**；复制及配合导出脚本的最终输出是标准 Markdown 表格。
 
-## Markdown 粘贴处理
+## Markdown 粘贴处理（v0.3.3）
 
-- `onPaste` 仅处理 NocoDB Rich Text 编辑区域的用户粘贴；输入框、代码块和表格 NodeView 内部保留宿主默认行为。
-- 单张纯 Markdown 表格继续走原有 `parseMarkdownTable` / `insertTableCodeBlock` 路径，降低回归风险。
-- 混合粘贴走 `splitMixedMarkdown`：按行扫描，将普通 Markdown 与完整表格分段；支持多张表格，保持先后顺序；代码围栏（反引号或波浪号）里的示例不识别为表格。
-- 普通段落/标题/列表由 NocoDB `storage.markdown.parser.parse` 转成 HTML 字符串；表格由 `tableToHtml` 生成 `<pre><code class="language-nocodb-table">` 形式，并将 marker 与 Markdown 表格源码作为代码块纯文本。将全部 HTML 片段按原顺序组合，交由 **Tiptap `commands.insertContent(html)`** 使用宿主自己的 HTML 解析规则完成单次插入；不依赖 `view.someProp('domParser')` / `view.someProp('clipboardParser')`，也不使用不可靠的 `can().chain()` 临时事务提取节点方案。
-- 插入前先完成 Markdown→HTML 转换和表格 HTML 构造；插入后用每张表的新 ID 检查代码块是否保留。若运行时无法识别 `<pre>` 为 `codeBlock`，会给出 `table-codeblock-not-preserved` 的阶段错误。注意该后验检查不是事务性回滚；需在实际 NocoDB 环境验证一次粘贴和撤销行为。
-- 本功能读取剪贴板的 `text/plain`；不尝试从任意 HTML 表格推断 Markdown 结构。没有可识别 Markdown 表格时交回 NocoDB 原生粘贴。
-- 如果宿主 Markdown parser 接口缺失、schema 不兼容或事务失败，不应插入部分内容；显示失败提示，原始剪贴板内容仍可重新粘贴。不要未经验证地用 HTML table 作为兜底，因为 NocoDB CE 会丢失表格结构。
+- 只有包含可识别 GFM 表格的粘贴才被脚本接管；没有表格时交还给 NocoDB 原生粘贴。
+- 通过 `splitMixedMarkdown()` 分段识别正文、独立 fenced code block、GFM 表格；fence 内的 `|` 不会被当成表格。
+- **不再拼接 HTML 来插入代码块**：正文使用 NocoDB `view.someProp('clipboardTextParser')` 返回的 ProseMirror Slice；代码围栏和表格直接用当前 Schema 构造 `codeBlock` 节点。合并为一份 Fragment，构造一次 transaction。
+- 在提交前检查事务最终文档中每个预期代码块的 `textContent`，包括 `#`、`\`、空行、缩进、换行与内部表格标记。若解析器缺失、节点构造失败或校验失败，则放弃提交，并通过 Console 输出具体阶段错误。已提交后仍应验证 NocoDB 后续 Markdown 持久化是否保真。
+- 这一机制依赖当前 NocoDB 的 `clipboardTextParser` 插件；该 API 是否对所有 CE 构建可用仍须在真实页面验证，**没有静默退回旧版 HTML 拼接路径**。
+- 纯表格粘贴沿用单表代码块插入方式；混合粘贴限定 300,000 字符与 24 张表格。未支持的复杂嵌套情形需要用户实际验收。
+
+## 表格撤销/重做与菜单（v0.3.3）
+
+- 在表格原位单元格内按 `Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 或 `Ctrl+Y` 重做；记录尚未保存的表格草稿快照，连续同一单元格输入按约 850ms 时间窗口合并。
+- 行列增删、Enter/Tab 插入行、拖拽范围 Delete 进入同一草稿历史。退出表格并提交后，整次代码块替换由 NocoDB ProseMirror 自身历史管理，表格草稿历史不跨保存保留。
+- 右键菜单使用本地白名单 SVG 路径绘制 16px 自绘图标，不加载远程图标字体。
+- 不存在完整实时协同编辑的合并保障；保存时依旧应保护草稿，不因外部事件静默丢弃。
 
 ## 性能和边界
 
@@ -92,3 +98,10 @@ NocoDB CE 当前所用的 Rich Text schema 没有原生表格节点，因此将�
 - 本版只重构表格拖拽、快捷键、删除按钮与右键菜单。**混合 Markdown 粘贴仍采用 HTML 合并插入机制**，包含代码围栏时可能发生字符、换行或列表结构变化；不能声称已实现逐字符无损。涉及命令的完整文档须在测试记录中粘贴并核对后再正式使用。
 - 鼠标拖拽区域选择不等于原生 ProseMirror 多单元格选择；选区属于表格 NodeView 本地状态。按 Delete 后修改进入本地草稿，点击表格外才提交。
 - 不实现合并单元格、任意列宽或非 GFM 结构。
+
+## v0.3.3 变更与现场验收
+
+- 用包含 `#####` 注释、空行、反斜杠引号的 Bash 围栏与多张表格的文档进行混合粘贴；检查 Console 是否报告 `markdown-clipboard-parser-unavailable`、`codeblock-content-integrity-failed` 等错误。
+- 粘贴成功后保存并重新打开，逐字符核对 Bash 代码。事务内保真检查不等于数据库往返保真。
+- 在单元格内编辑连续文字后 Ctrl+Z/Ctrl+Y；分别测试行列删除、拖拽清空、Enter 新增行的撤销/重做；再点击表格外保存，检查 NocoDB 自身撤销整张表格修改。
+- 验证菜单 SVG、鼠标附近定位、焦点、中文输入法、删除确认及外部保存。
