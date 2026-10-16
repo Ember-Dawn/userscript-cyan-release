@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.8.1
+// @version      0.8.2
 // @description  优化 solidtime 的计时器与 Project/Task 交互：阻止非必要自动聚焦，并将 Project 和 Task 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
 // @match        https://solidtime.380782744.xyz/*
@@ -31,17 +31,20 @@
                 }
                 [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2):has(> div:first-child[class*="w-[130px]"]) > div:first-child {
                     grid-column: 1 / -1;
+                    grid-row: 2;
                     width: 100% !important;
                     min-width: 0;
                     max-width: 100%;
                 }
                 [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2):has(> div:first-child[class*="w-[130px]"]) > div:nth-child(2) {
                     grid-column: 1;
+                    grid-row: 1;
                     min-width: 0;
                     padding-left: 0;
                 }
                 [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2):has(> div:first-child[class*="w-[130px]"]) > div:nth-child(3) {
                     grid-column: 2;
+                    grid-row: 1;
                     justify-self: end;
                     min-width: 0;
                 }
