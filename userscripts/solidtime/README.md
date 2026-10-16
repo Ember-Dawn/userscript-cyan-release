@@ -19,6 +19,12 @@
    - 排序使用 `Intl.Collator(['zh-CN-u-co-pinyin', 'en'], { sensitivity: 'base', numeric: true })`：中文按拼音规则参与比较，英文忽略大小写差异，数字采用自然顺序，例如 `Task 2` 排在 `Task 10` 前。
    - Task 的 `project_id` 等原有字段不变，solidtime 仍按原生逻辑把 Task 归属和过滤到对应 Project。
 
+4. **移动端 Time Tracker Project/Task 展示优化（v0.8.0）**
+   - 仅当视口宽度不超过 640px、且计时器处于普通 Project 模式时生效。
+   - Project/Task 原生选择按钮独占一行，文字允许换行并限制为约两行高度；标签、计费和计时器放在下一行。
+   - 仅注入计时器内的 CSS，不移动 Vue 节点、不修改按钮事件，不改变 PC 布局或原有焦点和排序行为。
+   - 使用 `data-testid="dashboard_timer"` 定位计时器，再用组件结构识别 Project 模式；若 solidtime 更新 DOM/Tailwind 类名需重新核对。
+
 ## 关键 solidtime 实现依据
 
 当前脚本依赖以下较稳定的页面/API 约定：
@@ -85,6 +91,8 @@ v0.4.0 曾尝试包装 `window.fetch`，但 solidtime 当前 API 客户端走 Zo
 8. Project / Task 名称包含数字时按自然数字顺序排列。
 9. Project / Task 数量跨越多个 API 分页时无缺失、无重复，排序仍为全局升序。
 10. Project 搜索、选择 Project、展开/选择 Task 等原生功能保持正常，Task 仍归属于正确的 Project。
+11. 手机/Via：Project/Task 独占一行、长名称最多显示约两行；标签、计费、计时和 Stop 正常。
+12. PC、simple/break 模式及 Project/Task 下拉面板保持原生布局与操作。
 
 语法检查：
 

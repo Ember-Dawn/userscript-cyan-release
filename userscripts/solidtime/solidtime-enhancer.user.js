@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.7.1
+// @version      0.8.0
 // @description  优化 solidtime 的计时器与 Project/Task 交互：阻止非必要自动聚焦，并将 Project 和 Task 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
 // @match        https://solidtime.380782744.xyz/*
@@ -13,6 +13,72 @@
 
 (function () {
     'use strict';
+
+    // 只调整窄屏下 Time Tracker 的布局，不移动 Vue 节点或改动数据交互。
+    function installMobileTrackerLayout() {
+        const style = document.createElement('style');
+        style.id = 'solidtime-enhancer-mobile-tracker-layout';
+        style.textContent = `
+            @media (max-width: 640px) {
+                /* 仅在普通 Project 模式下应用，不影响 break/simple 模式。 */
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2):has(> div:first-child[class*="w-[130px]"]) {
+                    display: grid !important;
+                    grid-template-columns: minmax(0, 1fr) auto;
+                    align-items: center;
+                    column-gap: 0;
+                    row-gap: 4px;
+                    padding: 4px 8px 6px;
+                }
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2):has(> div:first-child[class*="w-[130px]"]) > div:first-child {
+                    grid-column: 1 / -1;
+                    width: 100% !important;
+                    min-width: 0;
+                    max-width: 100%;
+                }
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2):has(> div:first-child[class*="w-[130px]"]) > div:nth-child(2) {
+                    grid-column: 1;
+                    min-width: 0;
+                    padding-left: 0;
+                }
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2):has(> div:first-child[class*="w-[130px]"]) > div:nth-child(3) {
+                    grid-column: 2;
+                    justify-self: end;
+                    min-width: 0;
+                }
+                /* 原生 trigger 仍保留点击与下拉行为，文字按自然流换行，最多两行高度。 */
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button {
+                    width: 100%;
+                    min-height: 32px;
+                    height: auto !important;
+                    max-height: 56px;
+                    display: block !important;
+                    text-align: left;
+                    white-space: normal !important;
+                    overflow: hidden;
+                    line-height: 20px;
+                }
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > span.truncate {
+                    display: inline !important;
+                    white-space: normal !important;
+                    overflow: visible !important;
+                    text-overflow: clip !important;
+                    overflow-wrap: anywhere;
+                }
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > div,
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > svg {
+                    display: inline-block !important;
+                    vertical-align: middle;
+                }
+            }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    if (document.documentElement) {
+        installMobileTrackerLayout();
+    } else {
+        document.addEventListener('DOMContentLoaded', installMobileTrackerLayout, { once: true });
+    }
 
     const TIMER_BUTTON_SELECTOR = '[data-testid="timer_button"]';
     const DESCRIPTION_SELECTOR = '[data-testid="time_entry_description"]';
