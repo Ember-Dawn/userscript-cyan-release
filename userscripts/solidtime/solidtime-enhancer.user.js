@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.8.0
+// @version      0.8.1
 // @description  优化 solidtime 的计时器与 Project/Task 交互：阻止非必要自动聚焦，并将 Project 和 Task 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
 // @match        https://solidtime.380782744.xyz/*
@@ -68,6 +68,14 @@
                 [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > svg {
                     display: inline-block !important;
                     vertical-align: middle;
+                }
+                /* 给圆点、Project、分隔箭头、Task 留出清晰但紧凑的间距。 */
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > div:first-child {
+                    margin-right: 6px !important;
+                }
+                [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > svg {
+                    margin-left: 4px !important;
+                    margin-right: 4px !important;
                 }
             }
         `;
