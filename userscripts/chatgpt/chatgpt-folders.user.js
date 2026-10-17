@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.9.3
-// @description  ChatGPT 普通聊天文件夹管理：v0.9.3；双列跨栏时临时使用官方原生展开按钮，保留持久文件夹。
+// @version      1.0.0
+// @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -23,11 +23,11 @@
 /*
 ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folders.md）
 
-- 作用：在 ChatGPT 原生侧边栏中增加本地“文件夹”索引；只保存聊天引用、文件夹结构和非敏感设置，不修改 ChatGPT 后端，也不保存完整聊天正文。
+- 作用：在 ChatGPT 原生导航 rail 加入文件夹入口，独立浮层展示本地文件夹和已发现的最近对话；不修改 ChatGPT 后端，也不保存聊天正文。
 - 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
-- DOM：#cgfm-root 仅作为 document.body 的持久直属子节点，不进入 React 管理的侧边栏；通过独立定位器在官方侧栏右侧显示。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
+- DOM：#cgfm-root 是 document.body 的持久直属子节点，不进入 React 内容容器；独立文件夹按钮插入导航 rail，浮层相对 rail 右侧定位。优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
 - Hydration：document-start 仅注册拖拽 capture listener；DOM/state boot 延后至 DOMContentLoaded，持久根节点不依赖官方 sidebar host hydration。
-- 性能：禁止长期观察 document/sidebar subtree、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。新版仅允许对 app-shell left panel 的 peeking 属性和 conversation content 的 inert 属性做窄范围 observer；原生三点菜单仍只短时观察。
+- 性能：禁止长期观察 document/sidebar subtree、mousemove 热路径和高频全量扫描。新增入口使用导航列表 childList 窄观察以恢复重建；最近对话在打开时限频收集；原生三点菜单仍只短时观察。
 - 交互：新版优先识别 a[data-interactive-row-link] 作为聊天主交互；window capture 在 document-start 注册，但仅在文件夹 UI 完成安全挂载后工作。聊天主交互的 pointerdown 从起点即由脚本 preventDefault + stopImmediatePropagation 独占；小于阈值则在 pointerup 主动回放原生点击，大于阈值则进入自定义拖拽，不再依赖 setPointerCapture。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.9.3';
+  const VERSION = '1.0.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -84,6 +84,16 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let selectedFolderId = ROOT_ID; // 仅当前页面使用，不持久化、不跨标签同步
   let rootEl = null;
   let treeEl = null;
+  let folderButton = null;
+  let folderButtonHost = null;
+  let folderRailObserver = null;
+  let folderButtonPinned = false;
+  let folderPointerInButton = false;
+  let folderPointerInPane = false;
+  let folderCloseTimer = null;
+  let lastRecentScan = 0;
+  let recentKnown = [];
+  let recentCacheAccount = '';
   let dualSidebarHover = false;
   let dualSidebarPointerInside = false;
   // Temporary native pin transaction: do not change React-owned inert or fake hover.
@@ -1051,15 +1061,27 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     style.textContent = `
       #cgfm-root { color: var(--text-primary, var(--token-text-primary, inherit)); font-size:14px; margin-bottom:12px; --cgfm-muted: var(--text-secondary, var(--token-text-tertiary, #6b7280)); --cgfm-text: var(--text-primary, var(--token-text-primary, #111827)); --cgfm-hover: var(--sidebar-surface-secondary, rgba(128,128,128,.12)); --cgfm-active: var(--sidebar-surface-secondary, rgba(128,128,128,.18)); --cgfm-danger:#ef4444; contain: layout paint style; }
       /* The folder surface is owned by body, never by ChatGPT's React sidebar. */
-      #cgfm-root.cgfm-dual-pane { position:fixed; top:0; left:var(--cgfm-panel-left,340px); width:var(--cgfm-panel-width,300px); height:100dvh; margin:0; display:flex; flex-direction:column; overflow:hidden; z-index:42; border-right:1px solid rgba(128,128,128,.20); background:var(--sidebar-surface-primary,var(--main-surface-primary,#fff)); box-shadow:4px 0 16px rgba(0,0,0,.06); transition:opacity .15s ease, visibility .15s ease; }
+      #cgfm-root.cgfm-dual-pane { position:fixed; top:0; left:var(--cgfm-panel-left,52px); width:var(--cgfm-panel-width,300px); height:100dvh; margin:0; display:flex; flex-direction:column; overflow:hidden; z-index:60; border-right:1px solid rgba(128,128,128,.20); background:var(--sidebar-surface-primary,var(--main-surface-primary,#fff)); box-shadow:4px 0 16px rgba(0,0,0,.10); transition:opacity .15s ease, visibility .15s ease; }
       #cgfm-root.cgfm-dual-pane[data-cgfm-visible="false"] { opacity:0; visibility:hidden; pointer-events:none; }
       #cgfm-root.cgfm-dual-pane[data-cgfm-visible="true"] { opacity:1; visibility:visible; pointer-events:auto; }
       #cgfm-root.cgfm-dual-pane .cgfm-header { flex:0 0 auto; padding-top:9px; padding-bottom:9px; border-bottom:1px solid rgba(128,128,128,.13); }
-      #cgfm-root.cgfm-dual-pane .cgfm-tree { min-height:0; flex:1 1 auto; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+      #cgfm-root.cgfm-dual-pane .cgfm-tree { min-height:90px; flex:1 1 auto; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+      #cgfm-root .cgfm-recent-section { display:flex; flex-direction:column; min-height:120px; max-height:45%; border-top:1px solid rgba(128,128,128,.20); }
+      #cgfm-root .cgfm-recent-heading { display:flex; justify-content:space-between; align-items:center; padding:9px 12px 7px 16px; font-size:12px; font-weight:600; flex:0 0 auto; }
+      #cgfm-root .cgfm-recent-list { overflow:auto; min-height:0; flex:1 1 auto; padding:0 6px 8px; overscroll-behavior:contain; }
+      #cgfm-root .cgfm-recent-chat { border-radius:7px; display:flex; align-items:center; gap:8px; min-height:31px; padding:5px 9px; cursor:grab; }
+      #cgfm-root .cgfm-recent-chat:hover { background:var(--cgfm-hover); }
+      #cgfm-root .cgfm-recent-chat a { color:inherit; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; font-size:13px; }
+      #cgfm-root .cgfm-recent-chat svg { width:15px; height:15px; flex:none; }
+      #cgfm-root .cgfm-recent-empty { color:var(--cgfm-muted); padding:8px 12px; font-size:12px; line-height:1.5; }
+      #cgfm-rail-entry { display:flex; align-items:center; justify-content:center; width:100%; flex:none; }
+      #cgfm-rail-button { display:flex; align-items:center; justify-content:center; width:36px; height:36px; padding:8px; border:0; border-radius:10px; background:transparent; color:var(--text-secondary,var(--token-text-tertiary,currentColor)); cursor:pointer; }
+      #cgfm-rail-button:hover,#cgfm-rail-button[data-cgfm-open="true"] { background:var(--sidebar-surface-secondary,rgba(128,128,128,.14)); color:var(--text-primary,currentColor); }
+      #cgfm-rail-button svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+      @media (max-width:750px) { #cgfm-root.cgfm-dual-pane { width:min(300px,calc(100vw - var(--cgfm-panel-left,52px) - 8px)); } }
       /* Native peek may close when pointer enters the sibling pane. Keep its visual
          column exposed while the pointer is still inside the two-column region.
          This does not rewrite React component state or override inert. */
-      @media (max-width:750px) { #cgfm-root.cgfm-dual-pane { width:min(300px,calc(100vw - var(--cgfm-panel-left,52px) - 8px)); } }
       #cgfm-root * { box-sizing:border-box; }
       #cgfm-root button { font:inherit; }
       #cgfm-root .cgfm-header { display:flex; align-items:center; min-height:32px; padding:7px 10px 4px 16px; gap:6px; color:var(--cgfm-text); }
@@ -1333,26 +1355,19 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       rootEl.setAttribute('data-cgfm-version', VERSION);
       bindRootEvents(rootEl);
       rootEl.addEventListener('pointerenter', event => {
-        dualSidebarPointerX = event.clientX;
-        dualSidebarPointerY = event.clientY;
-        dualSidebarPointerInside = true;
-        dualSidebarHover = true;
-        if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
+        folderPointerInPane = true;
+        clearTimeout(folderCloseTimer);
         syncSidebarVisibility();
-        requestTemporaryNativePin();
       });
       rootEl.addEventListener('pointerleave', event => {
-        dualSidebarPointerInside = false;
-        dualSidebarPointerX = event.clientX;
-        dualSidebarPointerY = event.clientY;
-        scheduleDualSidebarLeave();
+        folderPointerInPane = false;
+        scheduleFolderClose();
       });
     }
     if (rootEl.parentElement !== document.body) document.body.appendChild(rootEl);
     if (!mounted || !rootEl.firstElementChild) render();
     mounted = true;
-    bindAppShellSidebarStateWatcher();
-    bindDualSidebarGeometry();
+    ensureFolderRailButton();
     syncSidebarVisibility();
     setupNativeDragCache();
     setupNativeMenuHook();
@@ -1387,6 +1402,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         </div>
       </div>
       ${collapsed ? '' : `<div class="cgfm-tree" data-folder-tree="1">${renderTree(p)}</div>`}
+      <section class="cgfm-recent-section" aria-label="最近对话">
+        <div class="cgfm-recent-heading"><span>最近对话</span><span style="color:var(--cgfm-muted);font-weight:400">已发现</span></div>
+        <div class="cgfm-recent-list" data-cgfm-recent-list="1">${renderRecentChats()}</div>
+      </section>
     `;
     treeEl = rootEl.querySelector('[data-folder-tree]');
     focusInlineFolderEditor();
@@ -1885,6 +1904,21 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
           event.dataTransfer.setData('text/plain', location.origin + payload.url);
           event.dataTransfer.effectAllowed = 'move';
         }
+      } catch (_) {}
+      return;
+    }
+    const recentRow = event.target.closest && event.target.closest('.cgfm-recent-chat[data-chat-id]');
+    if (recentRow && rootEl.contains(recentRow)) {
+      const id = recentRow.getAttribute('data-chat-id');
+      const chat = recentKnown.find(item => item.id === id);
+      if (!chat) { event.preventDefault(); return; }
+      const payload = { kind:'chat', id, title:chat.title, url:'/c/'+id };
+      dragPayload = payload; dragStartPayload = payload;
+      dropCommitted = false;
+      try {
+        event.dataTransfer?.setData(DRAG_MIME, JSON.stringify(payload));
+        event.dataTransfer?.setData('text/plain', location.origin + payload.url);
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
       } catch (_) {}
       return;
     }
@@ -3935,118 +3969,153 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return true;
   }
 
-  function pointerInsideDualSidebar(x, y) {
-    return x >= 0 && x < dualSidebarNativeWidth + dualSidebarWidth &&
-      y >= 0 && y < innerHeight;
+  // v1.0: the folder surface is independently controlled. Never toggle ChatGPT's
+  // native sidebar, change its inert attribute, or alter its preferred width.
+  function recentStorageKey() {
+    const account = currentAccount && currentAccount.id;
+    return account ? 'cgfm.v1.recentCache.' + encodeURIComponent(String(account)) : '';
   }
 
-  function nativePinToggleButton() {
-    return [...document.querySelectorAll('button')].find(b =>
-      b.getAttribute('aria-label') === '显示/隐藏侧边栏' ||
-      b.getAttribute('aria-label') === 'Show/hide sidebar' ||
-      b.getAttribute('aria-label') === 'Toggle sidebar');
+  function readRecentCache() {
+    const key = recentStorageKey();
+    if (recentCacheAccount === key) return;
+    recentCacheAccount = key;
+    recentKnown = [];
+    if (!key) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(key) || 'null');
+      if (!saved || !Array.isArray(saved.chats) || Date.now() - saved.timestamp > 7 * 86400000) return;
+      recentKnown = saved.chats.filter(c => c && /^[a-zA-Z0-9_-]{12,80}$/.test(c.id) && typeof c.title === 'string').slice(0, 100);
+    } catch (_) {}
   }
 
-  function nativePanelActuallyPinned() {
-    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
-    const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
-    return !!(panel && content && !content.inert && !content.hasAttribute('data-sidebar-collapsed') &&
-      panel.getAttribute('data-slate-sidebar-peeking') !== 'true' &&
-      panel.getBoundingClientRect().width > 200);
-  }
-
-  // Native toggle is a transaction, not an inert/CSS bridge. It may still modify
-  // ChatGPT's persisted preference; release promptly and never retry in a loop.
-  function requestTemporaryNativePin() {
-    if (dualNativePinOwned || dualNativePinPending || nativePanelActuallyPinned()) return;
-    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
-    const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
-    const button = nativePinToggleButton();
-    if (!panel || !content || !button || !content.isConnected ||
-        panel.getAttribute('data-slate-sidebar-peeking') !== 'true' || content.inert ||
-        Date.now() - dualNativePinLastAction < 1500) return;
-    dualNativePinPending = true;
-    dualNativePinOriginPeeking = true;
-    dualNativePinLastAction = Date.now();
-    button.click();
-    clearTimeout(dualNativePinTimeout);
-    dualNativePinTimeout = setTimeout(() => {
-      const pinned = nativePanelActuallyPinned();
-      dualNativePinPending = false;
-      dualNativePinOwned = pinned;
-      if (dualNativePinOwned && !pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY)) releaseTemporaryNativePin();
-      scheduleAppShellStateRefresh();
-    }, 1100);
-  }
-
-  function releaseTemporaryNativePin() {
-    if (dualNativePinPending) {
-      dualNativePinOriginPeeking = false;
-      return;
-    }
-    if (!dualNativePinOwned) return;
-    dualNativePinOwned = false;
-    // The user might have changed native mode manually; only undo our own
-    // proven transition when the native panel remains pinned.
-    if (!nativePanelActuallyPinned()) return;
-    const button = nativePinToggleButton();
-    if (!button) return;
-    dualNativePinLastAction = Date.now();
-    button.click();
-    scheduleSidebarVisibilityCheck();
-  }
-
-  function scheduleDualSidebarLeave() {
-    if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
-    dualSidebarLeaveTimer = setTimeout(() => {
-      dualSidebarLeaveTimer = null;
-      if (nativeChatPointerDrag && nativeChatPointerDrag.active) return;
-      if (pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY)) return;
-      dualSidebarHover = false;
-      dualSidebarPointerInside = false;
-      syncSidebarVisibility();
-      releaseTemporaryNativePin();
-    }, 170);
-  }
-
-  function bindDualSidebarGeometry() {
-    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+  function collectRecentChats(force = false) {
+    readRecentCache();
+    if (!force && Date.now() - lastRecentScan < 1800) return;
+    lastRecentScan = Date.now();
     const shell = document.getElementById('app-shell-sidebar');
-    const target = shell || panel;
-    if (target === dualSidebarResizeTarget) return;
-    if (dualSidebarResizeObserver) dualSidebarResizeObserver.disconnect();
-    dualSidebarResizeTarget = target;
-    if (!target || typeof ResizeObserver === 'undefined') return;
-    dualSidebarResizeObserver = new ResizeObserver(() => scheduleAppShellStateRefresh());
-    dualSidebarResizeObserver.observe(target);
+    if (!shell) return;
+    // Read only the native loaded Recents section. Never treat cached chats as
+    // complete account history, and never fetch private APIs or chat bodies.
+    const section = shell.querySelector(RECENTS_SECTION_SELECTOR) ||
+      shell.querySelector('[data-app-action-sidebar-section-heading="Recents"]');
+    const scope = section || shell.querySelector('[data-app-action-sidebar-scroll]');
+    if (!scope) return;
+    const found = [];
+    const seen = new Set();
+    for (const row of scope.querySelectorAll(NATIVE_CHAT_ROW_SELECTOR + ',a[href*="/c/"]')) {
+      if (rootEl && rootEl.contains(row)) continue;
+      const chat = extractChatFromNativeElement(row);
+      if (!chat || seen.has(chat.id)) continue;
+      seen.add(chat.id);
+      found.push({ id: chat.id, title: chat.title || '未命名对话' });
+      if (found.length >= 100) break;
+    }
+    if (!found.length) return;
+    const existing = new Map(recentKnown.map(c => [c.id, c]));
+    recentKnown = found.concat([...existing.values()].filter(c => !seen.has(c.id))).slice(0, 100);
+    const key = recentStorageKey();
+    if (key) {
+      try { localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), chats: recentKnown })); } catch (_) {}
+    }
+    updateRecentDom();
+  }
+
+  function renderRecentChats() {
+    readRecentCache();
+    if (!recentKnown.length) return '<div class="cgfm-recent-empty">暂无已发现的最近对话。可先展开官方聊天列表以获取数据。</div>';
+    return recentKnown.map(chat => `<div class="cgfm-recent-chat" draggable="true" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a></div>`).join('');
+  }
+
+  function updateRecentDom() {
+    const list = rootEl?.querySelector('[data-cgfm-recent-list]');
+    if (!list) return;
+    const active = document.activeElement;
+    if (active && list.contains(active)) return;
+    list.innerHTML = renderRecentChats();
+  }
+
+  function scheduleFolderClose() {
+    clearTimeout(folderCloseTimer);
+    if (folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+        (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
+    folderCloseTimer = setTimeout(() => {
+      if (folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+          (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
+      syncSidebarVisibility();
+    }, 220);
+  }
+
+  function folderRailMountTarget() {
+    return document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"] [data-appearance="plain"]');
+  }
+
+  function ensureFolderRailButton() {
+    const host = folderRailMountTarget();
+    if (!host) return;
+    if (!folderButton || !folderButton.isConnected || folderButton.parentElement !== host) {
+      const old = document.getElementById('cgfm-rail-entry');
+      if (old && old !== folderButton) old.remove();
+      const entry = document.createElement('div');
+      entry.id = 'cgfm-rail-entry';
+      const button = document.createElement('button');
+      button.id = 'cgfm-rail-button';
+      button.type = 'button';
+      button.setAttribute('aria-label', '文件夹');
+      button.setAttribute('title', '文件夹（悬停打开，点击固定）');
+      button.setAttribute('aria-expanded', 'false');
+      button.innerHTML = icon('folder');
+      entry.appendChild(button);
+      host.appendChild(entry);
+      button.addEventListener('pointerenter', () => {
+        folderPointerInButton = true;
+        clearTimeout(folderCloseTimer);
+        collectRecentChats(true);
+        syncSidebarVisibility();
+      });
+      button.addEventListener('pointerleave', () => {
+        folderPointerInButton = false;
+        scheduleFolderClose();
+      });
+      button.addEventListener('click', event => {
+        event.preventDefault(); event.stopPropagation();
+        folderButtonPinned = !folderButtonPinned;
+        collectRecentChats(true);
+        syncSidebarVisibility();
+        if (!folderButtonPinned) scheduleFolderClose();
+      });
+      folderButton = entry;
+    }
+    if (host !== folderButtonHost) {
+      folderRailObserver?.disconnect();
+      folderButtonHost = host;
+      folderRailObserver = new MutationObserver(() => {
+        if (!folderButton || folderButton.parentElement !== host) scheduleAppShellStateRefresh();
+      });
+      folderRailObserver.observe(host, { childList:true });
+    }
+    syncSidebarVisibility();
   }
 
   function syncSidebarVisibility() {
-    const shellState = getAppShellSidebarState();
-    const stateVisible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
-    const pinned = (shellState ? shellState.mode === 'pinned' : stateVisible) && !dualNativePinOwned && !dualNativePinPending;
-    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
-    const shell = document.getElementById('app-shell-sidebar');
-    const shellRect = shell && shell.getBoundingClientRect();
-    const panelRect = panel && panel.getBoundingClientRect();
-    const nativeWidth = shellRect && shellRect.width > 200 ? shellRect.right :
-      panelRect && panelRect.width > 200 ? panelRect.right : 340;
-    dualSidebarNativeWidth = Math.round(clamp(nativeWidth, 220, Math.max(220, innerWidth - 120)));
-    dualSidebarPinned = pinned;
-
-    // During cross-column movement keep our own pane alive. React remains the
-    // owner of the native peek state; CSS provides a short visual continuity hold.
-    const withinColumns = dualSidebarPointerInside && pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY);
-    dualSidebarOpen = pinned || stateVisible || dualSidebarHover || withinColumns || !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
+    dualSidebarOpen = folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+      !!(nativeChatPointerDrag && nativeChatPointerDrag.active && folderPointerInPane);
+    const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
+    // The navigation rail is always 52px, even when the native conversation
+    // sidebar is pinned. Position relative to the actual rail, never the native panel.
+    const railRect = rail?.getBoundingClientRect();
+    const left = railRect ? Math.round(railRect.right) : 52;
     if (rootEl) {
-      dualSidebarWidth = 300; // independent pane; existing sidebarWidthPx still controls native sidebar
-      rootEl.style.setProperty('--cgfm-panel-left', dualSidebarNativeWidth + 'px');
-      rootEl.style.setProperty('--cgfm-panel-width', dualSidebarWidth + 'px');
+      rootEl.style.setProperty('--cgfm-panel-left', left + 'px');
+      rootEl.style.setProperty('--cgfm-panel-width', '300px');
       rootEl.setAttribute('data-cgfm-visible', dualSidebarOpen ? 'true' : 'false');
     }
-    document.documentElement.style.setProperty('--cgfm-native-width', dualSidebarNativeWidth + 'px');
-    document.documentElement.classList.remove('cgfm-dual-hover-hold');
-    syncSidebarWidthClass(pinned);
+    const button = folderButton?.querySelector('button');
+    if (button) {
+      button.setAttribute('aria-expanded', dualSidebarOpen ? 'true' : 'false');
+      button.setAttribute('data-cgfm-open', dualSidebarOpen ? 'true' : 'false');
+    }
+    if (dualSidebarOpen) collectRecentChats();
   }
 
   function scheduleAppShellStateRefresh() {
@@ -4185,11 +4254,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     try {
       const beforeAccount = currentAccount && currentAccount.id;
       ensureActiveProfile();
-      bindAppShellSidebarStateWatcher();
       const afterAccount = currentAccount && currentAccount.id;
       if (!rootEl || rootEl.parentElement !== document.body) mount();
       else {
-        bindDualSidebarGeometry();
+        ensureFolderRailButton();
         setupNativeDragCache();
         setupNativeMenuHook();
         applySidebarWidth();
@@ -4210,28 +4278,23 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
       lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
-      bindSidebarToggleWatcher();
-      document.addEventListener('pointermove', event => {
-        if (!mounted || dualSidebarPinned) return;
-        dualSidebarPointerX = event.clientX;
-        dualSidebarPointerY = event.clientY;
-        const inside = pointerInsideDualSidebar(event.clientX, event.clientY);
-        if (inside && (dualSidebarHover || dualSidebarPointerInside)) {
-          dualSidebarPointerInside = true;
-          if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
-          if (rootEl && rootEl.getAttribute('data-cgfm-visible') !== 'true') syncSidebarVisibility();
-        } else if (!inside && (dualSidebarHover || dualSidebarPointerInside)) {
-          scheduleDualSidebarLeave();
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !menuEl && !modalEl && !editingFolderId) {
+          folderButtonPinned = false;
+          folderPointerInButton = false;
+          folderPointerInPane = false;
+          syncSidebarVisibility();
         }
-      }, { passive:true, capture:true });
-      bindAppShellSidebarStateWatcher();
+      });
+      // The independent panel responds only to its own button/hover events.
+      // No global pointer tracking or native sidebar pinning.
       // Mount once outside the React tree; sparse recovery handles body replacement only.
       [0, 700, 2800, 8000, 21000, 55000].forEach(delay => setTimeout(ensureMountedLight, delay));
       const idle = window.requestIdleCallback || (fn => setTimeout(fn, 3500));
       idle(() => { try { if (mounted) ensureSettingsModal(); } catch (_) {} });
       restartPeriodicBackup();
       setTimeout(() => checkRemoteUpdate(false, 'boot'), 1800);
-      window.addEventListener('beforeunload', () => { releaseTemporaryNativePin(); flushPendingPersist(false); teardownCrossTabStorageSync(); });
+      window.addEventListener('beforeunload', () => { flushPendingPersist(false); teardownCrossTabStorageSync(); });
       window.addEventListener('pagehide', () => flushPendingPersist(false));
       window.addEventListener('focus', () => { scheduleResumeRecovery('focus'); setTimeout(() => checkRemoteUpdate(false, 'focus'), 500); }, { passive: true });
       window.addEventListener('pageshow', () => { scheduleResumeRecovery('pageshow'); setTimeout(() => checkRemoteUpdate(false, 'pageshow'), 700); }, { passive: true });
