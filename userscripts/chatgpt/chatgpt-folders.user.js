@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.2.0
+// @version      1.2.1
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.2.0';
+  const VERSION = '1.2.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -101,6 +101,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let recentKnown = [];
   let recentCacheAccount = '';
   let editingChatId = '';
+  let renderDeferredDuringChatEdit = false;
   let renameChatBusy = false;
   let capturedOfficialHistoryRequest = null; // In-memory only. Never persist credentials.
   let historyRefreshPromise = null;
@@ -1082,11 +1083,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-root .cgfm-recent-section { display:block; min-height:0; border-top:1px solid rgba(128,128,128,.20); }
       #cgfm-root .cgfm-recent-heading { display:flex; justify-content:space-between; align-items:center; padding:9px 12px 7px 16px; font-size:14px; line-height:20px; font-weight:600; flex:0 0 auto; }
       #cgfm-root .cgfm-recent-list { overflow:visible; min-height:0; padding:0 6px 8px; }
-      #cgfm-root .cgfm-recent-chat { border-radius:7px; display:flex; align-items:center; gap:8px; min-height:31px; padding:5px 9px; cursor:grab; }
+      #cgfm-root .cgfm-recent-chat { border-radius:7px; display:flex; align-items:center; gap:8px; height:36px; min-height:36px; padding:5px 9px; cursor:grab; }
       #cgfm-root .cgfm-recent-chat:hover { background:var(--cgfm-hover); }
       #cgfm-root .cgfm-recent-chat a { color:inherit; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; font-size:13px; }
-      #cgfm-root .cgfm-chat-rename { width:23px; height:23px; border:0; border-radius:6px; background:transparent; color:var(--cgfm-muted); flex:none; cursor:pointer; display:none; align-items:center; justify-content:center; padding:3px; }
-      #cgfm-root .cgfm-chat-row:hover .cgfm-chat-rename,#cgfm-root .cgfm-recent-chat:hover .cgfm-chat-rename,#cgfm-root .cgfm-chat-rename:focus-visible { display:inline-flex; }
+      #cgfm-root .cgfm-chat-rename { width:23px; height:23px; border:0; border-radius:6px; background:transparent; color:var(--cgfm-muted); flex:none; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:3px; opacity:0; pointer-events:none; }
+      #cgfm-root .cgfm-chat-row:hover .cgfm-chat-rename,#cgfm-root .cgfm-recent-chat:hover .cgfm-chat-rename,#cgfm-root .cgfm-chat-rename:focus-visible { opacity:1; pointer-events:auto; }
       #cgfm-root .cgfm-chat-rename:hover { background:var(--cgfm-hover); color:var(--cgfm-text); }
       #cgfm-root .cgfm-chat-rename svg { width:15px; height:15px; }
       #cgfm-root .cgfm-chat-edit { flex:1; width:1px; min-width:0; border:1px solid #3A83F7; border-radius:6px; height:26px; padding:2px 6px; background:var(--main-surface-primary,#fff); color:var(--cgfm-text); font:inherit; }
@@ -1395,10 +1396,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function queueRender() {
+    if (editingChatId) { renderDeferredDuringChatEdit = true; return; }
     if (renderQueued) return;
     renderQueued = true;
     requestAnimationFrame(() => {
       renderQueued = false;
+      if (editingChatId) { renderDeferredDuringChatEdit = true; return; }
       if (!rootEl || !document.body.contains(rootEl)) mount();
       else render();
     });
@@ -1406,6 +1409,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function render() {
     if (!rootEl) return;
+    if (editingChatId && rootEl.querySelector('[data-chat-edit-id]')) { renderDeferredDuringChatEdit = true; return; }
     const p = getProfile();
     const collapsed = !!p.settings.ui.sectionCollapsed;
     const oldScrollTop = rootEl.querySelector('[data-cgfm-scroll]')?.scrollTop || 0;
@@ -1597,6 +1601,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function onRootKeydown(event) {
     const chatInput = event.target.closest('[data-chat-edit-id]');
     if (chatInput && rootEl.contains(chatInput)) {
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Enter') { event.preventDefault(); commitChatRename(chatInput, false); }
       else if (event.key === 'Escape') { event.preventDefault(); commitChatRename(chatInput, true); }
       return;
@@ -1609,12 +1614,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function onRootFocusOut(event) {
     const chatInput = event.target.closest('[data-chat-edit-id]');
-    if (chatInput && rootEl.contains(chatInput)) {
-      setTimeout(() => {
-        if (editingChatId === chatInput.getAttribute('data-chat-edit-id')) commitChatRename(chatInput, false);
-      }, 0);
-      return;
-    }
+    // Chat rename must be explicit: blur can occur during IME composition,
+    // browser focus changes and sidebar DOM updates. Never auto-submit on blur.
+    if (chatInput && rootEl.contains(chatInput)) return;
     const input = event.target.closest('[data-folder-edit-id]');
     if (!input || !rootEl.contains(input)) return;
     setTimeout(() => {
@@ -4135,8 +4137,33 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       toast('尚未取得官方会话授权上下文；请先正常展开一次官方侧边栏。');
       return;
     }
+    if (editingChatId) return;
     editingChatId = id;
-    queueRender();
+    clearTimeout(folderCloseTimer);
+    // Replace only the title link; preserve scroll, focus, and other rows.
+    renderDeferredDuringChatEdit = false;
+    const p = getProfile();
+    const chat = p.conversations[id] || recentKnown.find(c => c.id === id);
+    const row = [...rootEl.querySelectorAll('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]')]
+      .find(el => el.getAttribute('data-chat-id') === id);
+    const titleLink = row?.querySelector('a.cgfm-chat-title');
+    if (row && titleLink && chat) {
+      const input = document.createElement('input');
+      input.className = 'cgfm-chat-edit';
+      input.setAttribute('data-chat-edit-id', id);
+      input.setAttribute('draggable', 'false');
+      input.spellcheck = false;
+      input.value = chat.title || titleLink.textContent || '';
+      titleLink.replaceWith(input);
+      row.setAttribute('draggable', 'false');
+      input.focus();
+      input.select();
+    } else {
+      editingChatId = '';
+      toast('暂时无法打开此对话的编辑框。');
+      return;
+    }
+    syncSidebarVisibility();
   }
 
   function onChatRenameContextMenu(event) {
@@ -4149,7 +4176,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   async function commitChatRename(input, cancel) {
     const id = input?.getAttribute('data-chat-edit-id');
     if (!id || editingChatId !== id || renameChatBusy) return;
-    if (cancel) { editingChatId = ''; queueRender(); return; }
+    if (cancel) { finishChatRenameEditing(); return; }
     const title = String(input.value || '').trim();
     if (!title || title.length > 200) { toast('标题不能为空，且不能超过 200 字符。'); input.focus(); return; }
     const template = capturedOfficialHistoryRequest;
@@ -4179,13 +4206,20 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (key) {
         try { localStorage.setItem(key, JSON.stringify({timestamp:Date.now(),chats:recentKnown})); } catch (_) {}
       }
-      editingChatId = '';
-      queueRender();
+      finishChatRenameEditing();
       toast('对话已重命名。');
     } catch (err) {
       input.disabled = false;
       toast('重命名失败，原标题未改变。');
     } finally { clearTimeout(timeout); renameChatBusy = false; }
+  }
+
+  function finishChatRenameEditing() {
+    editingChatId = '';
+    renderDeferredDuringChatEdit = false;
+    queueRender();
+    syncSidebarVisibility();
+    if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
   }
 
   function recentStorageKey() {
@@ -4258,7 +4292,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const list = rootEl?.querySelector('[data-cgfm-recent-list]');
     if (!list) return;
     const active = document.activeElement;
-    if (active && list.contains(active)) return;
+    if (editingChatId || (active && list.contains(active))) return;
     list.innerHTML = renderRecentChats();
     focusInlineChatEditor();
   }
@@ -4285,10 +4319,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function scheduleFolderClose() {
     clearTimeout(folderCloseTimer);
-    if (ownedDragActive || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+    if (ownedDragActive || editingChatId || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
         (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
     folderCloseTimer = setTimeout(() => {
-      if (ownedDragActive || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+      if (ownedDragActive || editingChatId || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
           (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
       syncSidebarVisibility();
     }, 220);
@@ -4346,7 +4380,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function syncSidebarVisibility() {
-    dualSidebarOpen = ownedDragActive || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+    dualSidebarOpen = ownedDragActive || !!editingChatId || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
       !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
     const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
     // The navigation rail is always 52px, even when the native conversation
