@@ -1,10 +1,18 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.9.1  
+> 当前说明版本：v0.9.2  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
+
+## v0.9.2 跨列悬停兼容桥（实验性，待 Chrome 验收）
+
+- 已通过浏览器日志确认：鼠标移到第二列时官方 `:hover` 丢失，React 随后进入收起流程；单纯用 CSS 强制显示无法保证内容可交互。
+- 删除 v0.9.1 的全局 `mouseout` / `pointerout` 拦截及人工事件转发。该机制无可靠保障且可能影响官方交互。
+- 本版采用**有限作用域的原生内容交互桥**：仅当脚本确认鼠标位于文件夹列、且不是固定模式时，维持官方内容外观，并在 React 将当前原生内容设置为 `inert` 时临时解除它；鼠标离开双列后释放，官方收起时恢复 `inert`。
+- bridge 只跟踪当前原生内容节点，不移动/克隆官方 React DOM，不触碰文件夹数据、存储键、WebDAV、账号切换逻辑。文件夹节点继续挂在 `document.body`。
+- **重要限制：** 这是针对非公开 DOM 行为的兼容桥，并不等于真正改变 React 内部 peeking 状态；官方可能因 React 更新、布局裁切、点击处理或未来网站改版继续出现第一列失效。尤其要实测第一列从第二列返回后能否点击、拖拽、正常关闭，以及固定模式是否正常。出现异常时请回滚，不应叠加模拟鼠标事件来掩盖。
 
 ## v0.9.1 双列悬停与拖拽显示修复（待 Chrome 实测）
 
@@ -20,7 +28,7 @@
 - 第一列为 ChatGPT 原生 sidebar，第二列 `#cgfm-root.cgfm-dual-pane` 是 `document.body` 直属子节点。两列分别滚动。
 - 文件夹第二列宽度暂固定 **300 CSS px**；原设置“自定义左侧侧边栏宽度”只用于官方侧栏，不再兼任文件夹宽度。
 - 官方侧栏提供 `#app-shell-sidebar` 的宽度参考；`[data-slate-sidebar-content]` 的 `inert` 和 `[data-slate-sidebar-peeking]` 作为可见性/固定性信号。通过少量属性与 ResizeObserver 更新面板位置，而**不再据此重挂载**。
-- 鼠标跨列时，`pointerenter`/`pointerleave` 保持文件夹列显隐；利用 `cgfm-dual-hover-hold` 做官方第一列的视觉保持。ChatGPT React 对原生栏的 `inert` 控制无法由脚本可靠接管，此处属于**浏览器实测必须验证**的兼容点，不能声称已实现完全的官方悬浮状态锁定。
+- 鼠标跨列时，`pointerenter`/`pointerleave` 保持文件夹列显隐；利用 `cgfm-dual-hover-hold` 做官方第一列视觉保持，并在 v0.9.2 中以限定生命周期的交互桥临时解除 `inert`。这并未改变 React 的真实悬浮状态，属于**浏览器必须验证**的兼容点。
 - 文件夹的滚动位置、展开状态不因 sidebar peeking 变化而重置；切换账号所需的业务重绘逻辑保留。WebDAV schema、profile key、revision、操作日志、拖拽 payload 均不变。
 - 固定展开模式下，当前第二列作为覆盖层紧邻第一列；对正文和 Composer 的真正响应式空间预留需要基于实际 app-shell 布局作浏览器验收，避免未经验证就修改所有 `main` 节点。
 - 文件夹根节点仅在丢失或重新加载页面时恢复。渲染方式保留原 `render()` 和用户交互，后台同步不依赖视图显隐。

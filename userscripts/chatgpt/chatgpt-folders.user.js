@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.9.1
-// @description  ChatGPT 普通聊天文件夹管理：v0.9.1；独立持久双列文件夹，跟随官方侧边栏状态。
+// @version      0.9.2
+// @description  ChatGPT 普通聊天文件夹管理：v0.9.2；独立持久双列文件夹，跟随官方侧边栏状态。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.9.1';
+  const VERSION = '0.9.2';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -86,8 +86,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let treeEl = null;
   let dualSidebarHover = false;
   let dualSidebarPointerInside = false;
-  let dualSidebarLastNativeOut = null;
-  let dualSidebarNativeBoundaryBound = false;
+  let dualSidebarBridgeContent = null;
+  let dualSidebarBridgeRestoring = false;
   let dualSidebarPinned = false;
   let dualSidebarOpen = false;
   let dualSidebarWidth = 300;
@@ -1330,7 +1330,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       rootEl.setAttribute('data-cgfm-visible', 'false');
       rootEl.setAttribute('data-cgfm-version', VERSION);
       bindRootEvents(rootEl);
-      rootEl.addEventListener('pointerenter', () => {
+      rootEl.addEventListener('pointerenter', event => {
+        dualSidebarPointerX = event.clientX;
+        dualSidebarPointerY = event.clientY;
         dualSidebarPointerInside = true;
         dualSidebarHover = true;
         if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
@@ -1348,7 +1350,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     mounted = true;
     bindAppShellSidebarStateWatcher();
     bindDualSidebarGeometry();
-    bindDualSidebarNativeBoundary();
     syncSidebarVisibility();
     setupNativeDragCache();
     setupNativeMenuHook();
@@ -3877,7 +3878,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (!content) return { mode: 'rail-only', shell, panel, content: null, rail };
       const inert = content.hasAttribute('inert') || !!content.closest('[inert]');
       if (inert || !isVisibleElement(content)) return { mode: 'rail-only', shell, panel, content, rail };
-      return { mode: peeking ? 'peeking' : 'pinned', shell, panel, content, rail };
+      return { mode: (peeking || dualSidebarBridgeContent === content) ? 'peeking' : 'pinned', shell, panel, content, rail };
     } catch (_) {
       return null;
     }
@@ -3936,26 +3937,37 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       y >= 0 && y < innerHeight;
   }
 
-  // React's hover handler observes mouseout/pointerout on its own pane. For the
-  // native-to-folder boundary, keep the pair as one logical hover surface.
-  // Do not interfere with pointerup, click, drag/drop or native sidebar buttons.
-  function bindDualSidebarNativeBoundary() {
-    if (dualSidebarNativeBoundaryBound) return;
-    dualSidebarNativeBoundaryBound = true;
-    const intercept = event => {
-      if (dualSidebarPinned || !rootEl || rootEl.getAttribute('data-cgfm-visible') !== 'true') return;
-      const related = event.relatedTarget;
-      if (!(related instanceof Node) || !rootEl.contains(related)) return;
-      const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
-      if (!panel || !(event.target instanceof Node) || !panel.contains(event.target)) return;
-      dualSidebarLastNativeOut = event.target;
-      dualSidebarHover = true;
-      dualSidebarPointerInside = true;
-      if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
-      event.stopImmediatePropagation();
-    };
-    document.addEventListener('mouseout', intercept, true);
-    document.addEventListener('pointerout', intercept, true);
+  // Keep the React-owned content usable while the pointer is over the sibling
+  // folder pane. The bridge does not synthesize mouse events or move React nodes.
+  // It is only active during a genuine native peek -> folder hover transition.
+  function releaseDualSidebarBridge() {
+    const content = dualSidebarBridgeContent;
+    dualSidebarBridgeContent = null;
+    if (!content || !content.isConnected) return;
+    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+    // Restore native accessibility on exit if the original peek has ended.
+    if (panel && panel.getAttribute('data-slate-sidebar-peeking') !== 'true') {
+      dualSidebarBridgeRestoring = true;
+      content.inert = true;
+      dualSidebarBridgeRestoring = false;
+    }
+  }
+
+  function reconcileDualSidebarBridge() {
+    if (dualSidebarBridgeRestoring) return;
+    const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
+    if (!content || dualSidebarPinned || !dualSidebarHover || !dualSidebarPointerInside ||
+        !pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY)) {
+      if (dualSidebarBridgeContent) releaseDualSidebarBridge();
+      return;
+    }
+    if (dualSidebarBridgeContent && dualSidebarBridgeContent !== content) {
+      releaseDualSidebarBridge();
+    }
+    dualSidebarBridgeContent = content;
+    // React may set inert as the original hover region is left. Removing it only
+    // for the duration of a real folder hover restores pointer/keyboard usability.
+    if (content.inert) content.inert = false;
   }
 
   function scheduleDualSidebarLeave() {
@@ -3967,17 +3979,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       dualSidebarHover = false;
       dualSidebarPointerInside = false;
       syncSidebarVisibility();
-      // If React never observed the native-to-sibling mouseout, relay the
-      // eventual departure from the entire two-column region to its pane.
-      const from = dualSidebarLastNativeOut;
-      dualSidebarLastNativeOut = null;
-      if (from && from.isConnected) {
-        const outside = document.elementFromPoint(dualSidebarPointerX, dualSidebarPointerY);
-        from.dispatchEvent(new MouseEvent('mouseout', {
-          bubbles: true, relatedTarget: outside || document.body,
-          clientX: dualSidebarPointerX, clientY: dualSidebarPointerY
-        }));
-      }
+      releaseDualSidebarBridge();
     }, 170);
   }
 
@@ -3996,7 +3998,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function syncSidebarVisibility() {
     const shellState = getAppShellSidebarState();
     const stateVisible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
-    const pinned = shellState ? shellState.mode === 'pinned' : stateVisible;
+    const pinned = dualSidebarBridgeContent ? false :
+      (shellState ? shellState.mode === 'pinned' : stateVisible);
     const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
     const shell = document.getElementById('app-shell-sidebar');
     const shellRect = shell && shell.getBoundingClientRect();
@@ -4005,6 +4008,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       panelRect && panelRect.width > 200 ? panelRect.right : 340;
     dualSidebarNativeWidth = Math.round(clamp(nativeWidth, 220, Math.max(220, innerWidth - 120)));
     dualSidebarPinned = pinned;
+    reconcileDualSidebarBridge();
     // During cross-column movement keep our own pane alive. React remains the
     // owner of the native peek state; CSS provides a short visual continuity hold.
     const withinColumns = dualSidebarPointerInside && pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY);
@@ -4085,6 +4089,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
 
     if (content !== appShellObservedContent) {
+      if (dualSidebarBridgeContent && dualSidebarBridgeContent !== content) dualSidebarBridgeContent = null;
       if (appShellContentObserver) appShellContentObserver.disconnect();
       appShellContentObserver = null;
       appShellObservedContent = content || null;
