@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.9.2
-// @description  ChatGPT 普通聊天文件夹管理：v0.9.2；独立持久双列文件夹，跟随官方侧边栏状态。
+// @version      0.9.3
+// @description  ChatGPT 普通聊天文件夹管理：v0.9.3；双列跨栏时临时使用官方原生展开按钮，保留持久文件夹。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.9.2';
+  const VERSION = '0.9.3';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -86,8 +86,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let treeEl = null;
   let dualSidebarHover = false;
   let dualSidebarPointerInside = false;
-  let dualSidebarBridgeContent = null;
-  let dualSidebarBridgeRestoring = false;
+  // Temporary native pin transaction: do not change React-owned inert or fake hover.
+  let dualNativePinOwned = false;
+  let dualNativePinPending = false;
+  let dualNativePinLastAction = 0;
+  let dualNativePinTimeout = null;
+  let dualNativePinOriginPeeking = false;
   let dualSidebarPinned = false;
   let dualSidebarOpen = false;
   let dualSidebarWidth = 300;
@@ -1055,8 +1059,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       /* Native peek may close when pointer enters the sibling pane. Keep its visual
          column exposed while the pointer is still inside the two-column region.
          This does not rewrite React component state or override inert. */
-      html.cgfm-dual-hover-hold [data-app-shell-left-panel-appearance] { width:var(--cgfm-native-width,340px) !important; }
-      html.cgfm-dual-hover-hold [data-slate-sidebar-content="true"] { opacity:1 !important; transform:none !important; visibility:visible !important; }
       @media (max-width:750px) { #cgfm-root.cgfm-dual-pane { width:min(300px,calc(100vw - var(--cgfm-panel-left,52px) - 8px)); } }
       #cgfm-root * { box-sizing:border-box; }
       #cgfm-root button { font:inherit; }
@@ -1337,6 +1339,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         dualSidebarHover = true;
         if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
         syncSidebarVisibility();
+        requestTemporaryNativePin();
       });
       rootEl.addEventListener('pointerleave', event => {
         dualSidebarPointerInside = false;
@@ -3878,7 +3881,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (!content) return { mode: 'rail-only', shell, panel, content: null, rail };
       const inert = content.hasAttribute('inert') || !!content.closest('[inert]');
       if (inert || !isVisibleElement(content)) return { mode: 'rail-only', shell, panel, content, rail };
-      return { mode: (peeking || dualSidebarBridgeContent === content) ? 'peeking' : 'pinned', shell, panel, content, rail };
+      return { mode: (peeking || dualNativePinOwned || dualNativePinPending) ? 'peeking' : 'pinned', shell, panel, content, rail };
     } catch (_) {
       return null;
     }
@@ -3937,37 +3940,60 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       y >= 0 && y < innerHeight;
   }
 
-  // Keep the React-owned content usable while the pointer is over the sibling
-  // folder pane. The bridge does not synthesize mouse events or move React nodes.
-  // It is only active during a genuine native peek -> folder hover transition.
-  function releaseDualSidebarBridge() {
-    const content = dualSidebarBridgeContent;
-    dualSidebarBridgeContent = null;
-    if (!content || !content.isConnected) return;
-    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
-    // Restore native accessibility on exit if the original peek has ended.
-    if (panel && panel.getAttribute('data-slate-sidebar-peeking') !== 'true') {
-      dualSidebarBridgeRestoring = true;
-      content.inert = true;
-      dualSidebarBridgeRestoring = false;
-    }
+  function nativePinToggleButton() {
+    return [...document.querySelectorAll('button')].find(b =>
+      b.getAttribute('aria-label') === '显示/隐藏侧边栏' ||
+      b.getAttribute('aria-label') === 'Show/hide sidebar' ||
+      b.getAttribute('aria-label') === 'Toggle sidebar');
   }
 
-  function reconcileDualSidebarBridge() {
-    if (dualSidebarBridgeRestoring) return;
+  function nativePanelActuallyPinned() {
+    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
     const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
-    if (!content || dualSidebarPinned || !dualSidebarHover || !dualSidebarPointerInside ||
-        !pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY)) {
-      if (dualSidebarBridgeContent) releaseDualSidebarBridge();
+    return !!(panel && content && !content.inert && !content.hasAttribute('data-sidebar-collapsed') &&
+      panel.getAttribute('data-slate-sidebar-peeking') !== 'true' &&
+      panel.getBoundingClientRect().width > 200);
+  }
+
+  // Native toggle is a transaction, not an inert/CSS bridge. It may still modify
+  // ChatGPT's persisted preference; release promptly and never retry in a loop.
+  function requestTemporaryNativePin() {
+    if (dualNativePinOwned || dualNativePinPending || nativePanelActuallyPinned()) return;
+    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+    const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
+    const button = nativePinToggleButton();
+    if (!panel || !content || !button || !content.isConnected ||
+        panel.getAttribute('data-slate-sidebar-peeking') !== 'true' || content.inert ||
+        Date.now() - dualNativePinLastAction < 1500) return;
+    dualNativePinPending = true;
+    dualNativePinOriginPeeking = true;
+    dualNativePinLastAction = Date.now();
+    button.click();
+    clearTimeout(dualNativePinTimeout);
+    dualNativePinTimeout = setTimeout(() => {
+      const pinned = nativePanelActuallyPinned();
+      dualNativePinPending = false;
+      dualNativePinOwned = pinned;
+      if (dualNativePinOwned && !pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY)) releaseTemporaryNativePin();
+      scheduleAppShellStateRefresh();
+    }, 1100);
+  }
+
+  function releaseTemporaryNativePin() {
+    if (dualNativePinPending) {
+      dualNativePinOriginPeeking = false;
       return;
     }
-    if (dualSidebarBridgeContent && dualSidebarBridgeContent !== content) {
-      releaseDualSidebarBridge();
-    }
-    dualSidebarBridgeContent = content;
-    // React may set inert as the original hover region is left. Removing it only
-    // for the duration of a real folder hover restores pointer/keyboard usability.
-    if (content.inert) content.inert = false;
+    if (!dualNativePinOwned) return;
+    dualNativePinOwned = false;
+    // The user might have changed native mode manually; only undo our own
+    // proven transition when the native panel remains pinned.
+    if (!nativePanelActuallyPinned()) return;
+    const button = nativePinToggleButton();
+    if (!button) return;
+    dualNativePinLastAction = Date.now();
+    button.click();
+    scheduleSidebarVisibilityCheck();
   }
 
   function scheduleDualSidebarLeave() {
@@ -3979,7 +4005,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       dualSidebarHover = false;
       dualSidebarPointerInside = false;
       syncSidebarVisibility();
-      releaseDualSidebarBridge();
+      releaseTemporaryNativePin();
     }, 170);
   }
 
@@ -3998,8 +4024,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function syncSidebarVisibility() {
     const shellState = getAppShellSidebarState();
     const stateVisible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
-    const pinned = dualSidebarBridgeContent ? false :
-      (shellState ? shellState.mode === 'pinned' : stateVisible);
+    const pinned = (shellState ? shellState.mode === 'pinned' : stateVisible) && !dualNativePinOwned && !dualNativePinPending;
     const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
     const shell = document.getElementById('app-shell-sidebar');
     const shellRect = shell && shell.getBoundingClientRect();
@@ -4008,7 +4033,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       panelRect && panelRect.width > 200 ? panelRect.right : 340;
     dualSidebarNativeWidth = Math.round(clamp(nativeWidth, 220, Math.max(220, innerWidth - 120)));
     dualSidebarPinned = pinned;
-    reconcileDualSidebarBridge();
+
     // During cross-column movement keep our own pane alive. React remains the
     // owner of the native peek state; CSS provides a short visual continuity hold.
     const withinColumns = dualSidebarPointerInside && pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY);
@@ -4020,7 +4045,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       rootEl.setAttribute('data-cgfm-visible', dualSidebarOpen ? 'true' : 'false');
     }
     document.documentElement.style.setProperty('--cgfm-native-width', dualSidebarNativeWidth + 'px');
-    document.documentElement.classList.toggle('cgfm-dual-hover-hold', !pinned && (dualSidebarHover || withinColumns));
+    document.documentElement.classList.remove('cgfm-dual-hover-hold');
     syncSidebarWidthClass(pinned);
   }
 
@@ -4089,7 +4114,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
 
     if (content !== appShellObservedContent) {
-      if (dualSidebarBridgeContent && dualSidebarBridgeContent !== content) dualSidebarBridgeContent = null;
+
       if (appShellContentObserver) appShellContentObserver.disconnect();
       appShellContentObserver = null;
       appShellObservedContent = content || null;
@@ -4142,6 +4167,15 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     document.addEventListener('click', event => {
       const target = event.target;
       if (!(target instanceof Element)) return;
+      // Never override a user-initiated native sidebar decision.
+      const nativeToggle = target.closest('button[aria-label="显示/隐藏侧边栏"],button[aria-label="Show/hide sidebar"],button[aria-label="Toggle sidebar"]');
+      if (nativeToggle && event.isTrusted) {
+        dualNativePinOwned = false;
+        dualNativePinOriginPeeking = false;
+        clearTimeout(dualNativePinTimeout);
+        dualNativePinPending = false;
+        scheduleSidebarVisibilityCheck();
+      }
       if (target.closest('[aria-controls="stage-slideover-sidebar"], [aria-controls="app-shell-sidebar"], [data-testid="close-sidebar-button"]')) scheduleSidebarVisibilityCheck();
     }, true);
     window.addEventListener('resize', scheduleSidebarVisibilityCheck, { passive: true });
@@ -4197,7 +4231,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       idle(() => { try { if (mounted) ensureSettingsModal(); } catch (_) {} });
       restartPeriodicBackup();
       setTimeout(() => checkRemoteUpdate(false, 'boot'), 1800);
-      window.addEventListener('beforeunload', () => { flushPendingPersist(false); teardownCrossTabStorageSync(); });
+      window.addEventListener('beforeunload', () => { releaseTemporaryNativePin(); flushPendingPersist(false); teardownCrossTabStorageSync(); });
       window.addEventListener('pagehide', () => flushPendingPersist(false));
       window.addEventListener('focus', () => { scheduleResumeRecovery('focus'); setTimeout(() => checkRemoteUpdate(false, 'focus'), 500); }, { passive: true });
       window.addEventListener('pageshow', () => { scheduleResumeRecovery('pageshow'); setTimeout(() => checkRemoteUpdate(false, 'pageshow'), 700); }, { passive: true });
