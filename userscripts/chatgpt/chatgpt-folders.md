@@ -1,12 +1,19 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.9.0  
+> 当前说明版本：v0.9.1  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
 
-## v0.9.0 当前生效架构：body-owned 双列面板
+## v0.9.1 双列悬停与拖拽显示修复（待 Chrome 实测）
+
+- 修复文件夹列 `pointerleave` 立即清除悬停状态、数据更新后又依据官方栏 `inert` 收起的状态竞争；双列范围内的指针位置现在参与可见性判定。
+- 在官方列转入文件夹列的边界，捕获并隔离与悬停收起相关的 `mouseout`/`pointerout`，避免官方 React 把跨列移动直接当作离开整个双列区域；在确实离开整个区域后尝试转发 `mouseout`，让 React 恢复原生关闭逻辑。
+- 文件夹节点继续由 `document.body` 持有，数据写入/渲染不应销毁根节点；WebDAV 格式与存储键不变。
+- **限制：** React 内部悬停实现不属于用户脚本公开接口，事件拦截及转发属于兼容适配，浏览器实测前不能保证官方栏所有跨列操作均正常。尤其要测试官方侧栏是否能正常自动收起、固定模式、右键菜单及拖拽；若实测不稳定，应回滚而非继续堆叠模拟事件。
+
+## v0.9.1 当前生效架构：body-owned 双列面板
 
 > **以下为现行架构规范，优先于本文后续 v0.8.x 及更早章节。** 后续章节中的“Recents 之前挂载”“hydration-safe 挂载到侧栏”“root 随宿主恢复”仅用于理解历史实现，不应再按其修改当前代码。
 
@@ -45,7 +52,7 @@
 
 1. `state` 是当前 ChatGPT 账号的内存单一数据源。
 2. 本地 profile 按 ChatGPT 账号隔离，不再自动迁移旧 v1/v2 单 profile。
-3. `#cgfm-root` 是脚本唯一主 UI 根节点；v0.9.0 起始终作为 `document.body` 直属子节点，不嵌入任何 ChatGPT 官方 React 区域。
+3. `#cgfm-root` 是脚本唯一主 UI 根节点；v0.9.1 起始终作为 `document.body` 直属子节点，不嵌入任何 ChatGPT 官方 React 区域。
 4. 手势监听在 `document-start` 尽早注册；DOM/state boot 延后至 DOMContentLoaded，UI 根节点不再依赖原生侧栏 hydration 稳定门槛。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 document/sidebar subtree，不给最近聊天逐项注入常驻 UI；仅允许对 app-shell left panel 的 peeking 属性与 conversation content 的 inert 属性做窄范围 attributes observer。

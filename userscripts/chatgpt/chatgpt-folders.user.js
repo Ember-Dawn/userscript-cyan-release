@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.9.0
-// @description  ChatGPT 普通聊天文件夹管理：v0.9.0；独立持久双列文件夹，跟随官方侧边栏状态。
+// @version      0.9.1
+// @description  ChatGPT 普通聊天文件夹管理：v0.9.1；独立持久双列文件夹，跟随官方侧边栏状态。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.9.0';
+  const VERSION = '0.9.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -85,6 +85,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let rootEl = null;
   let treeEl = null;
   let dualSidebarHover = false;
+  let dualSidebarPointerInside = false;
+  let dualSidebarLastNativeOut = null;
+  let dualSidebarNativeBoundaryBound = false;
   let dualSidebarPinned = false;
   let dualSidebarOpen = false;
   let dualSidebarWidth = 300;
@@ -1328,12 +1331,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       rootEl.setAttribute('data-cgfm-version', VERSION);
       bindRootEvents(rootEl);
       rootEl.addEventListener('pointerenter', () => {
+        dualSidebarPointerInside = true;
         dualSidebarHover = true;
         if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
         syncSidebarVisibility();
       });
       rootEl.addEventListener('pointerleave', event => {
-        dualSidebarHover = false;
+        dualSidebarPointerInside = false;
         dualSidebarPointerX = event.clientX;
         dualSidebarPointerY = event.clientY;
         scheduleDualSidebarLeave();
@@ -1344,6 +1348,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     mounted = true;
     bindAppShellSidebarStateWatcher();
     bindDualSidebarGeometry();
+    bindDualSidebarNativeBoundary();
     syncSidebarVisibility();
     setupNativeDragCache();
     setupNativeMenuHook();
@@ -3926,16 +3931,54 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return true;
   }
 
+  function pointerInsideDualSidebar(x, y) {
+    return x >= 0 && x < dualSidebarNativeWidth + dualSidebarWidth &&
+      y >= 0 && y < innerHeight;
+  }
+
+  // React's hover handler observes mouseout/pointerout on its own pane. For the
+  // native-to-folder boundary, keep the pair as one logical hover surface.
+  // Do not interfere with pointerup, click, drag/drop or native sidebar buttons.
+  function bindDualSidebarNativeBoundary() {
+    if (dualSidebarNativeBoundaryBound) return;
+    dualSidebarNativeBoundaryBound = true;
+    const intercept = event => {
+      if (dualSidebarPinned || !rootEl || rootEl.getAttribute('data-cgfm-visible') !== 'true') return;
+      const related = event.relatedTarget;
+      if (!(related instanceof Node) || !rootEl.contains(related)) return;
+      const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+      if (!panel || !(event.target instanceof Node) || !panel.contains(event.target)) return;
+      dualSidebarLastNativeOut = event.target;
+      dualSidebarHover = true;
+      dualSidebarPointerInside = true;
+      if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
+      event.stopImmediatePropagation();
+    };
+    document.addEventListener('mouseout', intercept, true);
+    document.addEventListener('pointerout', intercept, true);
+  }
+
   function scheduleDualSidebarLeave() {
     if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
     dualSidebarLeaveTimer = setTimeout(() => {
       dualSidebarLeaveTimer = null;
       if (nativeChatPointerDrag && nativeChatPointerDrag.active) return;
-      if (dualSidebarPointerX >= 0 && dualSidebarPointerX <= dualSidebarNativeWidth + dualSidebarWidth &&
-          dualSidebarPointerY >= 0 && dualSidebarPointerY <= innerHeight) return;
+      if (pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY)) return;
       dualSidebarHover = false;
+      dualSidebarPointerInside = false;
       syncSidebarVisibility();
-    }, 140);
+      // If React never observed the native-to-sibling mouseout, relay the
+      // eventual departure from the entire two-column region to its pane.
+      const from = dualSidebarLastNativeOut;
+      dualSidebarLastNativeOut = null;
+      if (from && from.isConnected) {
+        const outside = document.elementFromPoint(dualSidebarPointerX, dualSidebarPointerY);
+        from.dispatchEvent(new MouseEvent('mouseout', {
+          bubbles: true, relatedTarget: outside || document.body,
+          clientX: dualSidebarPointerX, clientY: dualSidebarPointerY
+        }));
+      }
+    }, 170);
   }
 
   function bindDualSidebarGeometry() {
@@ -3964,7 +4007,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     dualSidebarPinned = pinned;
     // During cross-column movement keep our own pane alive. React remains the
     // owner of the native peek state; CSS provides a short visual continuity hold.
-    dualSidebarOpen = pinned || stateVisible || dualSidebarHover || !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
+    const withinColumns = dualSidebarPointerInside && pointerInsideDualSidebar(dualSidebarPointerX, dualSidebarPointerY);
+    dualSidebarOpen = pinned || stateVisible || dualSidebarHover || withinColumns || !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
     if (rootEl) {
       dualSidebarWidth = 300; // independent pane; existing sidebarWidthPx still controls native sidebar
       rootEl.style.setProperty('--cgfm-panel-left', dualSidebarNativeWidth + 'px');
@@ -3972,7 +4016,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       rootEl.setAttribute('data-cgfm-visible', dualSidebarOpen ? 'true' : 'false');
     }
     document.documentElement.style.setProperty('--cgfm-native-width', dualSidebarNativeWidth + 'px');
-    document.documentElement.classList.toggle('cgfm-dual-hover-hold', !pinned && dualSidebarHover);
+    document.documentElement.classList.toggle('cgfm-dual-hover-hold', !pinned && (dualSidebarHover || withinColumns));
     syncSidebarWidthClass(pinned);
   }
 
@@ -4132,9 +4176,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         if (!mounted || dualSidebarPinned) return;
         dualSidebarPointerX = event.clientX;
         dualSidebarPointerY = event.clientY;
-        const inside = event.clientX >= 0 && event.clientX < dualSidebarNativeWidth + dualSidebarWidth &&
-          event.clientY >= 0 && event.clientY < innerHeight;
-        if (!inside && dualSidebarHover) scheduleDualSidebarLeave();
+        const inside = pointerInsideDualSidebar(event.clientX, event.clientY);
+        if (inside && (dualSidebarHover || dualSidebarPointerInside)) {
+          dualSidebarPointerInside = true;
+          if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
+          if (rootEl && rootEl.getAttribute('data-cgfm-visible') !== 'true') syncSidebarVisibility();
+        } else if (!inside && (dualSidebarHover || dualSidebarPointerInside)) {
+          scheduleDualSidebarLeave();
+        }
       }, { passive:true, capture:true });
       bindAppShellSidebarStateWatcher();
       // Mount once outside the React tree; sparse recovery handles body replacement only.
