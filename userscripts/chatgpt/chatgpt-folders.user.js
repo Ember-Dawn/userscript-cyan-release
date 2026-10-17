@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.0.0
+// @version      1.1.0
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -91,6 +91,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let folderPointerInButton = false;
   let folderPointerInPane = false;
   let folderCloseTimer = null;
+  let ownedDragActive = false;
+  let ownedDragSafetyTimer = null;
+  let recentMutationObserver = null;
+  let recentObserverHost = null;
+  let recentRefreshTimer = null;
   let lastRecentScan = 0;
   let recentKnown = [];
   let recentCacheAccount = '';
@@ -1065,10 +1070,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-root.cgfm-dual-pane[data-cgfm-visible="false"] { opacity:0; visibility:hidden; pointer-events:none; }
       #cgfm-root.cgfm-dual-pane[data-cgfm-visible="true"] { opacity:1; visibility:visible; pointer-events:auto; }
       #cgfm-root.cgfm-dual-pane .cgfm-header { flex:0 0 auto; padding-top:9px; padding-bottom:9px; border-bottom:1px solid rgba(128,128,128,.13); }
-      #cgfm-root.cgfm-dual-pane .cgfm-tree { min-height:90px; flex:1 1 auto; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
-      #cgfm-root .cgfm-recent-section { display:flex; flex-direction:column; min-height:120px; max-height:45%; border-top:1px solid rgba(128,128,128,.20); }
+      #cgfm-root.cgfm-dual-pane .cgfm-scroll-content { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; }
+      #cgfm-root.cgfm-dual-pane .cgfm-tree { min-height:0; flex:none; overflow:visible; }
+      #cgfm-root .cgfm-recent-section { display:block; min-height:0; border-top:1px solid rgba(128,128,128,.20); }
       #cgfm-root .cgfm-recent-heading { display:flex; justify-content:space-between; align-items:center; padding:9px 12px 7px 16px; font-size:12px; font-weight:600; flex:0 0 auto; }
-      #cgfm-root .cgfm-recent-list { overflow:auto; min-height:0; flex:1 1 auto; padding:0 6px 8px; overscroll-behavior:contain; }
+      #cgfm-root .cgfm-recent-list { overflow:visible; min-height:0; padding:0 6px 8px; }
       #cgfm-root .cgfm-recent-chat { border-radius:7px; display:flex; align-items:center; gap:8px; min-height:31px; padding:5px 9px; cursor:grab; }
       #cgfm-root .cgfm-recent-chat:hover { background:var(--cgfm-hover); }
       #cgfm-root .cgfm-recent-chat a { color:inherit; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; font-size:13px; }
@@ -1077,7 +1083,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-rail-entry { display:flex; align-items:center; justify-content:center; width:100%; flex:none; }
       #cgfm-rail-button { display:flex; align-items:center; justify-content:center; width:36px; height:36px; padding:8px; border:0; border-radius:10px; background:transparent; color:var(--text-secondary,var(--token-text-tertiary,currentColor)); cursor:pointer; }
       #cgfm-rail-button:hover,#cgfm-rail-button[data-cgfm-open="true"] { background:var(--sidebar-surface-secondary,rgba(128,128,128,.14)); color:var(--text-primary,currentColor); }
-      #cgfm-rail-button svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+      #cgfm-rail-button svg { width:20px; height:20px; fill:none; stroke:#E5A000; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+      #cgfm-rail-button:hover svg,#cgfm-rail-button[data-cgfm-open="true"] svg { stroke:#E5A000; }
       @media (max-width:750px) { #cgfm-root.cgfm-dual-pane { width:min(300px,calc(100vw - var(--cgfm-panel-left,52px) - 8px)); } }
       /* Native peek may close when pointer enters the sibling pane. Keep its visual
          column exposed while the pointer is still inside the two-column region.
@@ -1368,6 +1375,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (!mounted || !rootEl.firstElementChild) render();
     mounted = true;
     ensureFolderRailButton();
+    watchRecentListChanges();
     syncSidebarVisibility();
     setupNativeDragCache();
     setupNativeMenuHook();
@@ -1388,6 +1396,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (!rootEl) return;
     const p = getProfile();
     const collapsed = !!p.settings.ui.sectionCollapsed;
+    const oldScrollTop = rootEl.querySelector('[data-cgfm-scroll]')?.scrollTop || 0;
     rootEl.innerHTML = `
       <div class="cgfm-header" data-root-drop="1">
         <button class="cgfm-title" data-action="toggle-section" title="折叠/展开文件夹">
@@ -1401,13 +1410,17 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
           <button class="cgfm-icon" data-action="new-folder" title="新建顶层文件夹">${icon('plus')}</button>
         </div>
       </div>
-      ${collapsed ? '' : `<div class="cgfm-tree" data-folder-tree="1">${renderTree(p)}</div>`}
-      <section class="cgfm-recent-section" aria-label="最近对话">
-        <div class="cgfm-recent-heading"><span>最近对话</span><span style="color:var(--cgfm-muted);font-weight:400">已发现</span></div>
-        <div class="cgfm-recent-list" data-cgfm-recent-list="1">${renderRecentChats()}</div>
-      </section>
+      <div class="cgfm-scroll-content" data-cgfm-scroll="1">
+        ${collapsed ? '' : `<div class="cgfm-tree" data-folder-tree="1">${renderTree(p)}</div>`}
+        <section class="cgfm-recent-section" aria-label="最近对话">
+          <div class="cgfm-recent-heading"><span>最近对话</span><span style="color:var(--cgfm-muted);font-weight:400">已发现</span></div>
+          <div class="cgfm-recent-list" data-cgfm-recent-list="1">${renderRecentChats()}</div>
+        </section>
+      </div>
     `;
     treeEl = rootEl.querySelector('[data-folder-tree]');
+    const scroll = rootEl.querySelector('[data-cgfm-scroll]');
+    if (scroll) scroll.scrollTop = oldScrollTop;
     focusInlineFolderEditor();
   }
 
@@ -1468,6 +1481,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function bindRootEvents(el) {
     el.addEventListener('click', onRootClick);
     el.addEventListener('dragstart', onRootDragStart);
+    el.addEventListener('dragstart', event => {
+      if (event.defaultPrevented || !event.target?.closest?.('[draggable="true"]')) return;
+      beginOwnedPanelDrag();
+    });
+    el.addEventListener('dragend', finishOwnedPanelDrag);
+    el.addEventListener('drop', () => { if (ownedDragActive) queueMicrotask(finishOwnedPanelDrag); });
     el.addEventListener('dragover', onRootDragOver);
     el.addEventListener('dragleave', onRootDragLeave);
     el.addEventListener('drop', onRootDrop);
@@ -1835,6 +1854,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function resetNativeDragState() {
+    finishOwnedPanelDrag();
     cancelNativeChatPointerDrag(false);
     restoreTransientNativeChatDrag();
     dragPayload = null;
@@ -2317,7 +2337,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     } catch (_) {}
   }
 
-  function onNativeHistoryDragEnd() {
+  function onNativeHistoryDragEnd(event) {
+    // A panel-owned drag ends in its own handler; do not run the native-sidebar
+    // fallback before the panel's drop/dragend has completed.
+    if (ownedDragActive && event?.target instanceof Node && rootEl?.contains(event.target)) return;
     if (nativeChatPointerDrag && nativeChatPointerDrag.active) return;
     const shouldFallback = !dropCommitted && lastHoveredFolderId && (Date.now() - lastHoveredFolderAt < 900);
     const payload = dragPayload || dragStartPayload || pointerPayload;
@@ -3989,6 +4012,22 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     } catch (_) {}
   }
 
+  function watchRecentListChanges() {
+    const shell = document.getElementById('app-shell-sidebar');
+    const host = shell?.querySelector(RECENTS_SECTION_SELECTOR) ||
+      shell?.querySelector('[data-app-action-sidebar-section-heading="Recents"]') ||
+      shell?.querySelector('[data-app-action-sidebar-scroll]');
+    if (host === recentObserverHost) return;
+    recentMutationObserver?.disconnect();
+    recentObserverHost = host || null;
+    if (!host) return;
+    recentMutationObserver = new MutationObserver(() => {
+      clearTimeout(recentRefreshTimer);
+      recentRefreshTimer = setTimeout(() => collectRecentChats(true), 250);
+    });
+    recentMutationObserver.observe(host, { childList:true, subtree:true, characterData:true });
+  }
+
   function collectRecentChats(force = false) {
     readRecentCache();
     if (!force && Date.now() - lastRecentScan < 1800) return;
@@ -4035,12 +4074,32 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     list.innerHTML = renderRecentChats();
   }
 
+  function beginOwnedPanelDrag() {
+    ownedDragActive = true;
+    clearTimeout(folderCloseTimer);
+    clearTimeout(ownedDragSafetyTimer);
+    ownedDragSafetyTimer = setTimeout(finishOwnedPanelDrag, 30000);
+    syncSidebarVisibility();
+  }
+
+  function finishOwnedPanelDrag() {
+    if (!ownedDragActive) return;
+    ownedDragActive = false;
+    clearTimeout(ownedDragSafetyTimer);
+    ownedDragSafetyTimer = null;
+    // Native DnD can suppress pointerenter/leave. Reconcile from geometry after drop.
+    const hovered = rootEl?.matches(':hover') || false;
+    folderPointerInPane = hovered;
+    syncSidebarVisibility();
+    if (!hovered) scheduleFolderClose();
+  }
+
   function scheduleFolderClose() {
     clearTimeout(folderCloseTimer);
-    if (folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+    if (ownedDragActive || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
         (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
     folderCloseTimer = setTimeout(() => {
-      if (folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+      if (ownedDragActive || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
           (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
       syncSidebarVisibility();
     }, 220);
@@ -4098,8 +4157,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function syncSidebarVisibility() {
-    dualSidebarOpen = folderButtonPinned || folderPointerInButton || folderPointerInPane ||
-      !!(nativeChatPointerDrag && nativeChatPointerDrag.active && folderPointerInPane);
+    dualSidebarOpen = ownedDragActive || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+      !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
     const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
     // The navigation rail is always 52px, even when the native conversation
     // sidebar is pinned. Position relative to the actual rail, never the native panel.
@@ -4258,6 +4317,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (!rootEl || rootEl.parentElement !== document.body) mount();
       else {
         ensureFolderRailButton();
+        watchRecentListChanges();
         setupNativeDragCache();
         setupNativeMenuHook();
         applySidebarWidth();
@@ -4279,6 +4339,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && ownedDragActive) finishOwnedPanelDrag();
         if (event.key === 'Escape' && !menuEl && !modalEl && !editingFolderId) {
           folderButtonPinned = false;
           folderPointerInButton = false;
