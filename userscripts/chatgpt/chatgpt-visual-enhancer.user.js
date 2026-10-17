@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.3.2
+// @version      0.3.3
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，显示当前对话名称，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.2';
+    const VERSION = '0.3.3';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -39,6 +39,7 @@
     let conversationTitleMountToken = 0;
     let currentConversationId = extractConversationPageId();
     let documentTitleTrusted = true;
+    const CONVERSATION_TITLE_INTEGRITY_INTERVAL_MS = 1000;
 
     const css = `
 /* 白天模式：主界面与侧边栏统一为中性浅灰，输入框稍亮以保留层次。 */
@@ -290,33 +291,44 @@ html:not(.dark) body {
         return raw.replace(/^chatgpt:/i, '') || null;
     }
 
-    function isCurrentComposerPortal(portal) {
-        if (!(portal instanceof Element) || !portal.isConnected) return false;
+    function getComposerPortalPriority(portal) {
+        if (!(portal instanceof Element) || !portal.isConnected) return -1;
         const form = portal.closest('form[data-chatgpt-composer]');
-        if (!form) return false;
+        if (!form) return -1;
 
         const routeConversationId = extractConversationPageId();
         const portalConversationId = getPortalConversationId(portal);
         const placement = form.getAttribute('data-composer-placement') || '';
 
         if (routeConversationId) {
-            if (portalConversationId) return portalConversationId === routeConversationId;
-            return placement === 'thread';
+            if (placement !== 'thread') return -1;
+            if (portalConversationId === routeConversationId) return 300;
+            // ChatGPT may keep the active thread's local identity even after
+            // navigation to the final conversation UUID.
+            if (isLocalConversationId(portalConversationId) || /^WEB:/i.test(portalConversationId || '')) return 200;
+            if (!portalConversationId) return 100;
+            return -1; // Clearly stale, different stable conversation.
         }
 
-        // 新版 ChatGPT 从已有会话切到“新建”时会短暂保留旧 thread Composer。
-        // 只有真正的 home Composer 或 local-chatgpt 临时 portal 才属于当前新对话。
-        return placement === 'home' || isLocalConversationId(portalConversationId);
+        if (placement !== 'home') return -1;
+        if (isLocalConversationId(portalConversationId) || /^WEB:/i.test(portalConversationId || '')) return 300;
+        return portalConversationId ? -1 : 200;
     }
 
     function getComposerPortal() {
         const portals = document.querySelectorAll(
             'form[data-chatgpt-composer] > [data-above-composer-portal="true"]'
         );
+        let bestPortal = null;
+        let bestPriority = -1;
         for (const portal of portals) {
-            if (isCurrentComposerPortal(portal)) return portal;
+            const priority = getComposerPortalPriority(portal);
+            if (priority > bestPriority) {
+                bestPriority = priority;
+                bestPortal = portal;
+            }
         }
-        return null;
+        return bestPortal;
     }
 
     function renderConversationTitle() {
@@ -382,6 +394,22 @@ html:not(.dark) body {
                 installConversationTitle(portal);
             });
         });
+    }
+
+    function verifyConversationTitleIntegrity() {
+        if (document.readyState !== 'complete') return;
+        const portal = getComposerPortal();
+        if (!portal) return; // Never remove a connected title during an uncertain transition.
+        const root = document.getElementById(CONVERSATION_TITLE_ROOT_ID);
+        const box = root?.querySelector(`#${CONVERSATION_TITLE_BOX_ID}`);
+        const text = root?.querySelector(`#${CONVERSATION_TITLE_TEXT_ID}`);
+        if (!root || root.parentElement !== portal || !box || !text) {
+            // A partial title subtree cannot be repaired by reusing its broken root.
+            if (root && (!box || !text)) root.remove();
+            scheduleConversationTitleMount();
+            return;
+        }
+        renderConversationTitle();
     }
 
     function scheduleConversationTitleSync() {
@@ -618,6 +646,7 @@ html:not(.dark) body {
     });
 
     observePageChanges();
+    window.setInterval(verifyConversationTitleIntegrity, CONVERSATION_TITLE_INTEGRITY_INTERVAL_MS);
     scheduleFileScan(document);
     scheduleConversationTitleSync();
 

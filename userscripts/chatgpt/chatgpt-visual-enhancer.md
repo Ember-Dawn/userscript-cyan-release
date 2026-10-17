@@ -4,6 +4,13 @@
 
 该脚本集中维护 ChatGPT 网页版中不改变对话内容和发送行为的显示层增强。当前版本整合了原“ChatGPT 宽屏”和“ChatGPT 文件链接高亮助手”的现役功能，并在 Composer 上沿显示当前对话名称。
 
+## v0.3.3 对话标题 Composer 迁移与完整性修复
+
+- 当前存在 `/c/<id>` 时只选择 `thread` Composer；优先选择与 URL ID 一致的 portal，同时允许 `local-chatgpt:*` / `WEB:*` 作为有效的临时身份，避免首条消息绑定正式 UUID 后丢失标题。明确属于其他正式 UUID 的 portal 会被拒绝。
+- 新对话 `/` 只选择 `home` Composer，避免误挂到旧对话遗留的 `thread`。
+- 标题新增每秒一次的轻量完整性检查：验证当前 portal 中存在完整的标题组件，必要时重新挂载；当前没有有效 portal 时不主动删除已经连接的标题节点。
+- 保持原有标题来源、React 初次加载的双 animation frame 延迟、正文宽屏、文件高亮、临时对话样式不变。此修复不改变轮数和顺序任务脚本。
+
 ## 主要功能
 
 - 白天模式下将主界面与侧边栏背景统一为中性浅灰，并让 Composer 保持稍亮层次；
@@ -22,7 +29,7 @@ form[data-chatgpt-composer][data-composer-placement="thread"]
   > [data-above-composer-portal="true"]
 ```
 
-若精确 thread 选择器暂时不可用，则回退到普通 `form[data-chatgpt-composer]` 下的同一 portal。首次挂载只在文档达到 `complete` 后进行，并在找到 portal 后等待两个 animation frame 再确认节点仍属于当前 Composer，避免在 ChatGPT hydration 早期过早写入。
+普通会话路由优先使用 `thread` Composer，允许其在正式 UUID 路由下暂时或长期保留 `local-chatgpt:*` identity；新建页面只使用 `home` Composer，拒绝其他旧正式会话的 portal。首次挂载只在文档达到 `complete` 后进行，并在找到 portal 后等待两个 animation frame 再确认节点仍属于当前 Composer，避免在 ChatGPT hydration 早期过早写入。
 
 标题位于 Composer 左上沿：
 
@@ -47,7 +54,7 @@ height: 24px
 
 SPA 路由继续复用本脚本已有的 `pushState`、`replaceState` 和 `popstate` 监听。conversation id 变化后会立即把 `document.title` 标记为尚未校准，直到 `<title>` 发生实际变化后才重新将其作为当前对话标题来源，因此不会在 A → B 切换时短暂把 A 的标题当成 B 的标题。
 
-脚本现有的页面 MutationObserver 同时承担 Composer 首次出现/替换检测与 `<title>` 变化检测，不新增持续高频轮询，也不发送任何 ChatGPT API 请求。
+脚本现有的页面 MutationObserver 同时承担 Composer 首次出现/替换检测与 `<title>` 变化检测；另有每秒一次的轻量标题 DOM 完整性检查，用于修复观察事件遗漏后的挂载丢失。不发送任何 ChatGPT API 请求。
 
 ## 对话正文宽屏
 
@@ -160,7 +167,7 @@ node --check userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 
 实际页面建议至少验证：
 
-1. F5 / Ctrl+Shift+R 后标题最终挂载到当前 thread Composer 上沿，且不会因为 Composer 晚出现而永久缺失；
+1. F5 / Ctrl+Shift+R 后标题最终挂载到当前 thread Composer 上沿，且不会因为 Composer 晚出现而永久缺失；新对话第一条消息 local → 正式 UUID 期间也能恢复挂载；
 2. 普通 `/c/<id>` 与 Project `/g/g-p-.../c/<id>` 都能显示正确标题；
 3. A → B SPA 切换时不应短暂显示 A 的旧标题，B 的 `document.title` 更新后应自动切换；
 4. 当前对话 Rename 后，Composer 上沿标题会随 `<title>` 更新；
