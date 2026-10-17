@@ -1,13 +1,35 @@
 # ChatGPT 文件夹：架构与维护说明
 
 > 对应脚本：`userscripts/chatgpt/chatgpt-folders.user.js`  
-> 当前说明版本：v0.8.2  
+> 当前说明版本：v0.9.0  
 > 面向对象：未来维护者、代码审查者，以及需要快速接手该脚本的 AI  
 > 定位：本文件是 ChatGPT 文件夹脚本的**完整架构与维护说明源**；脚本头部只保留必要摘要。
 
+
+## v0.9.0 当前生效架构：body-owned 双列面板
+
+> **以下为现行架构规范，优先于本文后续 v0.8.x 及更早章节。** 后续章节中的“Recents 之前挂载”“hydration-safe 挂载到侧栏”“root 随宿主恢复”仅用于理解历史实现，不应再按其修改当前代码。
+
+- 第一列为 ChatGPT 原生 sidebar，第二列 `#cgfm-root.cgfm-dual-pane` 是 `document.body` 直属子节点。两列分别滚动。
+- 文件夹第二列宽度暂固定 **300 CSS px**；原设置“自定义左侧侧边栏宽度”只用于官方侧栏，不再兼任文件夹宽度。
+- 官方侧栏提供 `#app-shell-sidebar` 的宽度参考；`[data-slate-sidebar-content]` 的 `inert` 和 `[data-slate-sidebar-peeking]` 作为可见性/固定性信号。通过少量属性与 ResizeObserver 更新面板位置，而**不再据此重挂载**。
+- 鼠标跨列时，`pointerenter`/`pointerleave` 保持文件夹列显隐；利用 `cgfm-dual-hover-hold` 做官方第一列的视觉保持。ChatGPT React 对原生栏的 `inert` 控制无法由脚本可靠接管，此处属于**浏览器实测必须验证**的兼容点，不能声称已实现完全的官方悬浮状态锁定。
+- 文件夹的滚动位置、展开状态不因 sidebar peeking 变化而重置；切换账号所需的业务重绘逻辑保留。WebDAV schema、profile key、revision、操作日志、拖拽 payload 均不变。
+- 固定展开模式下，当前第二列作为覆盖层紧邻第一列；对正文和 Composer 的真正响应式空间预留需要基于实际 app-shell 布局作浏览器验收，避免未经验证就修改所有 `main` 节点。
+- 文件夹根节点仅在丢失或重新加载页面时恢复。渲染方式保留原 `render()` 和用户交互，后台同步不依赖视图显隐。
+
+### 发布前浏览器验收（尚未通过真实浏览器验证）
+
+1. 悬浮侧栏展开/关闭、从第一列移到第二列并停留、移出两列，确认第一列不会发生不可用的 inert 状态。
+2. 固定模式下确认第二列不会遮挡正文/Composer，且用户能够顺畅操作两列。
+3. 拖拽原生最近对话到多级文件夹（特别是第一列先收起的场景）；测试取消与无效放置。
+4. 再打开多个对话及进行 WebDAV 同步，确认 DOM 根节点不重新创建且旧数据未变。
+
+---
+
 ## 1. 30 秒快速理解
 
-`chatgpt-folders.user.js` 是一个 Tampermonkey 用户脚本，在 ChatGPT 网页版原生左侧侧边栏中增加“文件夹”区域，用来整理普通聊天链接。
+`chatgpt-folders.user.js` 是一个 Tampermonkey 用户脚本，在 ChatGPT 官方左侧侧边栏旁显示独立的第二列“文件夹”区域，用来整理普通聊天链接。
 
 它管理的是**聊天引用**，不是聊天本身：
 
@@ -23,11 +45,11 @@
 
 1. `state` 是当前 ChatGPT 账号的内存单一数据源。
 2. 本地 profile 按 ChatGPT 账号隔离，不再自动迁移旧 v1/v2 单 profile。
-3. `#cgfm-root` 是脚本唯一主 UI 根节点；新版 UI 中必须挂在整个 `Recents` 区块之前，且不能嵌进 ChatGPT 自己的 conversation/project drop target。
-4. 手势监听在 `document-start` 尽早注册以抢在 ChatGPT sortable sensor 之前；DOM/state boot 仍延后，首次挂载继续避开 React hydration。
+3. `#cgfm-root` 是脚本唯一主 UI 根节点；v0.9.0 起始终作为 `document.body` 直属子节点，不嵌入任何 ChatGPT 官方 React 区域。
+4. 手势监听在 `document-start` 尽早注册；DOM/state boot 延后至 DOMContentLoaded，UI 根节点不再依赖原生侧栏 hydration 稳定门槛。
 5. 原生宿主探测必须排除脚本自己的 DOM，且永远不能把根节点挂到自身或其后代。
 6. 性能优先：不长期观察整个 document/sidebar subtree，不给最近聊天逐项注入常驻 UI；仅允许对 app-shell left panel 的 peeking 属性与 conversation content 的 inert 属性做窄范围 attributes observer。
-7. 新版原生 conversation row 拖入文件夹使用完整手势所有权的低开销自定义拖拽：手势层在 `document-start` 注册 window capture，实际处理仅在 `#cgfm-root` 完成 hydration-safe mount 后启用；聊天主交互的 pointerdown 从起点即由脚本 `preventDefault()` + `stopImmediatePropagation()` 独占，小于阈值时在 pointerup 主动回放原生聊天点击，大于阈值时进入脚本拖拽；不再依赖 `setPointerCapture()`。旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
+7. 新版原生 conversation row 拖入文件夹使用完整手势所有权的低开销自定义拖拽：手势层在 `document-start` 注册 window capture，实际处理仅在 `#cgfm-root` 已挂载后启用；聊天主交互的 pointerdown 从起点即由脚本 `preventDefault()` + `stopImmediatePropagation()` 独占，小于阈值时在 pointerup 主动回放原生聊天点击，大于阈值时进入脚本拖拽；不再依赖 `setPointerCapture()`。旧 `/c/` anchor 和脚本自身文件夹仍保留 HTML5 drag/drop。
 8. 原生聊天三点菜单只在用户实际点击后短暂观察 Radix `role="menu"` / `role="menuitem"`。
 9. 同浏览器多标签使用小 revision key 事件驱动同步；metadata-only revision 不得覆盖本标签未保存业务修改。
 10. WebDAV 使用 schema 3、基准快照、对象级 operation log、墓碑和有限 412 重试实现多端合并。

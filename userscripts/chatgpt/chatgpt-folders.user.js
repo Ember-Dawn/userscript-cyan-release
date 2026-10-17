@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      0.8.2
-// @description  ChatGPT 普通聊天文件夹管理：v0.8.2；改善侧边栏悬浮时文件夹消失与延迟恢复。
+// @version      0.9.0
+// @description  ChatGPT 普通聊天文件夹管理：v0.9.0；独立持久双列文件夹，跟随官方侧边栏状态。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -25,8 +25,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
 - 作用：在 ChatGPT 原生侧边栏中增加本地“文件夹”索引；只保存聊天引用、文件夹结构和非敏感设置，不修改 ChatGPT 后端，也不保存完整聊天正文。
 - 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
-- DOM：#cgfm-root 必须挂在 ChatGPT 原生侧边栏中，并位于整个 Recents 区块之前；不得嵌入 ChatGPT 自己的 conversation/project drop target。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
-- Hydration：document-start 只用于尽早注册不改 DOM 的拖拽 capture listener；DOM/state boot 延后，首次挂载仍必须等待同一原生 sidebar host 稳定至少 INITIAL_MOUNT_STABLE_MS。稳定前不要注入脚本样式、宽度覆盖或根节点。
+- DOM：#cgfm-root 仅作为 document.body 的持久直属子节点，不进入 React 管理的侧边栏；通过独立定位器在官方侧栏右侧显示。新版优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
+- Hydration：document-start 仅注册拖拽 capture listener；DOM/state boot 延后至 DOMContentLoaded，持久根节点不依赖官方 sidebar host hydration。
 - 性能：禁止长期观察 document/sidebar subtree、mousemove 热路径、最近聊天逐项常驻注入和高频全量扫描。新版仅允许对 app-shell left panel 的 peeking 属性和 conversation content 的 inert 属性做窄范围 observer；原生三点菜单仍只短时观察。
 - 交互：新版优先识别 a[data-interactive-row-link] 作为聊天主交互；window capture 在 document-start 注册，但仅在文件夹 UI 完成安全挂载后工作。聊天主交互的 pointerdown 从起点即由脚本 preventDefault + stopImmediatePropagation 独占；小于阈值则在 pointerup 主动回放原生点击，大于阈值则进入自定义拖拽，不再依赖 setPointerCapture。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
@@ -39,7 +39,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '0.8.2';
+  const VERSION = '0.9.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -84,7 +84,16 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let selectedFolderId = ROOT_ID; // 仅当前页面使用，不持久化、不跨标签同步
   let rootEl = null;
   let treeEl = null;
-  let sidebarEl = null;
+  let dualSidebarHover = false;
+  let dualSidebarPinned = false;
+  let dualSidebarOpen = false;
+  let dualSidebarWidth = 300;
+  let dualSidebarNativeWidth = 340;
+  let dualSidebarResizeObserver = null;
+  let dualSidebarResizeTarget = null;
+  let dualSidebarLeaveTimer = null;
+  let dualSidebarPointerX = -1;
+  let dualSidebarPointerY = -1;
   let mounted = false;
   let renderQueued = false;
   let pendingPersistTimer = null;
@@ -1034,6 +1043,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     style.id = 'cgfm-style';
     style.textContent = `
       #cgfm-root { color: var(--text-primary, var(--token-text-primary, inherit)); font-size:14px; margin-bottom:12px; --cgfm-muted: var(--text-secondary, var(--token-text-tertiary, #6b7280)); --cgfm-text: var(--text-primary, var(--token-text-primary, #111827)); --cgfm-hover: var(--sidebar-surface-secondary, rgba(128,128,128,.12)); --cgfm-active: var(--sidebar-surface-secondary, rgba(128,128,128,.18)); --cgfm-danger:#ef4444; contain: layout paint style; }
+      /* The folder surface is owned by body, never by ChatGPT's React sidebar. */
+      #cgfm-root.cgfm-dual-pane { position:fixed; top:0; left:var(--cgfm-panel-left,340px); width:var(--cgfm-panel-width,300px); height:100dvh; margin:0; display:flex; flex-direction:column; overflow:hidden; z-index:42; border-right:1px solid rgba(128,128,128,.20); background:var(--sidebar-surface-primary,var(--main-surface-primary,#fff)); box-shadow:4px 0 16px rgba(0,0,0,.06); transition:opacity .15s ease, visibility .15s ease; }
+      #cgfm-root.cgfm-dual-pane[data-cgfm-visible="false"] { opacity:0; visibility:hidden; pointer-events:none; }
+      #cgfm-root.cgfm-dual-pane[data-cgfm-visible="true"] { opacity:1; visibility:visible; pointer-events:auto; }
+      #cgfm-root.cgfm-dual-pane .cgfm-header { flex:0 0 auto; padding-top:9px; padding-bottom:9px; border-bottom:1px solid rgba(128,128,128,.13); }
+      #cgfm-root.cgfm-dual-pane .cgfm-tree { min-height:0; flex:1 1 auto; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; }
+      /* Native peek may close when pointer enters the sibling pane. Keep its visual
+         column exposed while the pointer is still inside the two-column region.
+         This does not rewrite React component state or override inert. */
+      html.cgfm-dual-hover-hold [data-app-shell-left-panel-appearance] { width:var(--cgfm-native-width,340px) !important; }
+      html.cgfm-dual-hover-hold [data-slate-sidebar-content="true"] { opacity:1 !important; transform:none !important; visibility:visible !important; }
+      @media (max-width:750px) { #cgfm-root.cgfm-dual-pane { width:min(300px,calc(100vw - var(--cgfm-panel-left,52px) - 8px)); } }
       #cgfm-root * { box-sizing:border-box; }
       #cgfm-root button { font:inherit; }
       #cgfm-root .cgfm-header { display:flex; align-items:center; min-height:32px; padding:7px 10px 4px 16px; gap:6px; color:var(--cgfm-text); }
@@ -1291,37 +1312,41 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return now - initialMountCandidateSince >= INITIAL_MOUNT_STABLE_MS;
   }
 
+  // The persistent pane is deliberately attached to body, outside React's sidebar.
+  // Position/state updates never rebuild its tree or fetch remote data.
   function mount() {
     ensureActiveProfile();
-    const recentAnchor = findNativeRecentsAnchor();
-    const parent = (recentAnchor && recentAnchor.parentElement) || findSidebarParent();
-    // The first mount must not mutate React-managed DOM until the same native host has
-    // remained connected for a short stability window. Later remounts stay immediate.
-    if (!isSafeMountParent(parent) || !initialMountHostStable(parent)) return false;
+    if (!document.body || !document.head) return false;
     injectStyle();
     applySidebarWidth();
-    sidebarEl = findSidebarParent() || parent;
     if (!rootEl) {
       document.querySelectorAll('#cgfm-root').forEach(el => el.remove());
       rootEl = document.createElement('div');
       rootEl.id = 'cgfm-root';
+      rootEl.classList.add('cgfm-dual-pane');
+      rootEl.setAttribute('data-cgfm-visible', 'false');
       rootEl.setAttribute('data-cgfm-version', VERSION);
       bindRootEvents(rootEl);
+      rootEl.addEventListener('pointerenter', () => {
+        dualSidebarHover = true;
+        if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
+        syncSidebarVisibility();
+      });
+      rootEl.addEventListener('pointerleave', event => {
+        dualSidebarHover = false;
+        dualSidebarPointerX = event.clientX;
+        dualSidebarPointerY = event.clientY;
+        scheduleDualSidebarLeave();
+      });
     }
-    if (!document.body.contains(rootEl) || rootEl.parentElement !== parent) {
-      if (recentAnchor && recentAnchor.parentElement === parent) parent.insertBefore(rootEl, recentAnchor);
-      else parent.appendChild(rootEl);
-    }
-    // Reuse the already-rendered root after React replaces its former host. Full
-    // tree rendering is only needed for the initial mount or an empty root.
+    if (rootEl.parentElement !== document.body) document.body.appendChild(rootEl);
     if (!mounted || !rootEl.firstElementChild) render();
-    syncSidebarVisibility();
+    mounted = true;
     bindAppShellSidebarStateWatcher();
+    bindDualSidebarGeometry();
+    syncSidebarVisibility();
     setupNativeDragCache();
     setupNativeMenuHook();
-    mounted = true;
-    initialMountCandidate = null;
-    initialMountCandidateSince = 0;
     return true;
   }
 
@@ -1937,6 +1962,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const state = nativeChatPointerDrag;
     if (!state || state.active) return !!state;
     state.active = true;
+    syncSidebarVisibility();
     closeMenu();
     clearDropHighlight();
     createNativeChatDragPreview(state);
@@ -2021,6 +2047,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onNativeHistoryPointerMove(event) {
+    dualSidebarPointerX = event.clientX;
+    dualSidebarPointerY = event.clientY;
     const state = nativeChatPointerDrag;
     if (!state || event.pointerId !== state.pointerId) return;
     state.lastX = Number(event.clientX) || 0;
@@ -2121,6 +2149,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
     if (state && suppressClick && state.active) suppressNativeChatClick(state.source);
     nativeChatPointerDrag = null;
+    syncSidebarVisibility();
     removeNativeChatDragPreview();
     clearDropHighlight();
   }
@@ -3897,11 +3926,53 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return true;
   }
 
+  function scheduleDualSidebarLeave() {
+    if (dualSidebarLeaveTimer) clearTimeout(dualSidebarLeaveTimer);
+    dualSidebarLeaveTimer = setTimeout(() => {
+      dualSidebarLeaveTimer = null;
+      if (nativeChatPointerDrag && nativeChatPointerDrag.active) return;
+      if (dualSidebarPointerX >= 0 && dualSidebarPointerX <= dualSidebarNativeWidth + dualSidebarWidth &&
+          dualSidebarPointerY >= 0 && dualSidebarPointerY <= innerHeight) return;
+      dualSidebarHover = false;
+      syncSidebarVisibility();
+    }, 140);
+  }
+
+  function bindDualSidebarGeometry() {
+    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+    const shell = document.getElementById('app-shell-sidebar');
+    const target = shell || panel;
+    if (target === dualSidebarResizeTarget) return;
+    if (dualSidebarResizeObserver) dualSidebarResizeObserver.disconnect();
+    dualSidebarResizeTarget = target;
+    if (!target || typeof ResizeObserver === 'undefined') return;
+    dualSidebarResizeObserver = new ResizeObserver(() => scheduleAppShellStateRefresh());
+    dualSidebarResizeObserver.observe(target);
+  }
+
   function syncSidebarVisibility() {
     const shellState = getAppShellSidebarState();
-    const visible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
-    const pinned = shellState ? shellState.mode === 'pinned' : visible;
-    if (rootEl) rootEl.hidden = !visible;
+    const stateVisible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
+    const pinned = shellState ? shellState.mode === 'pinned' : stateVisible;
+    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
+    const shell = document.getElementById('app-shell-sidebar');
+    const shellRect = shell && shell.getBoundingClientRect();
+    const panelRect = panel && panel.getBoundingClientRect();
+    const nativeWidth = shellRect && shellRect.width > 200 ? shellRect.right :
+      panelRect && panelRect.width > 200 ? panelRect.right : 340;
+    dualSidebarNativeWidth = Math.round(clamp(nativeWidth, 220, Math.max(220, innerWidth - 120)));
+    dualSidebarPinned = pinned;
+    // During cross-column movement keep our own pane alive. React remains the
+    // owner of the native peek state; CSS provides a short visual continuity hold.
+    dualSidebarOpen = pinned || stateVisible || dualSidebarHover || !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
+    if (rootEl) {
+      dualSidebarWidth = 300; // independent pane; existing sidebarWidthPx still controls native sidebar
+      rootEl.style.setProperty('--cgfm-panel-left', dualSidebarNativeWidth + 'px');
+      rootEl.style.setProperty('--cgfm-panel-width', dualSidebarWidth + 'px');
+      rootEl.setAttribute('data-cgfm-visible', dualSidebarOpen ? 'true' : 'false');
+    }
+    document.documentElement.style.setProperty('--cgfm-native-width', dualSidebarNativeWidth + 'px');
+    document.documentElement.classList.toggle('cgfm-dual-hover-hold', !pinned && dualSidebarHover);
     syncSidebarWidthClass(pinned);
   }
 
@@ -3922,8 +3993,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return;
     }
 
-    // Observe direct child replacement along the small app-shell host chain,
-    // plus the scroll host that directly contains #cgfm-root. No subtree scan,
+    // Observe native shell replacement only; the folder root is body-owned.
     // and no observation of the Recents chat list.
     const nodes = [];
     const add = el => { if (el && !nodes.includes(el)) nodes.push(el); };
@@ -3935,7 +4005,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       node = node.parentElement;
     }
     const scroll = shell.querySelector('[data-app-action-sidebar-scroll]');
-    if (scroll) add(scroll); // detect detached #cgfm-root and replaced Recents host
+    if (scroll) add(scroll); // native structure changes only
 
     if (nodes.length === appShellObservedStructureNodes.length &&
         nodes.every((item, i) => item === appShellObservedStructureNodes[i])) return;
@@ -3945,13 +4015,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       // peeking/inert visibility changes have their own attribute observers.
       const currentPanel = document.querySelector('[data-app-shell-left-panel-appearance]');
       const currentContent = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
-      const rootDetached = mounted && rootEl && !rootEl.isConnected;
-      const expectedScroll = document.querySelector('#app-shell-sidebar [data-app-action-sidebar-scroll]');
-      const wrongHost = mounted && rootEl && expectedScroll && rootEl.parentElement !== expectedScroll &&
-        !expectedScroll.contains(rootEl);
+      const rootDetached = mounted && rootEl && rootEl.parentElement !== document.body;
       const hostReplaced = currentPanel !== appShellObservedPanel || currentContent !== appShellObservedContent;
-      const rootParentGone = mounted && rootEl && rootEl.parentElement && !rootEl.parentElement.isConnected;
-      if (rootDetached || hostReplaced || rootParentGone || wrongHost) scheduleAppShellStateRefresh();
+      if (rootDetached || hostReplaced) scheduleAppShellStateRefresh();
     });
     for (const item of nodes) appShellStructureObserver.observe(item, { childList: true });
     appShellObservedStructureNodes = nodes;
@@ -4038,20 +4104,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       ensureActiveProfile();
       bindAppShellSidebarStateWatcher();
       const afterAccount = currentAccount && currentAccount.id;
-      const recentAnchor = findNativeRecentsAnchor();
-      const expectedParent = (recentAnchor && recentAnchor.parentElement) || findSidebarParent();
-      const rootMissing = !rootEl || !document.body.contains(rootEl);
-      const parentChanged = !!(rootEl && isSafeMountParent(expectedParent) && rootEl.parentElement !== expectedParent);
-
-      if (rootMissing || parentChanged) mount();
+      if (!rootEl || rootEl.parentElement !== document.body) mount();
       else {
+        bindDualSidebarGeometry();
         setupNativeDragCache();
         setupNativeMenuHook();
         applySidebarWidth();
         syncSidebarVisibility();
-        // If sleep restore left the root hidden while the native history area is visible,
-        // unhide it after syncSidebarVisibility has had a chance to update width classes.
-        if (rootEl && rootEl.hidden && nativeSidebarContentVisible()) rootEl.hidden = false;
         if (beforeAccount && afterAccount && beforeAccount !== afterAccount) queueRender();
       }
     } catch (err) {
@@ -4069,12 +4128,17 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       bindSidebarToggleWatcher();
+      document.addEventListener('pointermove', event => {
+        if (!mounted || dualSidebarPinned) return;
+        dualSidebarPointerX = event.clientX;
+        dualSidebarPointerY = event.clientY;
+        const inside = event.clientX >= 0 && event.clientX < dualSidebarNativeWidth + dualSidebarWidth &&
+          event.clientY >= 0 && event.clientY < innerHeight;
+        if (!inside && dualSidebarHover) scheduleDualSidebarLeave();
+      }, { passive:true, capture:true });
       bindAppShellSidebarStateWatcher();
-      // Sparse finite remount checks. The first successful mount additionally requires the
-      // same native sidebar host to stay connected for a short stability window, so we do not
-      // inject into React-managed DOM while hydration is still replacing the sidebar. Later
-      // remounts stay immediate. There is no long-running observer.
-      [700, 1500, 2800, 4800, 8000, 13000, 21000, 34000, 55000, 90000].forEach(delay => setTimeout(ensureMountedLight, delay));
+      // Mount once outside the React tree; sparse recovery handles body replacement only.
+      [0, 700, 2800, 8000, 21000, 55000].forEach(delay => setTimeout(ensureMountedLight, delay));
       const idle = window.requestIdleCallback || (fn => setTimeout(fn, 3500));
       idle(() => { try { if (mounted) ensureSettingsModal(); } catch (_) {} });
       restartPeriodicBackup();
