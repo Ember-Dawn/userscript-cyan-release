@@ -5,13 +5,14 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.1.0
+// @version      1.2.0
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-start
 // @noframes
+// @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
@@ -39,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -99,6 +100,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let lastRecentScan = 0;
   let recentKnown = [];
   let recentCacheAccount = '';
+  let editingChatId = '';
+  let renameChatBusy = false;
+  let capturedOfficialHistoryRequest = null; // In-memory only. Never persist credentials.
+  let historyRefreshPromise = null;
+  let recentLastRequestAt = 0;
+  let recentLastOpenState = false;
   let dualSidebarHover = false;
   let dualSidebarPointerInside = false;
   // Temporary native pin transaction: do not change React-owned inert or fake hover.
@@ -1073,18 +1080,23 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-root.cgfm-dual-pane .cgfm-scroll-content { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; }
       #cgfm-root.cgfm-dual-pane .cgfm-tree { min-height:0; flex:none; overflow:visible; }
       #cgfm-root .cgfm-recent-section { display:block; min-height:0; border-top:1px solid rgba(128,128,128,.20); }
-      #cgfm-root .cgfm-recent-heading { display:flex; justify-content:space-between; align-items:center; padding:9px 12px 7px 16px; font-size:12px; font-weight:600; flex:0 0 auto; }
+      #cgfm-root .cgfm-recent-heading { display:flex; justify-content:space-between; align-items:center; padding:9px 12px 7px 16px; font-size:14px; line-height:20px; font-weight:600; flex:0 0 auto; }
       #cgfm-root .cgfm-recent-list { overflow:visible; min-height:0; padding:0 6px 8px; }
       #cgfm-root .cgfm-recent-chat { border-radius:7px; display:flex; align-items:center; gap:8px; min-height:31px; padding:5px 9px; cursor:grab; }
       #cgfm-root .cgfm-recent-chat:hover { background:var(--cgfm-hover); }
       #cgfm-root .cgfm-recent-chat a { color:inherit; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; font-size:13px; }
+      #cgfm-root .cgfm-chat-rename { width:23px; height:23px; border:0; border-radius:6px; background:transparent; color:var(--cgfm-muted); flex:none; cursor:pointer; display:none; align-items:center; justify-content:center; padding:3px; }
+      #cgfm-root .cgfm-chat-row:hover .cgfm-chat-rename,#cgfm-root .cgfm-recent-chat:hover .cgfm-chat-rename,#cgfm-root .cgfm-chat-rename:focus-visible { display:inline-flex; }
+      #cgfm-root .cgfm-chat-rename:hover { background:var(--cgfm-hover); color:var(--cgfm-text); }
+      #cgfm-root .cgfm-chat-rename svg { width:15px; height:15px; }
+      #cgfm-root .cgfm-chat-edit { flex:1; width:1px; min-width:0; border:1px solid #3A83F7; border-radius:6px; height:26px; padding:2px 6px; background:var(--main-surface-primary,#fff); color:var(--cgfm-text); font:inherit; }
       #cgfm-root .cgfm-recent-chat svg { width:15px; height:15px; flex:none; }
       #cgfm-root .cgfm-recent-empty { color:var(--cgfm-muted); padding:8px 12px; font-size:12px; line-height:1.5; }
       #cgfm-rail-entry { display:flex; align-items:center; justify-content:center; width:100%; flex:none; }
       #cgfm-rail-button { display:flex; align-items:center; justify-content:center; width:36px; height:36px; padding:8px; border:0; border-radius:10px; background:transparent; color:var(--text-secondary,var(--token-text-tertiary,currentColor)); cursor:pointer; }
       #cgfm-rail-button:hover,#cgfm-rail-button[data-cgfm-open="true"] { background:var(--sidebar-surface-secondary,rgba(128,128,128,.14)); color:var(--text-primary,currentColor); }
-      #cgfm-rail-button svg { width:20px; height:20px; fill:none; stroke:#E5A000; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-      #cgfm-rail-button:hover svg,#cgfm-rail-button[data-cgfm-open="true"] svg { stroke:#E5A000; }
+      #cgfm-rail-button svg { width:20px; height:20px; fill:rgba(58,131,247,.20); stroke:#3A83F7; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+      #cgfm-rail-button:hover svg,#cgfm-rail-button[data-cgfm-open="true"] svg { stroke:#3A83F7; }
       @media (max-width:750px) { #cgfm-root.cgfm-dual-pane { width:min(300px,calc(100vw - var(--cgfm-panel-left,52px) - 8px)); } }
       /* Native peek may close when pointer enters the sibling pane. Keep its visual
          column exposed while the pointer is still inside the two-column region.
@@ -1422,6 +1434,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const scroll = rootEl.querySelector('[data-cgfm-scroll]');
     if (scroll) scroll.scrollTop = oldScrollTop;
     focusInlineFolderEditor();
+    focusInlineChatEditor();
   }
 
   function renderTree(p) {
@@ -1466,7 +1479,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       <div class="cgfm-chat-row" data-chat-id="${escapeAttr(cid)}" data-folder-id="${escapeAttr(folderId)}" data-depth="${depth}" draggable="true" style="--depth:${depth}">
         <span class="cgfm-spacer"></span>
         <span class="cgfm-chat-icon">${icon('chat')}</span>
-        <a class="cgfm-chat-title" draggable="false" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>
+        ${editingChatId === cid ? `<input class="cgfm-chat-edit" data-chat-edit-id="${escapeAttr(cid)}" value="${escapeAttr(title)}" draggable="false" spellcheck="false">` : `<a class="cgfm-chat-title" draggable="false" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>`}
+        <button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(cid)}" title="重命名对话">${icon('rename')}</button>
         <span class="cgfm-row-actions">
           <button class="cgfm-icon" data-action="refresh-chat-title" data-chat-id="${escapeAttr(cid)}" title="刷新标题">${icon('refresh')}</button>
           <button class="cgfm-icon" data-action="remove-chat" data-chat-id="${escapeAttr(cid)}" title="从管理器移除">${icon('x')}</button>
@@ -1492,6 +1506,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     el.addEventListener('drop', onRootDrop);
     el.addEventListener('keydown', onRootKeydown, true);
     el.addEventListener('focusout', onRootFocusOut, true);
+    el.addEventListener('contextmenu', onChatRenameContextMenu);
   }
 
   function onRootClick(event) {
@@ -1516,6 +1531,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     else if (action === 'toggle-folder') toggleFolder(fid);
     else if (action === 'select-folder') selectFolder(fid);
     else if (action === 'folder-menu') showFolderMenu(fid, button);
+    else if (action === 'rename-chat') beginChatRename(cid);
     else if (action === 'refresh-chat-title') refreshChatTitle(cid);
     else if (action === 'remove-chat') removeChat(cid);
   }
@@ -1579,6 +1595,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onRootKeydown(event) {
+    const chatInput = event.target.closest('[data-chat-edit-id]');
+    if (chatInput && rootEl.contains(chatInput)) {
+      if (event.key === 'Enter') { event.preventDefault(); commitChatRename(chatInput, false); }
+      else if (event.key === 'Escape') { event.preventDefault(); commitChatRename(chatInput, true); }
+      return;
+    }
     const input = event.target.closest('[data-folder-edit-id]');
     if (!input || !rootEl.contains(input)) return;
     if (event.key === 'Enter') { event.preventDefault(); commitFolderEdit(input, false); }
@@ -1586,6 +1608,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onRootFocusOut(event) {
+    const chatInput = event.target.closest('[data-chat-edit-id]');
+    if (chatInput && rootEl.contains(chatInput)) {
+      setTimeout(() => {
+        if (editingChatId === chatInput.getAttribute('data-chat-edit-id')) commitChatRename(chatInput, false);
+      }, 0);
+      return;
+    }
     const input = event.target.closest('[data-folder-edit-id]');
     if (!input || !rootEl.contains(input)) return;
     setTimeout(() => {
@@ -3994,6 +4023,171 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   // v1.0: the folder surface is independently controlled. Never toggle ChatGPT's
   // native sidebar, change its inert attribute, or alter its preferred width.
+  // Observe the actual ChatGPT GET request in page context, without logging,
+  // persisting or exposing authentication headers to any storage/sync path.
+  // When Tampermonkey page access is unavailable, the DOM/cache fallback remains.
+  function installOfficialHistoryCapture() {
+    try {
+      const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      const previous = page.fetch;
+      if (typeof previous !== 'function' || previous.__cgfmHistoryCapture) return;
+      const wrapped = function(input, init) {
+        try {
+          const url = new URL(typeof input === 'string' ? input : input.url, page.location.href);
+          if (url.origin === page.location.origin && url.pathname === '/backend-api/conversations') {
+            const h = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+            if (h.has('authorization') && h.has('chatgpt-account-id')) {
+              capturedOfficialHistoryRequest = {
+                headers: new Headers(h),
+                accountId: h.get('chatgpt-account-id'),
+                capturedAt: Date.now()
+              };
+            }
+          }
+        } catch (_) {}
+        return Reflect.apply(previous, this, arguments);
+      };
+      Object.defineProperty(wrapped, '__cgfmHistoryCapture', { value: true });
+      page.fetch = wrapped;
+    } catch (_) {}
+  }
+
+  const OFFICIAL_HISTORY_PARAMS = {
+    exclude_conversation_origin: 'tpp', expand: 'false', hide_snorlax: 'false',
+    is_archived: 'false', is_starred: 'false', order: 'updated'
+  };
+
+  async function refreshRecentFromOfficialApi() {
+    // A fresh open is the sole active refresh trigger (no polling, no manual button).
+    // The official request template might not exist until native sidebar first loads.
+    const template = capturedOfficialHistoryRequest;
+    if (!template || Date.now() - template.capturedAt > 45 * 60 * 1000) return;
+    if (historyRefreshPromise) return historyRefreshPromise;
+    const expectedAccount = template.accountId;
+    if (currentAccount?.accountId && String(currentAccount.accountId) !== expectedAccount) return;
+    const last = recentLastRequestAt;
+    if (Date.now() - last < 1000) return;
+    recentLastRequestAt = Date.now();
+    historyRefreshPromise = (async () => {
+      const results = [];
+      const seen = new Set();
+      for (let offset = 0; offset < 100; offset += 20) {
+        const url = new URL('/backend-api/conversations', location.origin);
+        url.search = new URLSearchParams({ ...OFFICIAL_HISTORY_PARAMS, limit: '20', offset: String(offset) });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        let data;
+        try {
+          // Fetch via the regular same-origin channel; credentials remain in memory.
+          const response = await fetch(url.href, {
+            method: 'GET', credentials: 'include', headers: new Headers(template.headers),
+            signal: controller.signal
+          });
+          if (!response.ok) return;
+          data = await response.json();
+        } catch (_) { return; }
+        finally { clearTimeout(timeout); }
+        if (!data || !Array.isArray(data.items)) return;
+        // Empty responses are not authoritative: keep any existing cached/DOM data.
+        for (const item of data.items) {
+          const id = String(item?.id || item?.conversation_id || '');
+          if (!/^[a-zA-Z0-9_-]{12,80}$/.test(id) || seen.has(id)) continue;
+          seen.add(id);
+          const title = cleanConversationTitle(item.title);
+          if (title) results.push({ id, title });
+        }
+        if (!data.items.length || data.items.length < 20) break;
+      }
+      if (!results.length || capturedOfficialHistoryRequest?.accountId !== expectedAccount) return;
+      mergeRecentItems(results);
+    })().finally(() => { historyRefreshPromise = null; });
+    return historyRefreshPromise;
+  }
+
+  function mergeRecentItems(found) {
+    readRecentCache();
+    if (!found.length) return;
+    const seen = new Set(found.map(item => item.id));
+    recentKnown = found.concat(recentKnown.filter(c => !seen.has(c.id))).slice(0, 100);
+    const key = recentStorageKey();
+    if (key) {
+      try { localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), chats: recentKnown })); } catch (_) {}
+    }
+    const p = getProfile();
+    let changed = false;
+    for (const chat of found) {
+      const stored = p.conversations[chat.id];
+      if (stored && stored.title !== chat.title) { stored.title = chat.title; changed = true; }
+    }
+    if (changed) { queueRender(); schedulePersist('official-title-refresh', { webdav: false }); }
+    else updateRecentDom();
+  }
+
+  function focusInlineChatEditor() {
+    if (!editingChatId) return;
+    const input = rootEl?.querySelector('[data-chat-edit-id="' + cssEscape(editingChatId) + '"]');
+    if (input && document.activeElement !== input) requestAnimationFrame(() => { input.focus(); input.select(); });
+  }
+
+  function beginChatRename(id) {
+    if (!/^[a-zA-Z0-9_-]{12,80}$/.test(String(id || '')) || renameChatBusy) return;
+    if (!capturedOfficialHistoryRequest) {
+      toast('尚未取得官方会话授权上下文；请先正常展开一次官方侧边栏。');
+      return;
+    }
+    editingChatId = id;
+    queueRender();
+  }
+
+  function onChatRenameContextMenu(event) {
+    const row = event.target.closest?.('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]');
+    if (!row || !rootEl.contains(row)) return;
+    event.preventDefault();
+    beginChatRename(row.getAttribute('data-chat-id'));
+  }
+
+  async function commitChatRename(input, cancel) {
+    const id = input?.getAttribute('data-chat-edit-id');
+    if (!id || editingChatId !== id || renameChatBusy) return;
+    if (cancel) { editingChatId = ''; queueRender(); return; }
+    const title = String(input.value || '').trim();
+    if (!title || title.length > 200) { toast('标题不能为空，且不能超过 200 字符。'); input.focus(); return; }
+    const template = capturedOfficialHistoryRequest;
+    if (!template || (currentAccount?.accountId && String(currentAccount.accountId) !== template.accountId)) {
+      toast('当前账号的官方会话上下文不可用。'); return;
+    }
+    renameChatBusy = true;
+    input.disabled = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const headers = new Headers(template.headers);
+      headers.set('content-type', 'application/json');
+      const response = await fetch('/backend-api/conversation/id/' + encodeURIComponent(id) + '/rename', {
+        method:'POST', credentials:'include', headers, body:JSON.stringify({ title }), signal:controller.signal
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const p = getProfile();
+      if (p.conversations[id]) {
+        p.conversations[id].title = title;
+        p.conversations[id].updatedAt = nowIso();
+        schedulePersist('rename-chat');
+      }
+      const cached = recentKnown.find(c => c.id === id);
+      if (cached) cached.title = title;
+      const key = recentStorageKey();
+      if (key) {
+        try { localStorage.setItem(key, JSON.stringify({timestamp:Date.now(),chats:recentKnown})); } catch (_) {}
+      }
+      editingChatId = '';
+      queueRender();
+      toast('对话已重命名。');
+    } catch (err) {
+      input.disabled = false;
+      toast('重命名失败，原标题未改变。');
+    } finally { clearTimeout(timeout); renameChatBusy = false; }
+  }
+
   function recentStorageKey() {
     const account = currentAccount && currentAccount.id;
     return account ? 'cgfm.v1.recentCache.' + encodeURIComponent(String(account)) : '';
@@ -4051,19 +4245,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (found.length >= 100) break;
     }
     if (!found.length) return;
-    const existing = new Map(recentKnown.map(c => [c.id, c]));
-    recentKnown = found.concat([...existing.values()].filter(c => !seen.has(c.id))).slice(0, 100);
-    const key = recentStorageKey();
-    if (key) {
-      try { localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), chats: recentKnown })); } catch (_) {}
-    }
-    updateRecentDom();
+    mergeRecentItems(found);
   }
 
   function renderRecentChats() {
     readRecentCache();
-    if (!recentKnown.length) return '<div class="cgfm-recent-empty">暂无已发现的最近对话。可先展开官方聊天列表以获取数据。</div>';
-    return recentKnown.map(chat => `<div class="cgfm-recent-chat" draggable="true" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a></div>`).join('');
+    if (!recentKnown.length) return '<div class="cgfm-recent-empty">暂无最近对话。若官方历史尚未加载，将在正常展开官方侧栏后补充。</div>';
+    return recentKnown.map(chat => `<div class="cgfm-recent-chat" draggable="${editingChatId === chat.id ? 'false' : 'true'}" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}${editingChatId === chat.id ? `<input class="cgfm-chat-edit" data-chat-edit-id="${escapeAttr(chat.id)}" value="${escapeAttr(chat.title)}" draggable="false" spellcheck="false">` : `<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a>`}<button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
   }
 
   function updateRecentDom() {
@@ -4072,6 +4260,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const active = document.activeElement;
     if (active && list.contains(active)) return;
     list.innerHTML = renderRecentChats();
+    focusInlineChatEditor();
   }
 
   function beginOwnedPanelDrag() {
@@ -4175,6 +4364,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       button.setAttribute('data-cgfm-open', dualSidebarOpen ? 'true' : 'false');
     }
     if (dualSidebarOpen) collectRecentChats();
+    if (dualSidebarOpen && !recentLastOpenState) void refreshRecentFromOfficialApi();
+    recentLastOpenState = dualSidebarOpen;
   }
 
   function scheduleAppShellStateRefresh() {
@@ -4367,6 +4558,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       console.error(APP_NAME, 'boot failed', err);
     }
   }
+
+  // Capture only official authenticated history request metadata, in memory.
+  installOfficialHistoryCapture();
 
   // Register the gesture capture layer as early as possible, before ChatGPT attaches
   // its sortable sensors. The handler itself stays inert until mount() marks the UI ready.

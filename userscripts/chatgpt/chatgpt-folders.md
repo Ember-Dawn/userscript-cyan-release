@@ -1275,3 +1275,13 @@ Chrome 重命名 A，Safari 向 B 添加聊天，两端分别同步；最终两�
 - 改 WebDAV schema / merge：更新第 16～23、26～30 节；
 - 改 drag/menu/title/sidebar width：更新对应交互章节；
 - 不要重新把本文件的大段内容复制回 `.user.js` 头部，只保持脚本维护摘要和指向本文件的路径。
+
+## v1.2.0 (2026-10-17): recent history read and actual rename
+
+- 入口文件夹图标改为 `#3A83F7` 蓝色轮廓、20% 不透明度内部浅填充；「文件夹」和「最近对话」标题同为 14px / 600。
+- 最近对话刷新仅发生于独立面板由关闭转为打开时；不设置手动刷新按钮，不引入定时轮询。继续监听官方最近对话 DOM 的正常变化作为兜底。
+- 官方列表接口：`GET /backend-api/conversations`，查询参数遵循在官方侧栏上观察到的 `exclude_conversation_origin=tpp`, `expand=false`, `hide_snorlax=false`, `is_archived=false`, `is_starred=false`, `order=updated`, `limit=20`, `offset=0,20,...`；最多 100 条。
+- **限制**：直接用普通同源 `fetch` 发起上述请求曾返回 `200` / `items=[]` / `total=0`。官方网页调用含有 `authorization`、`chatgpt-account-id` 等额外上下文。此版只在页面主上下文的原生 `fetch` 实际发出官方最近对话请求后，在内存中临时复制必要请求头；后续面板打开才尝试复用。**没有观察到官方请求的全新会话不能保证主动获取列表**。不主动模拟官方侧边栏悬停或固定。
+- 捕获到的请求头包含潜在认证信息，仅保留在运行时内存，绝不写入 localStorage/GM/WebDAV、导出文件或诊断日志；45 分钟后停止使用，页面刷新后需重新观察官方请求。调用失败或返回空数组时保留 DOM/缓存已有记录，不清空本地最近列表。
+- 官方对话重命名经用户 Console 验证为 `POST /backend-api/conversation/id/{id}/rename`，JSON 请求体为 `{"title":"..."}`，官方操作返回 HTTP 200。独立面板内文件夹对话及最近对话均可鼠标右键或点悬浮铅笔进入行内编辑，Enter 保存、Esc 取消，服务端成功后才更新本地缓存和已归类会话。首次未观察到官方授权上下文时明确提示，不伪造成功。
+- 上述路径为 ChatGPT **非公开内部端点**，可能随客户端版本变化；尚未在用户真实 Chrome/Tampermonkey 中完成端到端测试。确保所有版本的回退行为不更改文件夹归属、WebDAV schema 3、对话正文及官方侧边栏 React 状态。
