@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.7
+// @version      1.4.8
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.7';
+  const VERSION = '1.4.8';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -125,6 +125,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let editingNewFolderId = '';
   let editingOriginalName = '';
   let dragPayload = null;
+  let pendingPanelMove = null; // Replay only this move if another tab wins a storage revision race.
+  let panelMoveRebaseAttempts = 0;
   let menuEl = null;
   let modalEl = null;
   let sidebarWidthStyleEl = null;
@@ -736,6 +738,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       pendingPersistTimer = null;
     }
     pendingPersistReason = '';
+    pendingPanelMove = null;
     if (renderChanged) queueRender();
     if (businessChanged) applySidebarWidth();
     restartPeriodicBackup();
@@ -807,12 +810,27 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         // and continue saving this tab's pending business change instead of discarding it.
         lastSeenStorageRevision = getProfileStorageRevision(incoming) || stored.revision || lastSeenStorageRevision;
       } else {
-        // A genuinely newer business projection exists. Keep the established safety rule:
-        // do not overwrite it with this tab's stale in-memory copy.
+        // Never silently drop a just-completed panel move when another tab wrote
+        // a newer business revision. Rebase that one move onto the fresh profile;
+        // do not overwrite the other tab's unrelated changes with stale state.
+        const move = pendingPanelMove;
+        if (move && panelMoveRebaseAttempts < 3 && incoming && applyStoredProfileFromRaw(raw, 'newer-before-write')) {
+          panelMoveRebaseAttempts++;
+          pendingPanelMove = null;
+          if (applyPanelMoveMutation(move, false)) {
+            schedulePersist('rebase-panel-move');
+            return persistNow({ webdav: true });
+          }
+          toast('其他标签页已更改目标或来源，移动未保存，请重试。');
+          panelMoveRebaseAttempts = 0;
+          return false;
+        }
         applyStoredProfileFromRaw(raw, 'newer-before-write');
         localUnsavedChanges = false;
         updateSyncStatusIcon();
-        return;
+        if (move) toast('其他标签页连续更新，移动未保存，请重试。');
+        panelMoveRebaseAttempts = 0;
+        return false;
       }
     }
 
@@ -823,9 +841,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     gmSet(activeProfileStorageKey(), JSON.stringify(state));
     writeRevisionMeta(revision);
     localUnsavedChanges = false;
+    pendingPanelMove = null;
+    panelMoveRebaseAttempts = 0;
     if (options.webdav) scheduleAutoBackup(pendingPersistReason || 'change');
     else updateSyncStatusIcon();
     pendingPersistReason = '';
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -1861,11 +1882,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return null;
     }
     const row = element.closest('.cgfm-folder-row[data-folder-id]');
-    if (!row || !rootEl.contains(row)) return null;
-    const fid = row.getAttribute('data-folder-id');
+    const block = row ? null : element.closest('.cgfm-folder-block[data-folder-block]');
+    const targetElement = row || block?.querySelector(':scope > .cgfm-folder-row') || block;
+    if (!targetElement || !rootEl.contains(targetElement)) return null;
+    const fid = row ? row.getAttribute('data-folder-id') : block.getAttribute('data-folder-block');
     if (!fid || !getProfile().folders[fid]) return null;
-    if (kind === 'folder') return canMoveFolderTo(payload.folderId, fid) ? { folderId: fid, element: row, isRoot: false } : null;
-    if (kind === 'chat' || allowUnknownChat) return { folderId: fid, element: row, isRoot: false };
+    if (kind === 'folder') return canMoveFolderTo(payload.folderId, fid) ? { folderId: fid, element: targetElement, isRoot: false } : null;
+    if (kind === 'chat' || allowUnknownChat) return { folderId: fid, element: targetElement, isRoot: false };
     return null;
   }
 
@@ -1876,9 +1899,30 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function commitDropPayload(payload, folderId) {
     const kind = payloadKind(payload);
-    if (kind === 'folder') return moveFolderToFolder(payload.folderId, folderId);
-    if (kind === 'chat') return addChatToFolder(payload, folderId);
-    toast('没有识别到被拖动的聊天或文件夹。');
+    if (kind !== 'folder' && kind !== 'chat') {
+      toast('没有识别到被拖动的聊天或文件夹。');
+      return false;
+    }
+    // Settle any earlier edits and accept a newer tab snapshot before mutating.
+    // A successful move then has a single immediate local commit boundary.
+    if (pendingPersistTimer || localUnsavedChanges) flushPendingPersist(true);
+    maybeApplyNewerStoredProfile('before-panel-move');
+    const move = kind === 'folder'
+      ? { kind, id: payload.folderId, folderId }
+      : { kind, id: payload.id, folderId, title: payload.title, url: payload.url };
+    if (!applyPanelMoveMutation(move, false)) return false;
+    pendingPanelMove = move;
+    panelMoveRebaseAttempts = 0;
+    schedulePersist(kind === 'folder' ? 'move-folder' : 'add-chat');
+    const saved = persistNow({ webdav: true });
+    if (saved) toast(kind === 'folder' ? '文件夹已移动。' : '聊天已加入文件夹。');
+    return !!saved;
+  }
+
+  function applyPanelMoveMutation(move, notify) {
+    if (!move) return false;
+    if (move.kind === 'folder') return moveFolderToFolder(move.id, move.folderId, { persist:false, notify });
+    if (move.kind === 'chat') return addChatToFolder({ id:move.id, title:move.title, url:move.url }, move.folderId, { persist:false, notify });
     return false;
   }
 
@@ -1919,7 +1963,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return true;
   }
 
-  function moveFolderToFolder(sourceId, targetParentId) {
+  function moveFolderToFolder(sourceId, targetParentId, options) {
+    const opts = options || {};
     const p = getProfile();
     const source = p.folders[sourceId];
     const targetId = targetParentId || ROOT_ID;
@@ -1944,12 +1989,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     // Moving a folder changes hierarchy only. Do not implicitly select it; preserve
     // the user's existing page-local selection state across drag/drop moves.
     queueRender();
-    schedulePersist('move-folder');
-    toast(targetId === ROOT_ID ? '文件夹已移动到顶层。' : '文件夹已移动。');
+    if (opts.persist !== false) schedulePersist('move-folder');
+    if (opts.notify !== false) toast(targetId === ROOT_ID ? '文件夹已移动到顶层。' : '文件夹已移动。');
     return true;
   }
 
-  function addChatToFolder(chat, folderId) {
+  function addChatToFolder(chat, folderId, options) {
+    const opts = options || {};
     const p = getProfile();
     const f = p.folders[folderId];
     if (!f || !chat || !chat.id) return false;
@@ -1967,8 +2013,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     });
     if (!f.chatIds.includes(chat.id)) f.chatIds.push(chat.id);
     queueRender();
-    schedulePersist('add-chat');
-    toast('聊天已加入文件夹。');
+    if (opts.persist !== false) schedulePersist('add-chat');
+    if (opts.notify !== false) toast('聊天已加入文件夹。');
     return true;
   }
 
@@ -3047,6 +3093,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (localUnsavedChanges || pendingPersistTimer) persistNow({ webdav: false });
     captureSyncOperations(reason || 'sync');
     const ctx = captureWebdavContext(w);
+    const syncBusinessAtStart = storageBusinessProjectionKey(p);
+    const assertSyncBusinessUnchanged = () => {
+      if (state !== p || storageBusinessProjectionKey(p) !== syncBusinessAtStart || localUnsavedChanges) {
+        const err = new Error('同步过程中本地文件夹发生变更；取消过期结果，等待下一轮同步。');
+        err.isConflict = true;
+        throw err;
+      }
+    };
     try {
       await withWebdavOperation('sync', async () => {
         setSyncStatus('syncing');
@@ -3069,6 +3123,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
             await putDavJson(w, JSON.stringify(payload, null, 2), { createOnly: true }, ctx);
             const verify = await getDavJson(w, ctx);
             const verified = parseRemotePayload(verify, ctx);
+            assertSyncBusinessUnchanged();
             adoptRemotePayload(verified, verify, ctx, { wasPush: true, status: 'created and synced at ' + shortTime(nowIso()) });
             if (manual) toast('已创建远程文件并完成同步。');
             return;
@@ -3084,6 +3139,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
           if (!w.remoteInitialized || w.syncTarget !== ctx.target || !meta.baseProfile) {
             if (!profileHasUserData(p) && !localDirty) {
+              assertSyncBusinessUnchanged();
               adoptRemotePayload(remoteData, remoteRes, ctx, { wasPull: true, status: 'initialized from remote at ' + shortTime(nowIso()) });
               if (manual) toast('已从云端初始化当前设备。');
               return;
@@ -3106,17 +3162,20 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
           }
 
           if (!localDirty && (remoteRevision !== baseRevision || remoteContentChanged)) {
+            assertSyncBusinessUnchanged();
             adoptRemotePayload(remoteData, remoteRes, ctx, { wasPull: true, status: 'auto pull at ' + shortTime(nowIso()) });
             if (manual) toast('已下载并应用云端更新。');
             return;
           }
 
+          assertSyncBusinessUnchanged();
           const merge = buildMergeResult(p, remoteData);
           const nextRevision = Math.max(remoteRevision, baseRevision) + 1;
           const operations = prepareOperationsForRevision(merge.allOperations, nextRevision);
           const payload = exportPayload(merge.profile, nextRevision, { operations, tombstones: merge.tombstones });
           const body = JSON.stringify(payload, null, 2);
           try {
+            assertSyncBusinessUnchanged();
             await guardedPut(w, ctx, remoteRes, body, attempt);
           } catch (err) {
             if (err && err.status === 412 && attempt < 2) continue;
@@ -3131,6 +3190,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
             if (attempt < 2) continue;
             throw new Error('同步写入后的远程校验失败。');
           }
+          assertSyncBusinessUnchanged();
           adoptRemotePayload(verified, verify, ctx, {
             wasPush: true,
             wasMerge: remoteRevision !== baseRevision,
@@ -3167,11 +3227,20 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (localUnsavedChanges || pendingPersistTimer) persistNow({ webdav: false });
     if (manual && localHasSyncChanges(p) && !confirm('强制拉取会放弃当前设备尚未同步的修改。确定继续吗？')) return;
     const ctx = captureWebdavContext(w);
+    const syncBusinessAtStart = storageBusinessProjectionKey(p);
+    const assertSyncBusinessUnchanged = () => {
+      if (state !== p || storageBusinessProjectionKey(p) !== syncBusinessAtStart || localUnsavedChanges) {
+        const err = new Error('同步过程中本地文件夹发生变更；取消过期结果，等待下一轮同步。');
+        err.isConflict = true;
+        throw err;
+      }
+    };
     try {
       await withWebdavOperation('pull', async () => {
         setSyncStatus('syncing');
         const res = await getDavJson(w, ctx);
         const data = parseRemotePayload(res, ctx);
+        assertSyncBusinessUnchanged();
         adoptRemotePayload(data, res, ctx, { wasPull: true, status: 'forced pull at ' + shortTime(nowIso()) });
         if (manual) toast('已强制拉取云端数据。');
       });
