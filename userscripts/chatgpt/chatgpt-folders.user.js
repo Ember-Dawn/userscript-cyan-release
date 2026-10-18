@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.3.1
+// @version      1.3.2
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.3.1';
+  const VERSION = '1.3.2';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -4064,6 +4064,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const last = recentLastRequestAt;
     if (Date.now() - last < 1000) return;
     recentLastRequestAt = Date.now();
+    const requestStartedAt = Date.now();
     historyRefreshPromise = (async () => {
       const results = [];
       const seen = new Set();
@@ -4095,15 +4096,16 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         if (!data.items.length || data.items.length < 20) break;
       }
       if (!results.length || capturedOfficialHistoryRequest?.accountId !== expectedAccount) return;
-      mergeRecentItems(results);
+      mergeRecentItems(results, 'server', requestStartedAt);
     })().finally(() => { historyRefreshPromise = null; });
     return historyRefreshPromise;
   }
 
-  function mergeRecentItems(found) {
+  function mergeRecentItems(found, source = 'dom', requestStartedAt = 0) {
     readRecentCache();
     if (!found.length) return;
-    found = found.map(item => ({ ...item, title:guardConversationTitle(item.id, item.title, true) }));
+    // Native React DOM is a possibly stale display snapshot, not server truth.
+    found = found.map(item => ({ ...item, title:guardConversationTitle(item.id, item.title, source, requestStartedAt) }));
     const seen = new Set(found.map(item => item.id));
     recentKnown = found.concat(recentKnown.filter(c => !seen.has(c.id))).slice(0, 100);
     const key = recentStorageKey();
@@ -4153,8 +4155,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       const records = JSON.parse(localStorage.getItem(key) || '[]');
       for (const item of Array.isArray(records) ? records : []) {
         if (item && /^[a-zA-Z0-9_-]{12,80}$/.test(item.id) &&
-            typeof item.title === 'string' && Date.now() - item.at < 86400000) {
-          confirmedTitles.set(item.id, { title:item.title, at:item.at });
+            typeof item.title === 'string' && Number.isFinite(item.at) && item.at > 0) {
+          // Retain older v1.3.1 entries instead of dropping them at 24 hours.
+          confirmedTitles.set(item.id, { title:item.title, at:item.at,
+            confirmed: item.confirmed === true, confirmedAt: Number(item.confirmedAt) || 0 });
         }
       }
     } catch (_) {}
@@ -4168,14 +4172,28 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     } catch (_) {}
   }
 
-  function guardConversationTitle(id, proposed, server = false) {
+  function guardConversationTitle(id, proposed, source = 'display', requestStartedAt = 0) {
     loadConfirmedTitles();
     const override = confirmedTitles.get(id);
     if (!override) return proposed;
-    if (Date.now() - override.at > 86400000 || (server && proposed === override.title)) {
-      confirmedTitles.delete(id);
-      persistConfirmedTitles();
-      return proposed;
+    // Only a server request started AFTER our successful rename can reconcile it.
+    // Server confirmation does not remove the DOM guard: native React may still
+    // render its old title until a page reload.
+    if (source === 'server' && requestStartedAt >= override.at) {
+      if (proposed === override.title) {
+        if (!override.confirmed) {
+          override.confirmed = true;
+          override.confirmedAt = Date.now();
+          persistConfirmedTitles();
+        }
+      } else if (override.confirmed && requestStartedAt > override.confirmedAt) {
+        // A subsequent authoritative read can observe an external rename.
+        // Keep the new server title guarded against stale native DOM too.
+        confirmedTitles.set(id, { title:proposed, at:Date.now(), confirmed:true,
+          confirmedAt:Date.now() });
+        persistConfirmedTitles();
+        return proposed;
+      }
     }
     return override.title;
   }
@@ -4268,7 +4286,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       });
       if (!response.ok) throw new Error('HTTP ' + response.status);
       loadConfirmedTitles();
-      confirmedTitles.set(id, { title, at:Date.now() });
+      confirmedTitles.set(id, { title, at:Date.now(), confirmed:false, confirmedAt:0 });
       persistConfirmedTitles();
       const p = getProfile();
       if (p.conversations[id]) {
