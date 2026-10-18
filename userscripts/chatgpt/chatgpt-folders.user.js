@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.3.0
+// @version      1.3.1
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.2.2';
+  const VERSION = '1.3.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1444,7 +1444,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const scroll = rootEl.querySelector('[data-cgfm-scroll]');
     if (scroll) scroll.scrollTop = oldScrollTop;
     focusInlineFolderEditor();
-    focusInlineChatEditor();
   }
 
   function renderTree(p) {
@@ -1605,13 +1604,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onRootKeydown(event) {
-    const chatInput = event.target.closest('[data-chat-edit-id]');
-    if (chatInput && rootEl.contains(chatInput)) {
-      if (event.isComposing || event.keyCode === 229) return;
-      if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); commitChatRename(chatInput, false); }
-      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); commitChatRename(chatInput, true); }
-      return;
-    }
     const input = event.target.closest('[data-folder-edit-id]');
     if (!input || !rootEl.contains(input)) return;
     if (event.key === 'Enter') { event.preventDefault(); commitFolderEdit(input, false); }
@@ -1619,10 +1611,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onRootFocusOut(event) {
-    const chatInput = event.target.closest('[data-chat-edit-id]');
-    // Chat rename must be explicit: blur can occur during IME composition,
-    // browser focus changes and sidebar DOM updates. Never auto-submit on blur.
-    if (chatInput && rootEl.contains(chatInput)) return;
     const input = event.target.closest('[data-folder-edit-id]');
     if (!input || !rootEl.contains(input)) return;
     setTimeout(() => {
@@ -4389,7 +4377,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const active = document.activeElement;
     if (active && list.contains(active)) return;
     list.innerHTML = renderRecentChats();
-    focusInlineChatEditor();
   }
 
   function beginOwnedPanelDrag() {
