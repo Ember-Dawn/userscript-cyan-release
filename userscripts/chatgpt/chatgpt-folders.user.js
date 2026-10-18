@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.1
+// @version      1.4.2
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -148,7 +148,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let nativeFolderSubmenus = [];
   let nativeMenuPollTimer = null;
   let resumeRecoveryTimers = [];
-  let sidebarVisibilityTimers = [];
   let appShellStateRaf = 0;
   let storageWriteSeq = 0;
   let lastSeenStorageRevision = '';
@@ -4293,7 +4292,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const host = shell?.querySelector(RECENTS_SECTION_SELECTOR) ||
       shell?.querySelector('[data-app-action-sidebar-section-heading="Recents"]') ||
       shell?.querySelector('[data-app-action-sidebar-scroll]');
-    if (host === recentObserverHost) return;
+    // The official sidebar can detach and reattach its Recents host after a
+    // React transition. A disconnected host must never suppress rebinding.
+    if (host === recentObserverHost && (!host || host.isConnected)) return;
     recentMutationObserver?.disconnect();
     recentObserverHost = host || null;
     if (!host) return;
@@ -4341,7 +4342,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (!list) return;
     const active = document.activeElement;
     if (active && list.contains(active)) return;
-    list.innerHTML = renderRecentChats();
+    const nextHtml = renderRecentChats();
+    // Reobserving the official sidebar may re-deliver unchanged titles. Avoid
+    // replacing identical interactive rows and their drag/focus state.
+    if (list.innerHTML !== nextHtml) list.innerHTML = nextHtml;
   }
 
   function beginOwnedPanelDrag() {
@@ -4466,18 +4470,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
 
-
-  function scheduleSidebarVisibilityCheck() {
-    // Debounce sidebar animation checks. Firefox may emit multiple resize/click-related
-    // events during ChatGPT's sidebar transition; avoid accumulating timer storms.
-    // Re-run the lightweight mount check as well because the new app-shell UI may remove
-    // and recreate the collapsible conversation subtree during a toggle.
-    sidebarVisibilityTimers.forEach(timer => clearTimeout(timer));
-    sidebarVisibilityTimers = [80, 220, 500, 900].map(delay => setTimeout(() => {
-      try { ensureMountedLight(); }
-      finally { /* timers are cleared/replaced on the next schedule */ }
-    }, delay));
-  }
 
   function scheduleResumeRecovery(reason) {
     // Sleep / tab restore is not a full page load, so Tampermonkey does not rerun boot().
