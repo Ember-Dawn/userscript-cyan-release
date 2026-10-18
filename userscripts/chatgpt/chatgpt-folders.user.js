@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.4
+// @version      1.4.5
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.4';
+  const VERSION = '1.4.5';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1422,7 +1422,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     else if (action === 'toggle-folder') toggleFolder(fid);
     else if (action === 'select-folder') selectFolder(fid);
     else if (action === 'folder-menu') showFolderMenu(fid, button);
-    else if (action === 'rename-chat') beginChatRename(cid);
+    else if (action === 'rename-chat') beginChatRename(cid, button.closest('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]'));
     else if (action === 'refresh-chat-title') refreshChatTitle(cid);
     else if (action === 'remove-chat') removeChat(cid);
   }
@@ -3541,8 +3541,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function hasActiveChatEditor() {
     if (!chatRenameDialog) return false;
     if (chatRenameDialog.edit?.isConnected && chatRenameDialog.input?.isConnected) return true;
+    // If another render or a native interaction removed the editor unexpectedly,
+    // release the row/visibility lock rather than leaving an invisible edit session.
+    const stale = chatRenameDialog;
     chatRenameDialog = null;
+    if (stale.row?.isConnected) {
+      stale.row.draggable = true;
+      if (stale.edit?.isConnected && stale.link) stale.edit.replaceWith(stale.link);
+      if (stale.renameButton?.isConnected) stale.renameButton.hidden = false;
+    }
+    const needsRender = renderDeferredDuringChatEdit;
     renderDeferredDuringChatEdit = false;
+    if (needsRender) queueMicrotask(queueRender);
     return false;
   }
 
@@ -3628,8 +3638,16 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     finishInlineChatRename(session);
   }
 
-  function beginChatRename(id) {
+  function beginChatRename(id, row) {
     if (!/^[a-zA-Z0-9_-]{12,80}$/.test(String(id || ''))) return;
+    // Conversation IDs are intentionally repeated in folder entries and Recents.
+    // Never search by ID for the edit target: it may select a hidden folder row.
+    if (!row || !rootEl?.contains(row) || !row.isConnected ||
+        row.getAttribute('data-chat-id') !== id ||
+        row.closest('[hidden]') || !row.getClientRects().length) {
+      toast('当前对话行不可编辑，请重新打开后再试。');
+      return;
+    }
     if (!(capturedOfficialHistoryRequest || restoreOfficialAuthHeaders())) {
       toast('认证尚未就绪，请先正常展开一次官方侧边栏。');
       return;
@@ -3641,9 +3659,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (chatRenameDialog) dismissChatRename();
     const p = getProfile();
     const known = p.conversations[id] || recentKnown.find(c => c.id === id);
-    const row = [...(rootEl?.querySelectorAll('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]') || [])]
-      .find(el => el.getAttribute('data-chat-id') === id);
-    const link = row?.querySelector('a.cgfm-chat-title');
+    // Use the exact visible row that received the user's interaction.
+    const link = row.querySelector('a.cgfm-chat-title');
     const renameButton = row?.querySelector('.cgfm-chat-rename');
     const title = guardConversationTitle(id, known?.title || link?.textContent || '');
     if (!row || !link || !renameButton || !title) {
@@ -3672,6 +3689,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     link.replaceWith(edit);
     row.draggable = false;
     renameButton.hidden = true;
+    // Publish the visibility lock only when the actual inline editor is mounted.
+    if (!edit.isConnected || !input.isConnected) {
+      row.draggable = true;
+      renameButton.hidden = false;
+      if (edit.isConnected) edit.replaceWith(link);
+      toast('编辑框未能打开，请重试。');
+      return;
+    }
     chatRenameDialog = session;
     clearTimeout(folderCloseTimer);
     syncSidebarVisibility();
@@ -3682,7 +3707,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const row = event.target.closest?.('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]');
     if (!row || !rootEl.contains(row)) return;
     event.preventDefault();
-    beginChatRename(row.getAttribute('data-chat-id'));
+    beginChatRename(row.getAttribute('data-chat-id'), row);
   }
 
   async function commitChatRename() {
