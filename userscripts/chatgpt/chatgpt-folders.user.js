@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.0
+// @version      1.4.1
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -99,8 +99,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let lastRecentScan = 0;
   let recentKnown = [];
   let recentCacheAccount = '';
-  let editingChatId = '';
-  let renameChatBusy = false;
   let chatRenameDialog = null;
   let confirmedTitles = new Map();
   let confirmedTitlesAccount = '';
@@ -4047,17 +4045,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return historyRefreshPromise;
   }
 
+  function reconcileConversationTitles(items, source = 'display', requestStartedAt = 0) {
+    return items.map(item => ({ ...item, title:guardConversationTitle(item.id, item.title, source, requestStartedAt) }));
+  }
+
   function mergeRecentItems(found, source = 'dom', requestStartedAt = 0) {
     readRecentCache();
     if (!found.length) return;
     // Native React DOM is a possibly stale display snapshot, not server truth.
-    found = found.map(item => ({ ...item, title:guardConversationTitle(item.id, item.title, source, requestStartedAt) }));
+    found = reconcileConversationTitles(found, source, requestStartedAt);
     const seen = new Set(found.map(item => item.id));
     recentKnown = found.concat(recentKnown.filter(c => !seen.has(c.id))).slice(0, 100);
-    const key = recentStorageKey();
-    if (key) {
-      try { localStorage.setItem(key, JSON.stringify({ timestamp: Date.now(), chats: recentKnown })); } catch (_) {}
-    }
+    persistRecentCache();
     const p = getProfile();
     let changed = false;
     for (const chat of found) {
@@ -4081,8 +4080,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (chatRenameDialog.node?.isConnected) return true;
     // Self-heal when an external script removes the dialog unexpectedly.
     chatRenameDialog = null;
-    editingChatId = '';
-    renameChatBusy = false;
     return false;
   }
 
@@ -4148,7 +4145,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const session = chatRenameDialog;
     if (!session || session.busy) return;
     chatRenameDialog = null;
-    editingChatId = '';
     session.node.remove();
     reconcileFolderHover();
     syncSidebarVisibility();
@@ -4192,7 +4188,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     document.body.appendChild(node);
     if (!node.isConnected) return;
     chatRenameDialog = session;
-    editingChatId = id;
     clearTimeout(folderCloseTimer);
     syncSidebarVisibility();
     input.focus(); input.select();
@@ -4217,7 +4212,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       toast('当前账号的官方会话上下文不可用。'); return;
     }
     session.busy = true;
-    renameChatBusy = true;
     input.disabled = true;
     const save = session.node.querySelector('[data-save]');
     const cancel = session.node.querySelector('[data-cancel]');
@@ -4247,12 +4241,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       }
       const cached = recentKnown.find(c => c.id === id);
       if (cached) cached.title = title;
-      const key = recentStorageKey();
-      if (key) {
-        try { localStorage.setItem(key, JSON.stringify({timestamp:Date.now(),chats:recentKnown})); } catch (_) {}
-      }
+      persistRecentCache();
       chatRenameDialog = null;
-      editingChatId = '';
       session.node.remove();
       queueRender();
       toast('对话已重命名。');
@@ -4264,7 +4254,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     } finally {
       clearTimeout(timeout);
       session.busy = false;
-      renameChatBusy = false;
       if (chatRenameDialog !== session) {
         requestAnimationFrame(() => {
           reconcileFolderHover(); syncSidebarVisibility();
@@ -4279,6 +4268,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return account ? 'cgfm.v1.recentCache.' + encodeURIComponent(String(account)) : '';
   }
 
+  function persistRecentCache() {
+    const key = recentStorageKey();
+    if (!key) return;
+    try { localStorage.setItem(key, JSON.stringify({ timestamp:Date.now(), chats:recentKnown })); } catch (_) {}
+  }
+
   function readRecentCache() {
     const key = recentStorageKey();
     if (recentCacheAccount === key) return;
@@ -4288,7 +4283,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     try {
       const saved = JSON.parse(localStorage.getItem(key) || 'null');
       if (!saved || !Array.isArray(saved.chats) || Date.now() - saved.timestamp > 7 * 86400000) return;
-      recentKnown = saved.chats.filter(c => c && /^[a-zA-Z0-9_-]{12,80}$/.test(c.id) && typeof c.title === 'string').slice(0, 100).map(c => ({...c, title:guardConversationTitle(c.id, c.title)}));
+      recentKnown = saved.chats.filter(c => c && /^[a-zA-Z0-9_-]{12,80}$/.test(c.id) && typeof c.title === 'string').slice(0, 100);
+      recentKnown = reconcileConversationTitles(recentKnown);
     } catch (_) {}
   }
 
@@ -4337,7 +4333,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function renderRecentChats() {
     readRecentCache();
     if (!recentKnown.length) return '<div class="cgfm-recent-empty">暂无最近对话。若官方历史尚未加载，将在正常展开官方侧栏后补充。</div>';
-    return recentKnown.map(chat => ({...chat, title:guardConversationTitle(chat.id, chat.title)})).map(chat => `<div class="cgfm-recent-chat" draggable="${editingChatId === chat.id ? 'false' : 'true'}" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a><button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
+    return reconcileConversationTitles(recentKnown).map(chat => `<div class="cgfm-recent-chat" draggable="true" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a><button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
   }
 
   function updateRecentDom() {
@@ -4368,13 +4364,21 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (!hovered) scheduleFolderClose();
   }
 
+  // Only this predicate decides which interactions keep the independent pane open.
+  function panelHasVisibilityHold() {
+    return ownedDragActive || hasActiveChatEditor() || folderButtonPinned ||
+      !!nativeChatPointerDrag?.active;
+  }
+
+  function shouldShowFolderPanel() {
+    return panelHasVisibilityHold() || folderPointerInButton || folderPointerInPane;
+  }
+
   function scheduleFolderClose() {
     clearTimeout(folderCloseTimer);
-    if (ownedDragActive || hasActiveChatEditor() || folderButtonPinned ||
-        (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
+    if (panelHasVisibilityHold()) return;
     folderCloseTimer = setTimeout(() => {
-      if (ownedDragActive || hasActiveChatEditor() || folderButtonPinned ||
-          (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
+      if (panelHasVisibilityHold()) return;
       reconcileFolderHover();
       syncSidebarVisibility();
     }, 220);
@@ -4432,8 +4436,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function syncSidebarVisibility() {
-    dualSidebarOpen = ownedDragActive || hasActiveChatEditor() || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
-      !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
+    dualSidebarOpen = shouldShowFolderPanel();
     const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
     // The navigation rail is always 52px, even when the native conversation
     // sidebar is pinned. Position relative to the actual rail, never the native panel.
