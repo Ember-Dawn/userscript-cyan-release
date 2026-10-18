@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.2.2
+// @version      1.3.0
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -103,6 +103,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let editingChatId = '';
   let renderDeferredDuringChatEdit = false;
   let renameChatBusy = false;
+  let chatRenameDialog = null;
+  let confirmedTitles = new Map();
+  let confirmedTitlesAccount = '';
   let capturedOfficialHistoryRequest = null; // In-memory only. Never persist credentials.
   let historyRefreshPromise = null;
   let recentLastRequestAt = 0;
@@ -1090,6 +1093,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-root .cgfm-chat-row:hover .cgfm-chat-rename,#cgfm-root .cgfm-recent-chat:hover .cgfm-chat-rename,#cgfm-root .cgfm-chat-rename:focus-visible { opacity:1; pointer-events:auto; }
       #cgfm-root .cgfm-chat-rename:hover { background:var(--cgfm-hover); color:var(--cgfm-text); }
       #cgfm-root .cgfm-chat-rename svg { width:15px; height:15px; }
+      .cgfm-rename-backdrop { position:fixed; inset:0; z-index:2147483646; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.30); }
+      .cgfm-rename-card { width:min(360px,calc(100vw - 32px)); padding:16px; border-radius:12px; border:1px solid rgba(128,128,128,.25); background:var(--main-surface-primary,#fff); color:var(--text-primary,#111827); box-shadow:0 14px 48px rgba(0,0,0,.25); font:14px/1.5 system-ui,sans-serif; display:grid; gap:12px; }
+      .cgfm-rename-card input { width:100%; box-sizing:border-box; border:1px solid #3A83F7; border-radius:7px; padding:8px; background:var(--main-surface-primary,#fff); color:inherit; font:inherit; }
+      .cgfm-rename-actions { display:flex; justify-content:flex-end; gap:8px; }
+      .cgfm-rename-actions button { border-radius:7px; padding:6px 12px; border:1px solid rgba(128,128,128,.3); background:transparent; color:inherit; cursor:pointer; }
+      .cgfm-rename-actions button[data-save] { background:#3A83F7; border-color:#3A83F7; color:white; }
       #cgfm-root .cgfm-chat-edit { flex:1; width:1px; min-width:0; border:1px solid #3A83F7; border-radius:6px; height:26px; padding:2px 6px; background:var(--main-surface-primary,#fff); color:var(--cgfm-text); font:inherit; }
       #cgfm-root .cgfm-recent-chat svg { width:15px; height:15px; flex:none; }
       #cgfm-root .cgfm-recent-empty { color:var(--cgfm-muted); padding:8px 12px; font-size:12px; line-height:1.5; }
@@ -1396,12 +1405,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function queueRender() {
-    if (editingChatId) { renderDeferredDuringChatEdit = true; return; }
     if (renderQueued) return;
     renderQueued = true;
     requestAnimationFrame(() => {
       renderQueued = false;
-      if (editingChatId) { renderDeferredDuringChatEdit = true; return; }
       if (!rootEl || !document.body.contains(rootEl)) mount();
       else render();
     });
@@ -1409,7 +1416,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function render() {
     if (!rootEl) return;
-    if (editingChatId && rootEl.querySelector('[data-chat-edit-id]')) { renderDeferredDuringChatEdit = true; return; }
     const p = getProfile();
     const collapsed = !!p.settings.ui.sectionCollapsed;
     const oldScrollTop = rootEl.querySelector('[data-cgfm-scroll]')?.scrollTop || 0;
@@ -1477,13 +1483,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function renderChat(p, cid, folderId, depth) {
     const c = p.conversations[cid];
     if (!c) return '';
-    const title = c.title || 'Untitled chat';
+    const title = guardConversationTitle(cid, c.title || 'Untitled chat');
     const url = normalizeStoredUrl(c.url || ('/c/' + cid));
     return `
       <div class="cgfm-chat-row" data-chat-id="${escapeAttr(cid)}" data-folder-id="${escapeAttr(folderId)}" data-depth="${depth}" draggable="true" style="--depth:${depth}">
         <span class="cgfm-spacer"></span>
         <span class="cgfm-chat-icon">${icon('chat')}</span>
-        ${editingChatId === cid ? `<input class="cgfm-chat-edit" data-chat-edit-id="${escapeAttr(cid)}" value="${escapeAttr(title)}" draggable="false" spellcheck="false">` : `<a class="cgfm-chat-title" draggable="false" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>`}
+        <a class="cgfm-chat-title" draggable="false" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>
         <button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(cid)}" title="重命名对话">${icon('rename')}</button>
         <span class="cgfm-row-actions">
           <button class="cgfm-icon" data-action="refresh-chat-title" data-chat-id="${escapeAttr(cid)}" title="刷新标题">${icon('refresh')}</button>
@@ -1844,7 +1850,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     // If the user is currently viewing this conversation, document.title is often the
     // freshest source after a rename. Otherwise prefer the native sidebar link, never
     // the script's own folder link.
-    const title = cleanConversationTitle((currentPageTitle && currentPageTitle !== oldTitle) ? currentPageTitle : (nativeTitle || currentPageTitle));
+    const title = guardConversationTitle(cid, cleanConversationTitle((currentPageTitle && currentPageTitle !== oldTitle) ? currentPageTitle : (nativeTitle || currentPageTitle)));
     if (!title) {
       toast('当前最近列表中找不到该对话。');
       return;
@@ -2592,7 +2598,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
     p.conversations[chat.id] = Object.assign({}, existing || {}, {
       id: chat.id,
-      title: chat.title || (existing && existing.title) || 'Untitled chat',
+      title: guardConversationTitle(chat.id, chat.title || (existing && existing.title) || 'Untitled chat'),
       url: normalizeStoredUrl(chat.url || ('/c/' + chat.id)),
       folderId,
       addedAt: existing && existing.addedAt || nowIso(),
@@ -4109,6 +4115,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function mergeRecentItems(found) {
     readRecentCache();
     if (!found.length) return;
+    found = found.map(item => ({ ...item, title:guardConversationTitle(item.id, item.title, true) }));
     const seen = new Set(found.map(item => item.id));
     recentKnown = found.concat(recentKnown.filter(c => !seen.has(c.id))).slice(0, 100);
     const key = recentStorageKey();
@@ -4132,82 +4139,111 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     folderPointerInPane = !!(rootEl?.matches(':hover'));
   }
 
+  // A single body-owned dialog: React/own list renders cannot destroy the editor.
   function hasActiveChatEditor() {
-    if (!editingChatId) return false;
-    if (renameChatBusy) return true;
-    const editor = rootEl?.querySelector('[data-chat-edit-id="' + cssEscape(editingChatId) + '"]');
-    if (editor?.isConnected) return true;
-    // A removed editor is no longer an interaction lock.
+    if (!chatRenameDialog) return false;
+    if (chatRenameDialog.node?.isConnected) return true;
+    // Self-heal when an external script removes the dialog unexpectedly.
+    chatRenameDialog = null;
     editingChatId = '';
-    renderDeferredDuringChatEdit = false;
+    renameChatBusy = false;
     return false;
   }
 
-  function cancelPreviousChatRename() {
-    if (!editingChatId || renameChatBusy) return;
-    const id = editingChatId;
-    const input = rootEl?.querySelector('[data-chat-edit-id="' + cssEscape(id) + '"]');
-    if (input) {
-      const stored = getProfile().conversations[id];
-      const cached = recentKnown.find(c => c.id === id);
-      const title = stored?.title || cached?.title || '';
-      const link = document.createElement('a');
-      link.className = 'cgfm-chat-title';
-      link.draggable = false;
-      link.href = '/c/' + encodeURIComponent(id);
-      link.textContent = title;
-      link.title = title;
-      input.replaceWith(link);
-      const row = link.closest('[data-chat-id]');
-      if (row) row.draggable = true;
-    }
-    editingChatId = '';
-    renderDeferredDuringChatEdit = false;
+  function titleGuardKey() {
+    const k = recentStorageKey();
+    return k ? k + '.confirmedTitles' : '';
   }
 
-  function focusInlineChatEditor() {
-    if (!editingChatId) return;
-    const input = rootEl?.querySelector('[data-chat-edit-id="' + cssEscape(editingChatId) + '"]');
-    if (input && document.activeElement !== input) requestAnimationFrame(() => { input.focus(); input.select(); });
+  function loadConfirmedTitles() {
+    const key = titleGuardKey();
+    if (key === confirmedTitlesAccount) return;
+    confirmedTitlesAccount = key;
+    confirmedTitles = new Map();
+    if (!key) return;
+    try {
+      const records = JSON.parse(localStorage.getItem(key) || '[]');
+      for (const item of Array.isArray(records) ? records : []) {
+        if (item && /^[a-zA-Z0-9_-]{12,80}$/.test(item.id) &&
+            typeof item.title === 'string' && Date.now() - item.at < 86400000) {
+          confirmedTitles.set(item.id, { title:item.title, at:item.at });
+        }
+      }
+    } catch (_) {}
+  }
+
+  function persistConfirmedTitles() {
+    const key = titleGuardKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify([...confirmedTitles].map(([id, value]) => ({id, ...value}))));
+    } catch (_) {}
+  }
+
+  function guardConversationTitle(id, proposed, server = false) {
+    loadConfirmedTitles();
+    const override = confirmedTitles.get(id);
+    if (!override) return proposed;
+    if (Date.now() - override.at > 86400000 || (server && proposed === override.title)) {
+      confirmedTitles.delete(id);
+      persistConfirmedTitles();
+      return proposed;
+    }
+    return override.title;
+  }
+
+  function dismissChatRename() {
+    const session = chatRenameDialog;
+    if (!session || session.busy) return;
+    chatRenameDialog = null;
+    editingChatId = '';
+    session.node.remove();
+    reconcileFolderHover();
+    syncSidebarVisibility();
+    if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
   }
 
   function beginChatRename(id) {
-    if (!/^[a-zA-Z0-9_-]{12,80}$/.test(String(id || '')) || renameChatBusy) return;
+    if (!/^[a-zA-Z0-9_-]{12,80}$/.test(String(id || ''))) return;
     if (!capturedOfficialHistoryRequest) {
       toast('尚未取得官方会话授权上下文；请先正常展开一次官方侧边栏。');
       return;
     }
-    if (editingChatId === id) {
-      focusInlineChatEditor();
-      return;
-    }
-    if (editingChatId) cancelPreviousChatRename();
+    if (chatRenameDialog?.busy) return;
+    if (chatRenameDialog) dismissChatRename();
+    const p = getProfile();
+    const known = p.conversations[id] || recentKnown.find(c => c.id === id);
+    const row = [...(rootEl?.querySelectorAll('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]') || [])]
+      .find(el => el.getAttribute('data-chat-id') === id);
+    const title = guardConversationTitle(id, known?.title || row?.querySelector('.cgfm-chat-title')?.textContent || '');
+    if (!title) { toast('没有可编辑的对话标题。'); return; }
+    const node = document.createElement('div');
+    node.className = 'cgfm-rename-backdrop';
+    node.innerHTML = '<div class="cgfm-rename-card" role="dialog" aria-modal="true" aria-label="重命名对话">' +
+      '<label for="cgfm-rename-value">重命名对话</label>' +
+      '<input id="cgfm-rename-value" maxlength="200" autocomplete="off" spellcheck="false">' +
+      '<div class="cgfm-rename-actions"><button type="button" data-cancel>取消</button><button type="button" data-save>保存</button></div></div>';
+    const input = node.querySelector('input');
+    input.value = title;
+    const session = { id, node, input, busy:false };
+    node.addEventListener('click', event => {
+      if (event.target === node || event.target.closest('[data-cancel]')) dismissChatRename();
+      else if (event.target.closest('[data-save]')) void commitChatRename();
+    });
+    node.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismissChatRename(); }
+      if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) {
+        event.preventDefault(); event.stopPropagation(); void commitChatRename();
+      }
+    });
+    // Only publish the editor lock after the dialog has been constructed and mounted.
+    document.body.appendChild(node);
+    if (!node.isConnected) return;
+    chatRenameDialog = session;
     editingChatId = id;
     clearTimeout(folderCloseTimer);
-    // Replace only the title link; preserve scroll, focus, and other rows.
-    renderDeferredDuringChatEdit = false;
-    const p = getProfile();
-    const chat = p.conversations[id] || recentKnown.find(c => c.id === id);
-    const row = [...rootEl.querySelectorAll('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]')]
-      .find(el => el.getAttribute('data-chat-id') === id);
-    const titleLink = row?.querySelector('a.cgfm-chat-title');
-    if (row && titleLink && chat) {
-      const input = document.createElement('input');
-      input.className = 'cgfm-chat-edit';
-      input.setAttribute('data-chat-edit-id', id);
-      input.setAttribute('draggable', 'false');
-      input.spellcheck = false;
-      input.value = chat.title || titleLink.textContent || '';
-      titleLink.replaceWith(input);
-      row.setAttribute('draggable', 'false');
-      input.focus();
-      input.select();
-    } else {
-      editingChatId = '';
-      toast('暂时无法打开此对话的编辑框。');
-      return;
-    }
     syncSidebarVisibility();
+    input.focus(); input.select();
   }
 
   function onChatRenameContextMenu(event) {
@@ -4217,18 +4253,23 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     beginChatRename(row.getAttribute('data-chat-id'));
   }
 
-  async function commitChatRename(input, cancel) {
-    const id = input?.getAttribute('data-chat-edit-id');
-    if (!id || editingChatId !== id || renameChatBusy) return;
-    if (cancel) { finishChatRenameEditing(); return; }
+  async function commitChatRename() {
+    const session = chatRenameDialog;
+    if (!session || session.busy) return;
+    const {id, input} = session;
     const title = String(input.value || '').trim();
     if (!title || title.length > 200) { toast('标题不能为空，且不能超过 200 字符。'); input.focus(); return; }
     const template = capturedOfficialHistoryRequest;
     if (!template || (currentAccount?.accountId && String(currentAccount.accountId) !== template.accountId)) {
       toast('当前账号的官方会话上下文不可用。'); return;
     }
+    session.busy = true;
     renameChatBusy = true;
     input.disabled = true;
+    const save = session.node.querySelector('[data-save]');
+    const cancel = session.node.querySelector('[data-cancel]');
+    save.disabled = true;
+    cancel.disabled = true;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
@@ -4238,6 +4279,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         method:'POST', credentials:'include', headers, body:JSON.stringify({ title }), signal:controller.signal
       });
       if (!response.ok) throw new Error('HTTP ' + response.status);
+      loadConfirmedTitles();
+      confirmedTitles.set(id, { title, at:Date.now() });
+      persistConfirmedTitles();
       const p = getProfile();
       if (p.conversations[id]) {
         p.conversations[id].title = title;
@@ -4250,24 +4294,27 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (key) {
         try { localStorage.setItem(key, JSON.stringify({timestamp:Date.now(),chats:recentKnown})); } catch (_) {}
       }
-      finishChatRenameEditing();
+      chatRenameDialog = null;
+      editingChatId = '';
+      session.node.remove();
+      queueRender();
       toast('对话已重命名。');
-    } catch (err) {
+    } catch (_) {
       input.disabled = false;
-      toast('重命名失败，原标题未改变。');
-    } finally { clearTimeout(timeout); renameChatBusy = false; }
-  }
-
-  function finishChatRenameEditing() {
-    editingChatId = '';
-    renderDeferredDuringChatEdit = false;
-    queueRender();
-    // Wait for input replacement before checking actual hover geometry.
-    requestAnimationFrame(() => {
-      reconcileFolderHover();
-      syncSidebarVisibility();
-      if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
-    });
+      save.disabled = false;
+      cancel.disabled = false;
+      toast('重命名失败，请重试。');
+    } finally {
+      clearTimeout(timeout);
+      session.busy = false;
+      renameChatBusy = false;
+      if (chatRenameDialog !== session) {
+        requestAnimationFrame(() => {
+          reconcileFolderHover(); syncSidebarVisibility();
+          if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
+        });
+      }
+    }
   }
 
   function recentStorageKey() {
@@ -4284,7 +4331,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     try {
       const saved = JSON.parse(localStorage.getItem(key) || 'null');
       if (!saved || !Array.isArray(saved.chats) || Date.now() - saved.timestamp > 7 * 86400000) return;
-      recentKnown = saved.chats.filter(c => c && /^[a-zA-Z0-9_-]{12,80}$/.test(c.id) && typeof c.title === 'string').slice(0, 100);
+      recentKnown = saved.chats.filter(c => c && /^[a-zA-Z0-9_-]{12,80}$/.test(c.id) && typeof c.title === 'string').slice(0, 100).map(c => ({...c, title:guardConversationTitle(c.id, c.title)}));
     } catch (_) {}
   }
 
@@ -4333,14 +4380,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function renderRecentChats() {
     readRecentCache();
     if (!recentKnown.length) return '<div class="cgfm-recent-empty">暂无最近对话。若官方历史尚未加载，将在正常展开官方侧栏后补充。</div>';
-    return recentKnown.map(chat => `<div class="cgfm-recent-chat" draggable="${editingChatId === chat.id ? 'false' : 'true'}" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}${editingChatId === chat.id ? `<input class="cgfm-chat-edit" data-chat-edit-id="${escapeAttr(chat.id)}" value="${escapeAttr(chat.title)}" draggable="false" spellcheck="false">` : `<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a>`}<button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
+    return recentKnown.map(chat => ({...chat, title:guardConversationTitle(chat.id, chat.title)})).map(chat => `<div class="cgfm-recent-chat" draggable="${editingChatId === chat.id ? 'false' : 'true'}" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a><button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
   }
 
   function updateRecentDom() {
     const list = rootEl?.querySelector('[data-cgfm-recent-list]');
     if (!list) return;
     const active = document.activeElement;
-    if (editingChatId || (active && list.contains(active))) return;
+    if (active && list.contains(active)) return;
     list.innerHTML = renderRecentChats();
     focusInlineChatEditor();
   }
