@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.6
+// @version      1.4.7
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.6';
+  const VERSION = '1.4.7';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -106,7 +106,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const AUTH_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
   const AUTH_HEADER_ALLOWLIST = ['authorization', 'chatgpt-account-id', 'oai-did', 'oai-language', 'originator', 'x-openai-codex-window-type', 'x-openai-web-frontend'];
   let historyRefreshPromise = null;
-  let recentLastRequestAt = 0;
+  const RECENT_REFRESH_PREFIX = 'cgfm.v1.historyRefresh.';
+  const RECENT_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+  const RECENT_REFRESH_ERROR_MS = 10 * 60 * 1000;
+  const RECENT_REFRESH_LOCK_MS = 15 * 1000;
+  const RECENT_REFRESH_MAX_BACKOFF_MS = 4 * 60 * 60 * 1000;
   let recentLastOpenState = false;
   // The script does not pin or alter the native sidebar.
   let dualSidebarOpen = false;
@@ -3469,54 +3473,103 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     is_archived: 'false', is_starred: 'false', order: 'updated'
   };
 
+  // Only request the first 20 chats, and never treat an empty response as an
+  // instruction to erase previously discovered conversations.
+  function recentRefreshKeys(accountId) {
+    const prefix = RECENT_REFRESH_PREFIX + encodeURIComponent(accountId) + '.';
+    return { state:prefix + 'state', lock:prefix + 'lock' };
+  }
+
+  function recentRefreshState(key) {
+    const saved = gmGet(key, null);
+    return saved && typeof saved === 'object' ? saved : {};
+  }
+
+  function retryAfterMillis(header, at) {
+    if (!header) return 0;
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 24 * 60 * 60 * 1000);
+    const date = Date.parse(header);
+    return Number.isFinite(date) ? Math.min(Math.max(0, date - at), 24 * 60 * 60 * 1000) : 0;
+  }
+
   async function refreshRecentFromOfficialApi() {
-    // A fresh open is the sole active refresh trigger (no polling, no manual button).
-    // The official request template might not exist until native sidebar first loads.
+    // Panel-opening is the only trigger. A cached list is displayed immediately;
+    // 30-minute freshness, failures, and 429 cooldowns survive reloads/tabs.
     const template = capturedOfficialHistoryRequest || restoreOfficialAuthHeaders();
     if (!template || Date.now() - template.capturedAt > AUTH_CACHE_TTL_MS) return;
     if (historyRefreshPromise) return historyRefreshPromise;
     const expectedAccount = template.accountId;
-    if (currentAccount?.accountId && String(currentAccount.accountId) !== expectedAccount) return;
-    const last = recentLastRequestAt;
-    if (Date.now() - last < 1000) return;
-    recentLastRequestAt = Date.now();
-    const requestStartedAt = Date.now();
+    if (!expectedAccount || (currentAccount?.accountId && String(currentAccount.accountId) !== expectedAccount)) return;
+    const keys = recentRefreshKeys(expectedAccount);
+    const startedAt = Date.now();
+    if (Number(recentRefreshState(keys.state).nextAllowedAt) > startedAt) return;
+    const existingLock = recentRefreshState(keys.lock);
+    if (Number(existingLock.expiresAt) > startedAt) return;
+
+    // GM storage does not implement an atomic compare-and-swap. A short lease
+    // plus a delayed ownership check reduces duplicate requests across tabs.
+    const lease = { owner:TAB_ID, expiresAt:startedAt + RECENT_REFRESH_LOCK_MS };
+    gmSet(keys.lock, lease);
     historyRefreshPromise = (async () => {
-      const results = [];
-      const seen = new Set();
-      for (let offset = 0; offset < 100; offset += 20) {
+      try {
+        await new Promise(resolve => setTimeout(resolve, 120 + Math.floor(Math.random() * 100)));
+        const liveLock = recentRefreshState(keys.lock);
+        if (liveLock.owner !== TAB_ID || Number(liveLock.expiresAt) !== lease.expiresAt) return;
+        if (Number(recentRefreshState(keys.state).nextAllowedAt) > Date.now()) return;
         const url = new URL('/backend-api/conversations', location.origin);
-        url.search = new URLSearchParams({ ...OFFICIAL_HISTORY_PARAMS, limit: '20', offset: String(offset) });
+        url.search = new URLSearchParams({ ...OFFICIAL_HISTORY_PARAMS, limit:'20', offset:'0' });
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
-        let data;
         try {
-          // Fetch via the regular same-origin channel; credentials remain in memory.
           const response = await fetch(url.href, {
-            method: 'GET', credentials: 'include', headers: new Headers(template.headers),
-            signal: controller.signal
+            method:'GET', credentials:'include', headers:new Headers(template.headers), signal:controller.signal
           });
+          const now = Date.now();
+          const previous = recentRefreshState(keys.state);
           if (response.status === 401 || response.status === 403) {
             forgetAuthTemplate(expectedAccount);
+            gmSet(keys.state, { nextAllowedAt:now + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
             return;
           }
-          if (!response.ok) return;
-          data = await response.json();
-        } catch (_) { return; }
-        finally { clearTimeout(timeout); }
-        if (!data || !Array.isArray(data.items)) return;
-        // Empty responses are not authoritative: keep any existing cached/DOM data.
-        for (const item of data.items) {
-          const id = String(item?.id || item?.conversation_id || '');
-          if (!/^[a-zA-Z0-9_-]{12,80}$/.test(id) || seen.has(id)) continue;
-          seen.add(id);
-          const title = cleanConversationTitle(item.title);
-          if (title) results.push({ id, title });
-        }
-        if (!data.items.length || data.items.length < 20) break;
+          if (response.status === 429) {
+            const streak = Math.min(4, Math.max(0, Number(previous.rateLimitStreak) || 0) + 1);
+            const backoff = Math.min(RECENT_REFRESH_MAX_BACKOFF_MS, 30 * 60 * 1000 * (2 ** (streak - 1)));
+            const retryAfter = retryAfterMillis(response.headers.get('Retry-After'), now);
+            gmSet(keys.state, { nextAllowedAt:now + Math.max(backoff, retryAfter), rateLimitStreak:streak });
+            return;
+          }
+          if (!response.ok) {
+            gmSet(keys.state, { nextAllowedAt:now + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
+            return;
+          }
+          const data = await response.json();
+          if (!data || !Array.isArray(data.items)) {
+            gmSet(keys.state, { nextAllowedAt:Date.now() + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
+            return;
+          }
+          gmSet(keys.state, { nextAllowedAt:Date.now() + RECENT_REFRESH_INTERVAL_MS, rateLimitStreak:0 });
+          const found = [];
+          const seen = new Set();
+          for (const item of data.items) {
+            const id = String(item?.id || item?.conversation_id || '');
+            if (!/^[a-zA-Z0-9_-]{12,80}$/.test(id) || seen.has(id)) continue;
+            seen.add(id);
+            const title = cleanConversationTitle(item.title);
+            if (title) found.push({ id, title });
+          }
+          if (found.length && capturedOfficialHistoryRequest?.accountId === expectedAccount &&
+              currentAccount?.accountId === expectedAccount) {
+            mergeRecentItems(found, 'server', startedAt);
+          }
+        } catch (_) {
+          gmSet(keys.state, { nextAllowedAt:Date.now() + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
+        } finally { clearTimeout(timeout); }
+      } finally {
+        // Never release a lease another tab may already have acquired.
+        const live = recentRefreshState(keys.lock);
+        if (live.owner === TAB_ID && Number(live.expiresAt) === lease.expiresAt) gmSet(keys.lock, null);
       }
-      if (!results.length || capturedOfficialHistoryRequest?.accountId !== expectedAccount) return;
-      mergeRecentItems(results, 'server', requestStartedAt);
     })().finally(() => { historyRefreshPromise = null; });
     return historyRefreshPromise;
   }
