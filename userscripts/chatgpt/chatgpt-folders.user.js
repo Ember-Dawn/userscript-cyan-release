@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.2.1
+// @version      1.2.2
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.2.1';
+  const VERSION = '1.2.2';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1602,8 +1602,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const chatInput = event.target.closest('[data-chat-edit-id]');
     if (chatInput && rootEl.contains(chatInput)) {
       if (event.isComposing || event.keyCode === 229) return;
-      if (event.key === 'Enter') { event.preventDefault(); commitChatRename(chatInput, false); }
-      else if (event.key === 'Escape') { event.preventDefault(); commitChatRename(chatInput, true); }
+      if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); commitChatRename(chatInput, false); }
+      else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); commitChatRename(chatInput, true); }
       return;
     }
     const input = event.target.closest('[data-folder-edit-id]');
@@ -4125,6 +4125,46 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     else updateRecentDom();
   }
 
+  // Reconcile hover after a rename. Pointerleave may have fired during DOM replacement,
+  // so the cached hover booleans must not keep an unpinned panel open forever.
+  function reconcileFolderHover() {
+    folderPointerInButton = !!(folderButton?.querySelector('button')?.matches(':hover'));
+    folderPointerInPane = !!(rootEl?.matches(':hover'));
+  }
+
+  function hasActiveChatEditor() {
+    if (!editingChatId) return false;
+    if (renameChatBusy) return true;
+    const editor = rootEl?.querySelector('[data-chat-edit-id="' + cssEscape(editingChatId) + '"]');
+    if (editor?.isConnected) return true;
+    // A removed editor is no longer an interaction lock.
+    editingChatId = '';
+    renderDeferredDuringChatEdit = false;
+    return false;
+  }
+
+  function cancelPreviousChatRename() {
+    if (!editingChatId || renameChatBusy) return;
+    const id = editingChatId;
+    const input = rootEl?.querySelector('[data-chat-edit-id="' + cssEscape(id) + '"]');
+    if (input) {
+      const stored = getProfile().conversations[id];
+      const cached = recentKnown.find(c => c.id === id);
+      const title = stored?.title || cached?.title || '';
+      const link = document.createElement('a');
+      link.className = 'cgfm-chat-title';
+      link.draggable = false;
+      link.href = '/c/' + encodeURIComponent(id);
+      link.textContent = title;
+      link.title = title;
+      input.replaceWith(link);
+      const row = link.closest('[data-chat-id]');
+      if (row) row.draggable = true;
+    }
+    editingChatId = '';
+    renderDeferredDuringChatEdit = false;
+  }
+
   function focusInlineChatEditor() {
     if (!editingChatId) return;
     const input = rootEl?.querySelector('[data-chat-edit-id="' + cssEscape(editingChatId) + '"]');
@@ -4137,7 +4177,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       toast('尚未取得官方会话授权上下文；请先正常展开一次官方侧边栏。');
       return;
     }
-    if (editingChatId) return;
+    if (editingChatId === id) {
+      focusInlineChatEditor();
+      return;
+    }
+    if (editingChatId) cancelPreviousChatRename();
     editingChatId = id;
     clearTimeout(folderCloseTimer);
     // Replace only the title link; preserve scroll, focus, and other rows.
@@ -4218,8 +4262,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     editingChatId = '';
     renderDeferredDuringChatEdit = false;
     queueRender();
-    syncSidebarVisibility();
-    if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
+    // Wait for input replacement before checking actual hover geometry.
+    requestAnimationFrame(() => {
+      reconcileFolderHover();
+      syncSidebarVisibility();
+      if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
+    });
   }
 
   function recentStorageKey() {
@@ -4319,11 +4367,12 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function scheduleFolderClose() {
     clearTimeout(folderCloseTimer);
-    if (ownedDragActive || editingChatId || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+    if (ownedDragActive || hasActiveChatEditor() || folderButtonPinned ||
         (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
     folderCloseTimer = setTimeout(() => {
-      if (ownedDragActive || editingChatId || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+      if (ownedDragActive || hasActiveChatEditor() || folderButtonPinned ||
           (nativeChatPointerDrag && nativeChatPointerDrag.active)) return;
+      reconcileFolderHover();
       syncSidebarVisibility();
     }, 220);
   }
@@ -4380,7 +4429,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function syncSidebarVisibility() {
-    dualSidebarOpen = ownedDragActive || !!editingChatId || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
+    dualSidebarOpen = ownedDragActive || hasActiveChatEditor() || folderButtonPinned || folderPointerInButton || folderPointerInPane ||
       !!(nativeChatPointerDrag && nativeChatPointerDrag.active);
     const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
     // The navigation rail is always 52px, even when the native conversation
@@ -4565,7 +4614,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       setupCrossTabStorageSync();
       document.addEventListener('keydown', event => {
         if (event.key === 'Escape' && ownedDragActive) finishOwnedPanelDrag();
-        if (event.key === 'Escape' && !menuEl && !modalEl && !editingFolderId) {
+        if (event.key === 'Escape' && !menuEl && !modalEl && !editingFolderId && !hasActiveChatEditor()) {
           folderButtonPinned = false;
           folderPointerInButton = false;
           folderPointerInPane = false;
