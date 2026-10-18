@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.3.3
+// @version      1.4.0
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.3.3';
+  const VERSION = '1.4.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -62,7 +62,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const MAX_LOCAL_OPERATIONS = 500;
   const SYNC_EPOCH = '1970-01-01T00:00:00.000Z';
   const DEFAULT_SIDEBAR_WIDTH_PX = 312;
-  const INITIAL_MOUNT_STABLE_MS = 1200;
   const MIN_SIDEBAR_WIDTH_PX = 240;
   const MAX_SIDEBAR_WIDTH_PX = 520;
   const NATIVE_CHAT_DRAG_THRESHOLD_PX = 6;
@@ -101,7 +100,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let recentKnown = [];
   let recentCacheAccount = '';
   let editingChatId = '';
-  let renderDeferredDuringChatEdit = false;
   let renameChatBusy = false;
   let chatRenameDialog = null;
   let confirmedTitles = new Map();
@@ -113,23 +111,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let historyRefreshPromise = null;
   let recentLastRequestAt = 0;
   let recentLastOpenState = false;
-  let dualSidebarHover = false;
-  let dualSidebarPointerInside = false;
-  // Temporary native pin transaction: do not change React-owned inert or fake hover.
-  let dualNativePinOwned = false;
-  let dualNativePinPending = false;
-  let dualNativePinLastAction = 0;
-  let dualNativePinTimeout = null;
-  let dualNativePinOriginPeeking = false;
-  let dualSidebarPinned = false;
+  // The script does not pin or alter the native sidebar.
   let dualSidebarOpen = false;
-  let dualSidebarWidth = 300;
-  let dualSidebarNativeWidth = 340;
-  let dualSidebarResizeObserver = null;
-  let dualSidebarResizeTarget = null;
-  let dualSidebarLeaveTimer = null;
-  let dualSidebarPointerX = -1;
-  let dualSidebarPointerY = -1;
   let mounted = false;
   let renderQueued = false;
   let pendingPersistTimer = null;
@@ -160,7 +143,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let syncStatus = 'off';
   let settingsModalSnapshot = null;
   let settingsWidthPreviewApplied = false;
-  let sidebarToggleBound = false;
   let nativeMenuChat = null;
   let nativeMenuTriggerId = '';
   let nativeMenuObserver = null;
@@ -169,13 +151,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let nativeMenuPollTimer = null;
   let resumeRecoveryTimers = [];
   let sidebarVisibilityTimers = [];
-  let appShellPanelObserver = null;
-  let appShellObservedPanel = null;
-  let appShellContentObserver = null;
-  let appShellObservedContent = null;
   let appShellStateRaf = 0;
-  let appShellStructureObserver = null;
-  let appShellObservedStructureNodes = [];
   let storageWriteSeq = 0;
   let lastSeenStorageRevision = '';
   let lastSeenStorageProjection = '';
@@ -195,8 +171,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let accountSwitching = false;
   let accountGeneration = 0;
   let mutationBaseline = null;
-  let initialMountCandidate = null;
-  let initialMountCandidateSince = 0;
   const DEVICE_ID = getOrCreateDeviceId();
 
   // ---------------------------------------------------------------------------
@@ -722,11 +696,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return { revision: getProfileStorageRevision(stored), writer: getProfileStorageWriter(stored), writtenAt: '' };
   }
 
-  function currentStoredProfileInfo() {
-    const stored = parseStoredProfileRaw(gmGet(activeProfileStorageKey(), ''));
-    if (!stored) return { profile: null, revision: '', writer: '' };
-    return { profile: stored, revision: getProfileStorageRevision(stored), writer: getProfileStorageWriter(stored) };
-  }
 
   function storageBusinessProjectionKey(profile) {
     const projection = syncProjection(profile);
@@ -1296,81 +1265,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return link && !(rootEl && rootEl.contains(link)) ? link : null;
   }
 
-  function findNativeRecentsAnchor() {
-    const recentsSection = document.querySelector(RECENTS_SECTION_SELECTOR);
-    if (recentsSection && !(rootEl && rootEl.contains(recentsSection))) {
-      // ChatGPT 2026-09 wraps Recents in its own conversation/project drop target.
-      // Mount before that wrapper so the "最近" heading stays with its chats and
-      // our folder drop zone is not nested inside ChatGPT's native drop handler.
-      return recentsSection.closest('[data-chatgpt-project-conversation-drop-target]') || recentsSection;
-    }
 
-    const nativeRow = findNativeChatRow(document);
-    if (nativeRow) {
-      const list = nativeRow.closest('[role="list"]');
-      if (list) return list;
-    }
 
-    const history = document.getElementById('history');
-    if (history) return (history.parentElement && history.parentElement !== document.body) ? history.parentElement : history;
 
-    const firstChat = findNativeChatLink(document.getElementById('stage-slideover-sidebar') || document);
-    if (!firstChat) return null;
-    let node = firstChat;
-    for (let i = 0; i < 8 && node && node !== document.body; i++, node = node.parentElement) {
-      if (node.tagName === 'DIV' && node.querySelectorAll && node.querySelectorAll('a[href*="/c/"]:not(.cgfm-chat-title)').length >= 2) return node;
-    }
-    return firstChat.parentElement;
-  }
-
-  function findSidebarParent() {
-    const nativeRow = findNativeChatRow(document);
-    if (nativeRow) {
-      return nativeRow.closest('[data-app-action-sidebar-scroll]')
-        || nativeRow.closest('#stage-slideover-sidebar, nav, aside, [id*="sidebar"]')
-        || nativeRow.closest('[role="list"]')?.parentElement
-        || nativeRow.parentElement;
-    }
-
-    const history = document.getElementById('history');
-    if (history) return history.closest('nav[aria-label], nav, aside, [id*="sidebar"]') || history.parentElement;
-
-    // ChatGPT 2026-09 splits the left shell into a permanent navigation rail and a
-    // separately collapsible conversation sidebar. Only the action-sidebar scroll area
-    // is a valid new-UI mount host; #app-shell-sidebar itself is the shared outer shell.
-    const actionSidebarScroll = document.querySelector('#app-shell-sidebar [data-app-action-sidebar-scroll]');
-    if (actionSidebarScroll && !(rootEl && rootEl.contains(actionSidebarScroll))) return actionSidebarScroll;
-
-    const nav = document.querySelector('#stage-slideover-sidebar nav, nav[aria-label*="Chat"], nav[aria-label*="历史"], nav[aria-label*="sidebar"]');
-    if (nav && !nav.closest('[data-app-navigation-rail]')) return nav;
-
-    const legacySidebar = document.getElementById('stage-slideover-sidebar');
-    const link = legacySidebar ? findNativeChatLink(legacySidebar) : null;
-    return link ? (link.closest('nav, aside, [id*="sidebar"]') || link.parentElement) : null;
-  }
-
-  function isSafeMountParent(parent) {
-    if (!(parent && parent instanceof Element)) return false;
-    if (parent.id === 'app-shell-sidebar') return false;
-    if (parent.matches('[data-app-navigation-rail]') || parent.closest('[data-app-navigation-rail]')) return false;
-    return !rootEl || (parent !== rootEl && !rootEl.contains(parent));
-  }
-
-  function initialMountHostStable(parent) {
-    if (mounted) return true;
-    if (document.readyState !== 'complete' || !isSafeMountParent(parent) || !parent.isConnected) {
-      initialMountCandidate = null;
-      initialMountCandidateSince = 0;
-      return false;
-    }
-    const now = Date.now();
-    if (initialMountCandidate !== parent) {
-      initialMountCandidate = parent;
-      initialMountCandidateSince = now;
-      return false;
-    }
-    return now - initialMountCandidateSince >= INITIAL_MOUNT_STABLE_MS;
-  }
 
   // The persistent pane is deliberately attached to body, outside React's sidebar.
   // Position/state updates never rebuild its tree or fetch remote data.
@@ -2139,8 +2036,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onNativeHistoryPointerMove(event) {
-    dualSidebarPointerX = event.clientX;
-    dualSidebarPointerY = event.clientY;
     const state = nativeChatPointerDrag;
     if (!state || event.pointerId !== state.pointerId) return;
     state.lastX = Number(event.clientX) || 0;
@@ -2413,10 +2308,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     dropCommitted = !!commitDropPayload(payload, target.folderId);
   }
 
-  function resolveFolderDropTarget(event, allowUnknownChat) {
-    if (!event || !(event.target instanceof Element)) return null;
-    return resolveFolderDropTargetFromElement(event.target, getDragPayload(event, false), allowUnknownChat);
-  }
 
   function resolveFolderDropTargetFromElement(element, payload, allowUnknownChat) {
     if (!(element instanceof Element) || !rootEl) return null;
@@ -3789,9 +3680,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     }
   }
 
-  async function webdavPush(manual) {
-    return webdavSync(!!manual, 'push-compat');
-  }
 
   async function webdavPull(manual) {
     const p = getProfile();
@@ -3967,7 +3855,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (!content) return { mode: 'rail-only', shell, panel, content: null, rail };
       const inert = content.hasAttribute('inert') || !!content.closest('[inert]');
       if (inert || !isVisibleElement(content)) return { mode: 'rail-only', shell, panel, content, rail };
-      return { mode: (peeking || dualNativePinOwned || dualNativePinPending) ? 'peeking' : 'pinned', shell, panel, content, rail };
+      return { mode: peeking ? 'peeking' : 'pinned', shell, panel, content, rail };
     } catch (_) {
       return null;
     }
@@ -4574,77 +4462,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     });
   }
 
-  function bindAppShellStructureWatcher(panel, content) {
-    const shell = document.getElementById('app-shell-sidebar');
-    if (!panel || !shell || !panel.contains(shell)) {
-      if (appShellStructureObserver) appShellStructureObserver.disconnect();
-      appShellStructureObserver = null;
-      appShellObservedStructureNodes = [];
-      return;
-    }
 
-    // Observe native shell replacement only; the folder root is body-owned.
-    // and no observation of the Recents chat list.
-    const nodes = [];
-    const add = el => { if (el && !nodes.includes(el)) nodes.push(el); };
-    add(panel.parentElement); // recover if ChatGPT replaces the entire left panel
-    add(panel);
-    let node = content || shell;
-    while (node && node !== panel) {
-      add(node);
-      node = node.parentElement;
-    }
-    const scroll = shell.querySelector('[data-app-action-sidebar-scroll]');
-    if (scroll) add(scroll); // native structure changes only
-
-    if (nodes.length === appShellObservedStructureNodes.length &&
-        nodes.every((item, i) => item === appShellObservedStructureNodes[i])) return;
-    if (appShellStructureObserver) appShellStructureObserver.disconnect();
-    appShellStructureObserver = new MutationObserver(() => {
-      // React-owned nodes may change often. Only refresh for a lost host/root;
-      // peeking/inert visibility changes have their own attribute observers.
-      const currentPanel = document.querySelector('[data-app-shell-left-panel-appearance]');
-      const currentContent = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
-      const rootDetached = mounted && rootEl && rootEl.parentElement !== document.body;
-      const hostReplaced = currentPanel !== appShellObservedPanel || currentContent !== appShellObservedContent;
-      if (rootDetached || hostReplaced) scheduleAppShellStateRefresh();
-    });
-    for (const item of nodes) appShellStructureObserver.observe(item, { childList: true });
-    appShellObservedStructureNodes = nodes;
-  }
-
-  function bindAppShellSidebarStateWatcher() {
-    const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
-    const content = document.querySelector('#app-shell-sidebar [data-slate-sidebar-content="true"]');
-
-    if (panel !== appShellObservedPanel) {
-      if (appShellPanelObserver) appShellPanelObserver.disconnect();
-      appShellPanelObserver = null;
-      appShellObservedPanel = panel || null;
-      if (panel) {
-        appShellPanelObserver = new MutationObserver(scheduleAppShellStateRefresh);
-        appShellPanelObserver.observe(panel, {
-          attributes: true,
-          attributeFilter: ['data-slate-sidebar-peeking']
-        });
-      }
-    }
-
-    if (content !== appShellObservedContent) {
-
-      if (appShellContentObserver) appShellContentObserver.disconnect();
-      appShellContentObserver = null;
-      appShellObservedContent = content || null;
-      if (content) {
-        appShellContentObserver = new MutationObserver(scheduleAppShellStateRefresh);
-        appShellContentObserver.observe(content, {
-          attributes: true,
-          attributeFilter: ['inert']
-        });
-      }
-    }
-    bindAppShellStructureWatcher(panel, content);
-  }
 
   function scheduleSidebarVisibilityCheck() {
     // Debounce sidebar animation checks. Firefox may emit multiple resize/click-related
@@ -4678,25 +4496,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     });
   }
 
-  function bindSidebarToggleWatcher() {
-    if (sidebarToggleBound) return;
-    sidebarToggleBound = true;
-    document.addEventListener('click', event => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      // Never override a user-initiated native sidebar decision.
-      const nativeToggle = target.closest('button[aria-label="显示/隐藏侧边栏"],button[aria-label="Show/hide sidebar"],button[aria-label="Toggle sidebar"]');
-      if (nativeToggle && event.isTrusted) {
-        dualNativePinOwned = false;
-        dualNativePinOriginPeeking = false;
-        clearTimeout(dualNativePinTimeout);
-        dualNativePinPending = false;
-        scheduleSidebarVisibilityCheck();
-      }
-      if (target.closest('[aria-controls="stage-slideover-sidebar"], [aria-controls="app-shell-sidebar"], [data-testid="close-sidebar-button"]')) scheduleSidebarVisibilityCheck();
-    }, true);
-    window.addEventListener('resize', scheduleSidebarVisibilityCheck, { passive: true });
-  }
 
   function ensureMountedLight() {
     try {
