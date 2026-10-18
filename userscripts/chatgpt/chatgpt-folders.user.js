@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.3.2
+// @version      1.3.3
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.3.2';
+  const VERSION = '1.3.3';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -106,7 +106,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let chatRenameDialog = null;
   let confirmedTitles = new Map();
   let confirmedTitlesAccount = '';
-  let capturedOfficialHistoryRequest = null; // In-memory only. Never persist credentials.
+  let capturedOfficialHistoryRequest = null; // Live template, optionally restored from account-scoped GM cache.
+  const AUTH_CACHE_PREFIX = 'cgfm.v1.authCache.';
+  const AUTH_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  const AUTH_HEADER_ALLOWLIST = ['authorization', 'chatgpt-account-id', 'oai-did', 'oai-language', 'originator', 'x-openai-codex-window-type', 'x-openai-web-frontend'];
   let historyRefreshPromise = null;
   let recentLastRequestAt = 0;
   let recentLastOpenState = false;
@@ -1006,6 +1009,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       teardownCrossTabStorageSync();
       accountGeneration += 1;
       currentAccount = info;
+      if (capturedOfficialHistoryRequest?.accountId !== (info.accountId || '')) capturedOfficialHistoryRequest = null;
       lockedAccountKey = accountStableKey(info);
       rememberAccountInfo(info);
       state = loadState(info);
@@ -4017,11 +4021,67 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return true;
   }
 
-  // v1.0: the folder surface is independently controlled. Never toggle ChatGPT's
-  // native sidebar, change its inert attribute, or alter its preferred width.
-  // Observe the actual ChatGPT GET request in page context, without logging,
-  // persisting or exposing authentication headers to any storage/sync path.
-  // When Tampermonkey page access is unavailable, the DOM/cache fallback remains.
+  // Keep credentials out of localStorage, WebDAV, exports, logs and page DOM.
+  // A GM cache is still sensitive: scoped to an observed account and capped at 24h.
+  function authCacheKey(accountId) {
+    return AUTH_CACHE_PREFIX + fnv1a(location.host + '|' + accountId);
+  }
+
+  function forgetAuthTemplate(accountId) {
+    if (!accountId) return;
+    gmSet(authCacheKey(accountId), null);
+    if (capturedOfficialHistoryRequest?.accountId === accountId) capturedOfficialHistoryRequest = null;
+  }
+
+  function cacheOfficialAuthHeaders(headers) {
+    const id = headers.get('chatgpt-account-id');
+    const auth = headers.get('authorization');
+    if (!id || !auth || !/^Bearer\s+\S+/i.test(auth)) return;
+    // Never cache an observed request from a different, known account.
+    if (currentAccount?.accountId && String(currentAccount.accountId) !== id) return;
+    const kept = {};
+    for (const name of AUTH_HEADER_ALLOWLIST) {
+      if (headers.has(name)) kept[name] = headers.get(name);
+    }
+    const capturedAt = Date.now();
+    capturedOfficialHistoryRequest = {
+      headers:new Headers(kept), accountId:id, capturedAt, fromCache:false
+    };
+    gmSet(authCacheKey(id), { accountId:id, capturedAt, headers:kept });
+  }
+
+  function restoreOfficialAuthHeaders() {
+    if (capturedOfficialHistoryRequest) return capturedOfficialHistoryRequest;
+    // A remembered account alone is insufficient to reuse a bearer credential.
+    const detected = getCurrentAccountInfo();
+    const id = detected?.accountId;
+    if (!id || (currentAccount?.accountId && currentAccount.accountId !== id)) return null;
+    const cached = gmGet(authCacheKey(id), null);
+    if (!cached || cached.accountId !== id) return null;
+    if (!Number.isFinite(cached.capturedAt) || Date.now() < cached.capturedAt ||
+        Date.now() - cached.capturedAt > AUTH_CACHE_TTL_MS) {
+      forgetAuthTemplate(id);
+      return null;
+    }
+    try {
+      const headers = new Headers(cached.headers);
+      if (headers.get('chatgpt-account-id') !== id ||
+          !/^Bearer\s+\S+/i.test(headers.get('authorization') || '')) {
+        forgetAuthTemplate(id);
+        return null;
+      }
+      capturedOfficialHistoryRequest = {
+        headers, accountId:id, capturedAt:cached.capturedAt, fromCache:true
+      };
+      return capturedOfficialHistoryRequest;
+    } catch (_) {
+      forgetAuthTemplate(id);
+      return null;
+    }
+  }
+
+  // Capture naturally occurring authenticated requests, without expanding the
+  // native sidebar or calling an undocumented login/session API.
   function installOfficialHistoryCapture() {
     try {
       const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -4030,15 +4090,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       const wrapped = function(input, init) {
         try {
           const url = new URL(typeof input === 'string' ? input : input.url, page.location.href);
-          if (url.origin === page.location.origin && url.pathname === '/backend-api/conversations') {
+          if (url.origin === page.location.origin && url.pathname.startsWith('/backend-api/')) {
             const h = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
-            if (h.has('authorization') && h.has('chatgpt-account-id')) {
-              capturedOfficialHistoryRequest = {
-                headers: new Headers(h),
-                accountId: h.get('chatgpt-account-id'),
-                capturedAt: Date.now()
-              };
-            }
+            if (h.has('authorization') && h.has('chatgpt-account-id')) cacheOfficialAuthHeaders(h);
           }
         } catch (_) {}
         return Reflect.apply(previous, this, arguments);
@@ -4056,8 +4110,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   async function refreshRecentFromOfficialApi() {
     // A fresh open is the sole active refresh trigger (no polling, no manual button).
     // The official request template might not exist until native sidebar first loads.
-    const template = capturedOfficialHistoryRequest;
-    if (!template || Date.now() - template.capturedAt > 45 * 60 * 1000) return;
+    const template = capturedOfficialHistoryRequest || restoreOfficialAuthHeaders();
+    if (!template || Date.now() - template.capturedAt > AUTH_CACHE_TTL_MS) return;
     if (historyRefreshPromise) return historyRefreshPromise;
     const expectedAccount = template.accountId;
     if (currentAccount?.accountId && String(currentAccount.accountId) !== expectedAccount) return;
@@ -4080,6 +4134,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
             method: 'GET', credentials: 'include', headers: new Headers(template.headers),
             signal: controller.signal
           });
+          if (response.status === 401 || response.status === 403) {
+            forgetAuthTemplate(expectedAccount);
+            return;
+          }
           if (!response.ok) return;
           data = await response.json();
         } catch (_) { return; }
@@ -4211,8 +4269,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function beginChatRename(id) {
     if (!/^[a-zA-Z0-9_-]{12,80}$/.test(String(id || ''))) return;
-    if (!capturedOfficialHistoryRequest) {
-      toast('尚未取得官方会话授权上下文；请先正常展开一次官方侧边栏。');
+    if (!(capturedOfficialHistoryRequest || restoreOfficialAuthHeaders())) {
+      toast('认证尚未就绪，请先正常展开一次官方侧边栏。');
       return;
     }
     if (chatRenameDialog?.busy) return;
@@ -4265,8 +4323,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const {id, input} = session;
     const title = String(input.value || '').trim();
     if (!title || title.length > 200) { toast('标题不能为空，且不能超过 200 字符。'); input.focus(); return; }
-    const template = capturedOfficialHistoryRequest;
-    if (!template || (currentAccount?.accountId && String(currentAccount.accountId) !== template.accountId)) {
+    const template = capturedOfficialHistoryRequest || restoreOfficialAuthHeaders();
+    if (!template || Date.now() - template.capturedAt > AUTH_CACHE_TTL_MS ||
+        (currentAccount?.accountId && String(currentAccount.accountId) !== template.accountId)) {
       toast('当前账号的官方会话上下文不可用。'); return;
     }
     session.busy = true;
@@ -4284,6 +4343,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       const response = await fetch('/backend-api/conversation/id/' + encodeURIComponent(id) + '/rename', {
         method:'POST', credentials:'include', headers, body:JSON.stringify({ title }), signal:controller.signal
       });
+      if (response.status === 401 || response.status === 403) {
+        forgetAuthTemplate(template.accountId);
+        throw new Error('Authentication expired');
+      }
       if (!response.ok) throw new Error('HTTP ' + response.status);
       loadConfirmedTitles();
       confirmedTitles.set(id, { title, at:Date.now(), confirmed:false, confirmedAt:0 });
@@ -4309,7 +4372,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       input.disabled = false;
       save.disabled = false;
       cancel.disabled = false;
-      toast('重命名失败，请重试。');
+      toast(capturedOfficialHistoryRequest ? '重命名失败，请重试。' : '认证已失效，请展开一次官方侧边栏后重试。');
     } finally {
       clearTimeout(timeout);
       session.busy = false;
@@ -4658,6 +4721,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function boot() {
     try {
       ensureActiveProfile();
+      restoreOfficialAuthHeaders();
       ensureSyncMeta(state);
       mutationBaseline = syncProjection(state);
       dirtySincePush = !!(((state || {}).settings || {}).webdav || {}).pendingPush;
