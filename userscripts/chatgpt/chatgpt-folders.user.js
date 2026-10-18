@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.9
+// @version      1.5.0
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.9';
+  const VERSION = '1.5.0';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -1114,6 +1114,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-root .cgfm-folder-row { cursor:grab; }
       #cgfm-root .cgfm-pointer-source { opacity:.48; }
       #cgfm-root .cgfm-folder-row, #cgfm-root .cgfm-chat-row, #cgfm-root .cgfm-recent-chat { touch-action:pan-y; }
+      html.cgfm-pointer-select-lock, html.cgfm-pointer-select-lock * { user-select:none !important; -webkit-user-select:none !important; }
       .cgfm-pointer-preview { position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:8px 12px;border-radius:9px;background:var(--main-surface-primary,#fff);color:var(--text-primary,#111827);border:1px solid rgba(128,128,128,.35);box-shadow:0 9px 24px rgba(0,0,0,.22);font:13px/18px system-ui,sans-serif;will-change:transform; }
       #cgfm-root .cgfm-folder-row.cgfm-selected { background:var(--cgfm-active); }
       #cgfm-root .cgfm-caret { width:18px; min-width:18px; height:22px; border:0; padding:0; background:transparent; display:flex; align-items:center; justify-content:center; color:var(--cgfm-muted); border-radius:6px; cursor:pointer; }
@@ -1762,7 +1763,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   // ---------------------------------------------------------------------------
-  // 7. Panel-owned HTML5 drag/drop
+  // 7. Panel-owned Pointer Events drag/drop
   // ---------------------------------------------------------------------------
 
   function payloadKind(payload) {
@@ -1799,10 +1800,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       x:event.clientX,y:event.clientY, source, active:false, target:null,
       account:currentAccount, preview:null, frame:0
     };
+    // The selection may begin before the 5px drag threshold, so guard it from pointerdown.
+    // Only the folder row needs default prevention; chat links must remain clickable.
+    document.addEventListener('selectstart', preventPanelPointerSelection, true);
+    if (source.row.classList.contains('cgfm-folder-row')) event.preventDefault();
     window.addEventListener('pointermove', onPanelPointerMove, true);
     window.addEventListener('pointerup', onPanelPointerUp, true);
     window.addEventListener('pointercancel', cancelPanelPointerDrag, true);
     window.addEventListener('blur', cancelPanelPointerDrag);
+  }
+
+  function preventPanelPointerSelection(event) {
+    if (pointerDragSession && !event.target?.closest?.('input,textarea,[contenteditable="true"]')) event.preventDefault();
   }
 
   function onPanelPointerMove(event) {
@@ -1813,6 +1822,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (Math.hypot(session.x-session.startX,session.y-session.startY) < 5) return;
       // No click interception until the pointer has actually moved beyond the threshold.
       session.active = true;
+      document.documentElement.classList.add('cgfm-pointer-select-lock');
+      window.getSelection()?.removeAllRanges();
       closeMenu();
       beginOwnedPanelDrag();
       const preview = document.createElement('div');
@@ -1869,10 +1880,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return null;
     }
     const row = element.closest('.cgfm-folder-row[data-folder-id]');
-    const block = row ? null : element.closest('.cgfm-folder-block[data-folder-block]');
-    const targetElement = row || block?.querySelector(':scope > .cgfm-folder-row') || block;
-    if (!targetElement || !rootEl.contains(targetElement)) return null;
-    const fid = row ? row.getAttribute('data-folder-id') : block.getAttribute('data-folder-block');
+    // Descendant chat rows and empty children are not drop zones. Only the
+    // visible folder header row can accept a drop.
+    if (!row || !rootEl.contains(row)) return null;
+    const targetElement = row;
+    const fid = row.getAttribute('data-folder-id');
     if (!fid || !getProfile().folders[fid]) return null;
     if (kind === 'folder') return canMoveFolderTo(payload.folderId, fid) ? { folderId: fid, element: targetElement, isRoot: false } : null;
     if (kind === 'chat' || allowUnknownChat) return { folderId: fid, element: targetElement, isRoot: false };
@@ -3979,6 +3991,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const session = pointerDragSession;
     if (!keepClickSuppression) document.removeEventListener('click',suppressPanelDragClick,true);
     pointerDragSession = null;
+    document.documentElement.classList.remove('cgfm-pointer-select-lock');
+    document.removeEventListener('selectstart',preventPanelPointerSelection,true);
     window.removeEventListener('pointermove',onPanelPointerMove,true);
     window.removeEventListener('pointerup',onPanelPointerUp,true);
     window.removeEventListener('pointercancel',cancelPanelPointerDrag,true);
