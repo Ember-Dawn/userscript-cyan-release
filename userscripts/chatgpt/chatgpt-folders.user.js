@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.5.0
+// @version      1.5.1
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.5.0';
+  const VERSION = '1.5.1';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -152,6 +152,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let pendingAccountKey = '';
   let pendingAccountHits = 0;
   let webdavOperation = null;
+  let webdavRetryCount = 0;
+  let webdavRetryNotBefore = 0;
+  let webdavPausedForAuth = false;
+  let webdavResyncRequested = false;
   let lastRemoteCheckAt = 0;
   let accountSwitching = false;
   let accountGeneration = 0;
@@ -2704,7 +2708,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const st = computeSyncStatus();
     if (st === 'off') return 'WebDAV：未启用；点击圆圈可在配置后立即同步';
     if (st === 'syncing') return 'WebDAV：正在读取、合并并校验云端数据';
-    if (st === 'dirty') return 'WebDAV：有本地改动等待同步；点击立即同步';
+    if (st === 'dirty') return 'WebDAV：有本地改动等待同步' + (webdavRetryNotBefore > Date.now() && Number.isFinite(webdavRetryNotBefore) ? '（重试已排队）' : '') + '；点击立即同步';
     if (st === 'error') return 'WebDAV：同步失败' + (w.lastError ? '：' + w.lastError : '') + '；点击重试';
     const checked = w.lastRemoteCheckAt ? '，上次云端核对 ' + shortTime(w.lastRemoteCheckAt) : '';
     const merged = w.lastMergeAt ? '，上次合并 ' + shortTime(w.lastMergeAt) : '';
@@ -2861,6 +2865,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     p.settings.ui.sidebarWidthPx = clamp(Number(byId('cgfm-sidebar-width-range').value || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX);
     dirtySincePush = !!w.pendingPush;
     applySidebarWidth();
+    // New/updated credentials explicitly allow trying again after an auth failure.
+    webdavPausedForAuth = false;
+    webdavRetryNotBefore = 0;
+    webdavRetryCount = 0;
     restartPeriodicBackup();
     closeModal();
     updateSyncStatusIcon();
@@ -3075,9 +3083,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       return;
     }
     if (webdavOperation) {
-      if (manual) toast('WebDAV 正在进行其他操作，请稍后再点一次。');
+      if (localHasSyncChanges(p)) webdavResyncRequested = true;
+      if (manual) toast('WebDAV 正在同步；本次请求已排队。');
       return;
     }
+    if (!manual && (webdavPausedForAuth || Date.now() < webdavRetryNotBefore)) return;
     if (localUnsavedChanges || pendingPersistTimer) persistNow({ webdav: false });
     captureSyncOperations(reason || 'sync');
     const ctx = captureWebdavContext(w);
@@ -3086,6 +3096,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (state !== p || storageBusinessProjectionKey(p) !== syncBusinessAtStart || localUnsavedChanges) {
         const err = new Error('同步过程中本地文件夹发生变更；取消过期结果，等待下一轮同步。');
         err.isConflict = true;
+        err.isStaleLocal = true;
         throw err;
       }
     };
@@ -3190,8 +3201,26 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         }
         throw new Error('云端持续变化，三次合并重试仍未完成；请稍后再次同步。');
       });
+      webdavRetryCount = 0;
+      webdavRetryNotBefore = 0;
+      webdavPausedForAuth = false;
     } catch (err) {
       if (err && err.isStaleAccount) return;
+      if (err && err.isStaleLocal) {
+        // This is an expected optimistic-concurrency cancellation, not a network error.
+        // Preserve the latest local projection; never apply the old network response.
+        const current = getProfile();
+        const currentW = current.settings.webdav || {};
+        currentW.pendingPush = localHasSyncChanges(current);
+        dirtySincePush = !!currentW.pendingPush;
+        currentW.lastError = '';
+        currentW.lastStatus = 'local changes queued';
+        currentW.conflict = false;
+        setSyncStatus(currentW.pendingPush ? 'dirty' : 'idle');
+        schedulePersist('webdav-stale-local', { webdav: false, touch: false });
+        webdavResyncRequested = true;
+        return;
+      }
       const current = getProfile();
       const currentW = current.settings.webdav || {};
       currentW.lastError = safeError(err);
@@ -3200,9 +3229,31 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       currentW.pendingPush = localHasSyncChanges(current);
       dirtySincePush = !!currentW.pendingPush;
       setSyncStatus('error');
+      const httpStatus = Number(err && err.status || 0);
+      if (httpStatus === 401 || httpStatus === 403) {
+        webdavPausedForAuth = true;
+        webdavRetryNotBefore = Infinity;
+      } else if (err && err.isConflict) {
+        // Persistent merge conflicts require user intervention, not a hot retry loop.
+        webdavRetryNotBefore = Date.now() + 5 * 60 * 1000;
+      } else {
+        webdavRetryCount = Math.min(webdavRetryCount + 1, 6);
+        webdavRetryNotBefore = Date.now() + Math.min(5 * 60 * 1000, 30000 * Math.pow(2, webdavRetryCount - 1));
+      }
       schedulePersist('webdav-sync-fail', { webdav: false, touch: false });
       if (manual) toast('WebDAV 同步失败：' + currentW.lastError);
       else console.warn(APP_NAME, 'WebDAV sync failed:', reason || '', err);
+    } finally {
+      if (webdavResyncRequested) {
+        webdavResyncRequested = false;
+        const current = getProfile();
+        if (localHasSyncChanges(current) && !webdavPausedForAuth) {
+          const wait = Math.max(1500, webdavRetryNotBefore - Date.now());
+          queueWebdavSync('queued-local-change', wait);
+        }
+      } else if (localHasSyncChanges(getProfile()) && webdavRetryNotBefore > Date.now() && !webdavPausedForAuth) {
+        queueWebdavSync('retry-after-failure', webdavRetryNotBefore - Date.now());
+      }
     }
   }
 
@@ -3244,26 +3295,42 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   async function checkRemoteUpdate(showToast, reason) {
     const w = getProfile().settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url) || webdavOperation || document.hidden) return;
-    if (Date.now() - lastRemoteCheckAt < 10000) return;
+    if (!w.enabled || !normalizeWebdavFolderUrl(w.url) || document.hidden) return;
+    if (webdavOperation) {
+      if (localHasSyncChanges(getProfile())) webdavResyncRequested = true;
+      return;
+    }
+    if (!showToast && (webdavPausedForAuth || Date.now() < webdavRetryNotBefore)) return;
+    if (Date.now() - lastRemoteCheckAt < 10000 && !localHasSyncChanges(getProfile())) return;
     lastRemoteCheckAt = Date.now();
     await webdavSync(!!showToast, reason || 'remote-check');
   }
 
-  // ---------------------------------------------------------------------------
-  // 10. WebDAV network operations and deferred backup scheduling
-  // ---------------------------------------------------------------------------
-
-  function scheduleAutoBackup(reason) {
-    const p = getProfile();
-    const w = p.settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) { updateSyncStatusIcon(); return; }
+  // Single pending auto-sync timer. It coalesces edits and retries without parallel requests.
+  function queueWebdavSync(reason, delay) {
+    const w = getProfile().settings.webdav || {};
+    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) return;
     if (pendingWebdavTimer) clearTimeout(pendingWebdavTimer);
-    const delay = Math.max(3000, Number(w.debounceMs || DEFAULT_DEBOUNCE_MS));
     pendingWebdavTimer = setTimeout(() => {
       pendingWebdavTimer = null;
-      if (!document.hidden && localHasSyncChanges(getProfile())) webdavSync(false, reason || 'auto-local-change');
-    }, delay);
+      if (document.hidden || webdavPausedForAuth) return; // foreground recovery picks it up
+      if (webdavOperation) {
+        webdavResyncRequested = true;
+        return;
+      }
+      if (Date.now() < webdavRetryNotBefore) {
+        queueWebdavSync(reason, webdavRetryNotBefore - Date.now());
+        return;
+      }
+      if (localHasSyncChanges(getProfile())) webdavSync(false, reason);
+    }, Math.max(0, delay));
+  }
+
+  function scheduleAutoBackup(reason) {
+    const w = getProfile().settings.webdav || {};
+    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) { updateSyncStatusIcon(); return; }
+    const delay = Math.max(3000, Number(w.debounceMs || DEFAULT_DEBOUNCE_MS));
+    queueWebdavSync(reason || 'auto-local-change', Math.max(delay, webdavRetryNotBefore - Date.now()));
   }
 
   function restartPeriodicBackup() {
