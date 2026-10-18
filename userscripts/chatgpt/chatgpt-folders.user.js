@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.2
+// @version      1.4.3
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -27,9 +27,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 - 作用：在 ChatGPT 原生导航 rail 加入文件夹入口，独立浮层展示本地文件夹和已发现的最近对话；不修改 ChatGPT 后端，也不保存聊天正文。
 - 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
 - DOM：#cgfm-root 是 document.body 的持久直属子节点，不进入 React 内容容器；独立文件夹按钮插入导航 rail，浮层相对 rail 右侧定位。优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
-- Hydration：document-start 仅注册拖拽 capture listener；DOM/state boot 延后至 DOMContentLoaded，持久根节点不依赖官方 sidebar host hydration。
+- Hydration：DOM/state boot 延后至 DOMContentLoaded；独立面板不依赖官方 sidebar hydration。
 - 性能：禁止长期观察 document/sidebar subtree、mousemove 热路径和高频全量扫描。新增入口使用导航列表 childList 窄观察以恢复重建；最近对话在打开时限频收集；原生三点菜单仍只短时观察。
-- 交互：新版优先识别 a[data-interactive-row-link] 作为聊天主交互；window capture 在 document-start 注册，但仅在文件夹 UI 完成安全挂载后工作。聊天主交互的 pointerdown 从起点即由脚本 preventDefault + stopImmediatePropagation 独占；小于阈值则在 pointerup 主动回放原生点击，大于阈值则进入自定义拖拽，不再依赖 setPointerCapture。
+- 交互：仅在脚本自有面板中使用 HTML5 拖拽；官方最近对话仅用于采集与菜单入口，不拦截其拖拽或点击。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
 */
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.2';
+  const VERSION = '1.4.3';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -64,9 +64,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const DEFAULT_SIDEBAR_WIDTH_PX = 312;
   const MIN_SIDEBAR_WIDTH_PX = 240;
   const MAX_SIDEBAR_WIDTH_PX = 520;
-  const NATIVE_CHAT_DRAG_THRESHOLD_PX = 6;
-  const NATIVE_CHAT_RELEASE_GUARD_MS = 350;
-  const NATIVE_CHAT_PREVIEW_OFFSET_PX = 12;
   const FOLDER_SORT_LOCALE = undefined;
   const folderCollator = new Intl.Collator(FOLDER_SORT_LOCALE, { numeric: true, sensitivity: 'base' });
   const TAB_ID = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -122,19 +119,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let editingNewFolderId = '';
   let editingOriginalName = '';
   let dragPayload = null;
-  let pointerPayload = null;
-  let dragStartPayload = null;
-  let lastHoveredFolderId = '';
-  let lastHoveredFolderAt = 0;
-  let dropCommitted = false;
-  let nativeChatPointerDrag = null;
-  let nativeChatPointerRaf = 0;
-  let nativeChatDragPreviewEl = null;
-  let suppressedNativeChatClickRow = null;
-  let suppressedNativeChatClickUntil = 0;
-  let nativeChatReleaseGuardRow = null;
-  let nativeChatReleaseGuardUntil = 0;
-  let nativeChatReplayInProgress = false;
   let menuEl = null;
   let modalEl = null;
   let sidebarWidthStyleEl = null;
@@ -157,9 +141,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let storageSyncListenerId = null;
   let storageSyncListenerKey = '';
   let crossTabApplyTimer = null;
-  let transientDragAnchor = null;
-  let transientDragOriginalDraggable = null;
-  let transientDragRestoreTimer = null;
   let lockedAccountKey = '';
   let pendingAccountKey = '';
   let pendingAccountHits = 0;
@@ -1297,7 +1278,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     ensureFolderRailButton();
     watchRecentListChanges();
     syncSidebarVisibility();
-    setupNativeDragCache();
     setupNativeMenuHook();
     return true;
   }
@@ -1406,8 +1386,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       if (event.defaultPrevented || !event.target?.closest?.('[draggable="true"]')) return;
       beginOwnedPanelDrag();
     });
-    el.addEventListener('dragend', finishOwnedPanelDrag);
-    el.addEventListener('drop', () => { if (ownedDragActive) queueMicrotask(finishOwnedPanelDrag); });
+    el.addEventListener('dragend', finishPanelDrag);
+    el.addEventListener('drop', () => { if (ownedDragActive) queueMicrotask(finishPanelDrag); });
     el.addEventListener('dragover', onRootDragOver);
     el.addEventListener('dragleave', onRootDragLeave);
     el.addEventListener('drop', onRootDrop);
@@ -1753,41 +1733,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   // ---------------------------------------------------------------------------
-  // 7. Native conversation drag/drop integration
+  // 7. Panel-owned HTML5 drag/drop
   // ---------------------------------------------------------------------------
-
-  function setupNativeDragCache() {
-    if (document.__cgfmNativeDragBound) return;
-    document.__cgfmNativeDragBound = true;
-    // New conversation rows are owned from pointerdown at window capture. The handler
-    // prevents the native/default gesture entirely, then replays a normal conversation
-    // click on pointerup only when movement stays below the drag threshold.
-    window.addEventListener('pointerdown', onNativeHistoryPointerDown, true);
-    window.addEventListener('mousedown', onNativeHistoryMouseDownCapture, true);
-    // The hot move handlers are inert unless one conversation gesture is active.
-    window.addEventListener('pointermove', onNativeHistoryPointerMove, true);
-    window.addEventListener('mousemove', onNativeHistoryMouseMoveCapture, true);
-    window.addEventListener('pointerup', onNativeHistoryPointerUp, true);
-    window.addEventListener('pointercancel', onNativeHistoryPointerCancel, true);
-    window.addEventListener('dragstart', onNativeHistoryDragStart, true);
-    window.addEventListener('dragend', onNativeHistoryDragEnd, true);
-    window.addEventListener('mouseup', onNativeHistoryMouseUpCapture, true);
-    window.addEventListener('click', onNativeHistoryClickCapture, true);
-    window.addEventListener('blur', onNativeHistoryWindowBlur, true);
-  }
-
-  function resetNativeDragState() {
-    finishOwnedPanelDrag();
-    cancelNativeChatPointerDrag(false);
-    restoreTransientNativeChatDrag();
-    dragPayload = null;
-    dragStartPayload = null;
-    pointerPayload = null;
-    lastHoveredFolderId = '';
-    lastHoveredFolderAt = 0;
-    dropCommitted = false;
-    clearDropHighlight();
-  }
 
   function payloadKind(payload) {
     if (!payload) return '';
@@ -1795,29 +1742,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (payload.kind === 'chat' && payload.id) return 'chat';
     if (payload.id) return 'chat';
     return '';
-  }
-
-  function stopOwnedNativeChatEvent(event, preventDefault) {
-    if (!event) return;
-    if (preventDefault && event.cancelable) {
-      try { event.preventDefault(); } catch (_) {}
-    }
-    try { event.stopImmediatePropagation(); }
-    catch (_) { try { event.stopPropagation(); } catch (_) {} }
-  }
-
-  function beginNativeChatReleaseGuard(row) {
-    nativeChatReleaseGuardRow = row instanceof Element ? row : null;
-    nativeChatReleaseGuardUntil = Date.now() + NATIVE_CHAT_RELEASE_GUARD_MS;
-  }
-
-  function nativeChatReleaseGuardActive() {
-    if (!nativeChatReleaseGuardUntil || Date.now() > nativeChatReleaseGuardUntil) {
-      nativeChatReleaseGuardRow = null;
-      nativeChatReleaseGuardUntil = 0;
-      return false;
-    }
-    return true;
   }
 
   function onRootDragStart(event) {
@@ -1835,11 +1759,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       closeMenu();
       const payload = { kind: 'chat', id, title: chat.title, url: chat.url || ('/c/' + id) };
       dragPayload = payload;
-      dragStartPayload = payload;
-      pointerPayload = null;
-      dropCommitted = false;
-      lastHoveredFolderId = '';
-      lastHoveredFolderAt = 0;
       clearDropHighlight();
       try {
         if (event.dataTransfer) {
@@ -1856,8 +1775,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       const chat = recentKnown.find(item => item.id === id);
       if (!chat) { event.preventDefault(); return; }
       const payload = { kind:'chat', id, title:chat.title, url:'/c/'+id };
-      dragPayload = payload; dragStartPayload = payload;
-      dropCommitted = false;
+      dragPayload = payload;
       try {
         event.dataTransfer?.setData(DRAG_MIME, JSON.stringify(payload));
         event.dataTransfer?.setData('text/plain', location.origin + payload.url);
@@ -1872,9 +1790,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     closeMenu();
     const payload = { kind: 'folder', folderId: fid };
     dragPayload = payload;
-    dragStartPayload = payload;
-    pointerPayload = null;
-    dropCommitted = false;
     row.classList.add('cgfm-dragging-folder');
     try {
       if (event.dataTransfer) {
@@ -1883,393 +1798,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
         event.dataTransfer.effectAllowed = 'move';
       }
     } catch (_) {}
-  }
-
-  function onNativeHistoryPointerDown(event) {
-    if (!event || !(event.target instanceof Element)) return;
-    if (event.isPrimary === false || (typeof event.button === 'number' && event.button !== 0)) return;
-    // Listener is registered at document-start so it precedes ChatGPT's later sortable
-    // sensors, but it must stay inert until our hydration-safe UI mount is complete.
-    if (!mounted || !rootEl || !rootEl.isConnected || rootEl.hidden) return;
-    if (rootEl.contains(event.target)) return;
-    // New rows expose separate action buttons (menu, pin, etc.). Only the conversation
-    // primary action itself may start our drag gesture.
-    if (event.target.closest('button,input,textarea,select,[contenteditable="true"],[data-trailing-button],[data-conversation-options-trigger]')) return;
-
-    const row = event.target.closest(NATIVE_CHAT_ROW_SELECTOR);
-    if (row) {
-      const chat = extractChatFromRow(row);
-      if (!chat) return;
-      chat.kind = 'chat';
-      cancelNativeChatPointerDrag(false);
-      nativeChatReleaseGuardRow = null;
-      nativeChatReleaseGuardUntil = 0;
-      pointerPayload = null;
-      dragPayload = null;
-      dragStartPayload = null;
-      dropCommitted = false;
-      lastHoveredFolderId = '';
-      lastHoveredFolderAt = 0;
-      clearDropHighlight();
-      const primaryAction = getNativeChatPrimaryAction(row);
-      if (primaryAction && !primaryAction.contains(event.target)) return;
-      nativeChatPointerDrag = {
-        pointerId: event.pointerId,
-        source: row,
-        primaryAction: primaryAction || row,
-        payload: chat,
-        startX: Number(event.clientX) || 0,
-        startY: Number(event.clientY) || 0,
-        lastX: Number(event.clientX) || 0,
-        lastY: Number(event.clientY) || 0,
-        active: false,
-        targetFolderId: ''
-      };
-      // Fully own the gesture from the initiating press. Preventing the default action here
-      // keeps ChatGPT's link/sortable gesture from arming; a below-threshold gesture is
-      // replayed as an explicit native conversation click on pointerup.
-      stopOwnedNativeChatEvent(event, true);
-      return;
-    }
-
-    const chat = maybeEnableTransientNativeChatDrag(event) || extractChatFromEvent(event);
-    if (chat) {
-      chat.kind = 'chat';
-      pointerPayload = chat;
-      dropCommitted = false;
-    }
-  }
-
-  function nativeChatDragDistance(state, x, y) {
-    return Math.hypot(x - state.startX, y - state.startY);
-  }
-
-  function activateNativeChatPointerDrag(event) {
-    const state = nativeChatPointerDrag;
-    if (!state || state.active) return !!state;
-    state.active = true;
-    syncSidebarVisibility();
-    closeMenu();
-    clearDropHighlight();
-    createNativeChatDragPreview(state);
-    updateNativeChatDragPreview(state.lastX, state.lastY);
-    if (event) stopOwnedNativeChatEvent(event, true);
-    scheduleNativeChatPointerHover();
-    return true;
-  }
-
-  function createNativeChatDragPreview(state) {
-    removeNativeChatDragPreview();
-    if (!state || !state.payload) return;
-    const preview = document.createElement('div');
-    preview.className = 'cgfm-native-chat-drag-preview';
-    preview.setAttribute('aria-hidden', 'true');
-
-    const previewIcon = document.createElement('span');
-    previewIcon.className = 'cgfm-native-chat-drag-preview-icon';
-    previewIcon.innerHTML = icon('chat');
-
-    const previewTitle = document.createElement('span');
-    previewTitle.className = 'cgfm-native-chat-drag-preview-title';
-    previewTitle.textContent = cleanText(state.payload.title) || 'Untitled chat';
-
-    preview.append(previewIcon, previewTitle);
-    try {
-      const rect = state.source && state.source.getBoundingClientRect ? state.source.getBoundingClientRect() : null;
-      if (rect && rect.width) preview.style.width = Math.round(clamp(rect.width, 180, 300)) + 'px';
-    } catch (_) {}
-    document.body.appendChild(preview);
-    nativeChatDragPreviewEl = preview;
-  }
-
-  function updateNativeChatDragPreview(x, y) {
-    if (!nativeChatDragPreviewEl) return;
-    const px = Math.round((Number(x) || 0) + NATIVE_CHAT_PREVIEW_OFFSET_PX);
-    const py = Math.round((Number(y) || 0) + NATIVE_CHAT_PREVIEW_OFFSET_PX);
-    nativeChatDragPreviewEl.style.transform = `translate3d(${px}px,${py}px,0)`;
-  }
-
-  function removeNativeChatDragPreview() {
-    if (!nativeChatDragPreviewEl) return;
-    try { nativeChatDragPreviewEl.remove(); } catch (_) {}
-    nativeChatDragPreviewEl = null;
-  }
-
-  function getFolderDropTargetAtCoordinates(x, y, payload) {
-    if (!rootEl || !document.body.contains(rootEl)) return null;
-    let candidates = [];
-    try {
-      if (typeof document.elementsFromPoint === 'function') candidates = document.elementsFromPoint(x, y) || [];
-      else {
-        const one = document.elementFromPoint(x, y);
-        if (one) candidates = [one];
-      }
-    } catch (_) {}
-
-    for (const element of candidates) {
-      if (!(element instanceof Element) || !rootEl.contains(element)) continue;
-      const target = resolveFolderDropTargetFromElement(element, payload, false);
-      if (target) return target;
-    }
-    return null;
-  }
-
-  function scheduleNativeChatPointerHover() {
-    if (nativeChatPointerRaf || !nativeChatPointerDrag || !nativeChatPointerDrag.active) return;
-    nativeChatPointerRaf = requestAnimationFrame(() => {
-      nativeChatPointerRaf = 0;
-      const state = nativeChatPointerDrag;
-      if (!state || !state.active) return;
-      updateNativeChatDragPreview(state.lastX, state.lastY);
-      const target = getFolderDropTargetAtCoordinates(state.lastX, state.lastY, state.payload);
-      state.targetFolderId = target ? target.folderId : '';
-      if (!target) {
-        clearDropHighlight();
-        return;
-      }
-      clearDropHighlight(target.element);
-      target.element.classList.add(target.isRoot ? 'cgfm-root-drop' : 'cgfm-drop-inside');
-    });
-  }
-
-  function onNativeHistoryPointerMove(event) {
-    const state = nativeChatPointerDrag;
-    if (!state || event.pointerId !== state.pointerId) return;
-    state.lastX = Number(event.clientX) || 0;
-    state.lastY = Number(event.clientY) || 0;
-
-    // Candidate and active phases are both fully owned so ChatGPT cannot arm a sortable
-    // sensor midway through the same pointer sequence.
-    stopOwnedNativeChatEvent(event, true);
-    if (!state.active && nativeChatDragDistance(state, state.lastX, state.lastY) >= NATIVE_CHAT_DRAG_THRESHOLD_PX) {
-      activateNativeChatPointerDrag(null);
-    }
-    if (state.active) scheduleNativeChatPointerHover();
-  }
-
-  function onNativeHistoryPointerUp(event) {
-    const state = nativeChatPointerDrag;
-    if (!state || event.pointerId !== state.pointerId) return;
-    state.lastX = Number(event.clientX) || 0;
-    state.lastY = Number(event.clientY) || 0;
-
-    stopOwnedNativeChatEvent(event, true);
-    const sourceRow = state.source;
-
-    if (!state.active) {
-      const replay = { primaryAction: state.primaryAction, payload: state.payload };
-      suppressNativeChatClick(sourceRow);
-      beginNativeChatReleaseGuard(sourceRow);
-      cancelNativeChatPointerDrag(false);
-      replayNativeChatPrimaryAction(replay);
-      return;
-    }
-
-    let target = getFolderDropTargetAtCoordinates(state.lastX, state.lastY, state.payload);
-    // A final frame can race with a sidebar transition/reflow. Reuse the immediately
-    // preceding validated hover only if the pointer is still physically over its row.
-    if (!target && state.targetFolderId && rootEl && rootEl.isConnected) {
-      const row = rootEl.querySelector('.cgfm-folder-row[data-folder-id="' + cssEscape(state.targetFolderId) + '"]');
-      if (row) {
-        const rect = row.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0 &&
-            state.lastX >= rect.left - 4 && state.lastX <= rect.right + 4 &&
-            state.lastY >= rect.top - 4 && state.lastY <= rect.bottom + 4) {
-          target = resolveFolderDropTargetFromElement(row, state.payload, false);
-        }
-      }
-    }
-    const payload = state.payload;
-    if (target) commitDropPayload(payload, target.folderId);
-    suppressNativeChatClick(sourceRow);
-    beginNativeChatReleaseGuard(sourceRow);
-    cancelNativeChatPointerDrag(false);
-  }
-
-  function onNativeHistoryPointerCancel(event) {
-    const state = nativeChatPointerDrag;
-    if (!state || event.pointerId !== state.pointerId) return;
-    stopOwnedNativeChatEvent(event, true);
-    suppressNativeChatClick(state.source);
-    beginNativeChatReleaseGuard(state.source);
-    cancelNativeChatPointerDrag(false);
-  }
-
-  function onNativeHistoryMouseDownCapture(event) {
-    const state = nativeChatPointerDrag;
-    if (!state || (typeof event.button === 'number' && event.button !== 0)) return;
-    if (!(event.target instanceof Node) || !state.source || !state.source.contains(event.target)) return;
-    // Pointer gesture is already ours; suppress compatibility mouse events as well so a
-    // parallel MouseSensor cannot arm during either the candidate or active phase.
-    stopOwnedNativeChatEvent(event, true);
-  }
-
-  function onNativeHistoryMouseMoveCapture(event) {
-    const state = nativeChatPointerDrag;
-    if (state) {
-      stopOwnedNativeChatEvent(event, true);
-      return;
-    }
-    if (nativeChatReleaseGuardActive()) stopOwnedNativeChatEvent(event, true);
-  }
-
-  function onNativeHistoryMouseUpCapture(event) {
-    restoreTransientNativeChatDrag();
-    const state = nativeChatPointerDrag;
-    if (state || nativeChatReleaseGuardActive()) {
-      stopOwnedNativeChatEvent(event, true);
-    }
-  }
-
-  function onNativeHistoryWindowBlur() {
-    if (nativeChatPointerDrag) cancelNativeChatPointerDrag(false);
-  }
-
-  function cancelNativeChatPointerDrag(suppressClick) {
-    const state = nativeChatPointerDrag;
-    if (nativeChatPointerRaf) {
-      cancelAnimationFrame(nativeChatPointerRaf);
-      nativeChatPointerRaf = 0;
-    }
-    if (state && suppressClick && state.active) suppressNativeChatClick(state.source);
-    nativeChatPointerDrag = null;
-    syncSidebarVisibility();
-    removeNativeChatDragPreview();
-    clearDropHighlight();
-  }
-
-  function replayNativeChatPrimaryAction(state) {
-    if (!state) return;
-    const action = state.primaryAction;
-    const payload = state.payload;
-    nativeChatReplayInProgress = true;
-    try {
-      if (action instanceof HTMLElement && action.isConnected) {
-        action.click();
-        return;
-      }
-      if (payload && payload.url) navigateToConversation(payload.url);
-    } catch (_) {
-      if (payload && payload.url) navigateToConversation(payload.url);
-    } finally {
-      nativeChatReplayInProgress = false;
-    }
-  }
-
-  function suppressNativeChatClick(row) {
-    if (!(row instanceof Element)) return;
-    suppressedNativeChatClickRow = row;
-    suppressedNativeChatClickUntil = Date.now() + 700;
-  }
-
-  function onNativeHistoryClickCapture(event) {
-    restoreTransientNativeChatDrag();
-    if (nativeChatReplayInProgress) return;
-    if (!suppressedNativeChatClickRow) return;
-    if (Date.now() > suppressedNativeChatClickUntil) {
-      suppressedNativeChatClickRow = null;
-      suppressedNativeChatClickUntil = 0;
-      return;
-    }
-    if (!(event.target instanceof Node) || !suppressedNativeChatClickRow.contains(event.target)) return;
-    stopOwnedNativeChatEvent(event, true);
-    suppressedNativeChatClickRow = null;
-    suppressedNativeChatClickUntil = 0;
-  }
-
-  function maybeEnableTransientNativeChatDrag(event) {
-    const target = event && event.target;
-    if (!(target instanceof Element)) return null;
-    if (target.closest('button[aria-haspopup="menu"],input,textarea,select,[contenteditable="true"],[data-trailing-button],[data-conversation-options-trigger]')) return null;
-
-    // New conversation rows use the exclusive pointer gesture above.
-    // Only legacy /c/ anchors keep the temporary HTML5 draggable compatibility path.
-    if (target.closest(NATIVE_CHAT_ROW_SELECTOR)) return null;
-    const source = target.closest('a[href*="/c/"]');
-    if (!source || (rootEl && rootEl.contains(source))) return null;
-
-    const chat = extractChatFromAnchor(source);
-    if (!chat) return null;
-
-    if (source.getAttribute('draggable') !== 'true') {
-      restoreTransientNativeChatDrag();
-      transientDragAnchor = source;
-      transientDragOriginalDraggable = source.getAttribute('draggable');
-      source.setAttribute('draggable', 'true');
-      source.setAttribute('data-cgfm-temp-draggable', '1');
-      transientDragRestoreTimer = setTimeout(restoreTransientNativeChatDrag, 2500);
-    }
-    return chat;
-  }
-
-  function restoreTransientNativeChatDrag() {
-    if (transientDragRestoreTimer) {
-      clearTimeout(transientDragRestoreTimer);
-      transientDragRestoreTimer = null;
-    }
-    const source = transientDragAnchor;
-    if (source) {
-      try {
-        if (document.contains(source) && source.getAttribute('data-cgfm-temp-draggable') === '1') {
-          if (transientDragOriginalDraggable === null) source.removeAttribute('draggable');
-          else source.setAttribute('draggable', transientDragOriginalDraggable);
-          source.removeAttribute('data-cgfm-temp-draggable');
-        }
-      } catch (_) {}
-    }
-    transientDragAnchor = null;
-    transientDragOriginalDraggable = null;
-  }
-
-  function onNativeHistoryDragStart(event) {
-    if (!event || !(event.target instanceof Element)) return;
-    if (rootEl && event.target instanceof Node && rootEl.contains(event.target)) return;
-
-    const row = event.target.closest(NATIVE_CHAT_ROW_SELECTOR);
-    const pointerState = nativeChatPointerDrag;
-    if (row && pointerState && pointerState.source === row) {
-      // ChatGPT should not have seen the initiating press, but cancel any delayed/native
-      // dragstart for this owned gesture as a defensive fallback.
-      activateNativeChatPointerDrag(event);
-      stopOwnedNativeChatEvent(event, true);
-      return;
-    }
-    if (row && nativeChatReleaseGuardActive() && nativeChatReleaseGuardRow === row) {
-      stopOwnedNativeChatEvent(event, true);
-      return;
-    }
-
-    // Legacy /c/ anchors keep the old HTML5 compatibility path.
-    const anchor = event.target.closest('a[href*="/c/"]');
-    if (!anchor && !pointerPayload) return;
-    const chat = (anchor && extractChatFromAnchor(anchor)) || pointerPayload;
-    if (!chat) { dragPayload = null; dragStartPayload = null; return; }
-    chat.kind = 'chat';
-    dragPayload = chat;
-    dragStartPayload = chat;
-    dropCommitted = false;
-    try {
-      if (event.dataTransfer) {
-        event.dataTransfer.setData(DRAG_MIME, JSON.stringify(chat));
-        event.dataTransfer.setData('text/uri-list', location.origin + chat.url);
-        event.dataTransfer.setData('text/plain', location.origin + chat.url);
-        event.dataTransfer.effectAllowed = 'copyMove';
-      }
-    } catch (_) {}
-  }
-
-  function onNativeHistoryDragEnd(event) {
-    // A panel-owned drag ends in its own handler; do not run the native-sidebar
-    // fallback before the panel's drop/dragend has completed.
-    if (ownedDragActive && event?.target instanceof Node && rootEl?.contains(event.target)) return;
-    if (nativeChatPointerDrag && nativeChatPointerDrag.active) return;
-    const shouldFallback = !dropCommitted && lastHoveredFolderId && (Date.now() - lastHoveredFolderAt < 900);
-    const payload = dragPayload || dragStartPayload || pointerPayload;
-    if (shouldFallback && payload) {
-      dropCommitted = !!commitDropPayload(payload, lastHoveredFolderId);
-    }
-    if (rootEl) rootEl.querySelectorAll('.cgfm-dragging-folder').forEach(el => el.classList.remove('cgfm-dragging-folder'));
-    resetNativeDragState();
   }
 
   function onRootDragOver(event) {
@@ -2281,8 +1809,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     try {
       if (event.dataTransfer) event.dataTransfer.dropEffect = payloadKind(payload) === 'folder' ? 'move' : 'copy';
     } catch (_) {}
-    lastHoveredFolderId = target.folderId;
-    lastHoveredFolderAt = Date.now();
     clearDropHighlight(target.element);
     target.element.classList.add(target.isRoot ? 'cgfm-root-drop' : 'cgfm-drop-inside');
   }
@@ -2301,8 +1827,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     clearDropHighlight();
     if (!target) return;
     event.preventDefault();
-    if (dropCommitted) return;
-    dropCommitted = !!commitDropPayload(payload, target.folderId);
+    commitDropPayload(payload, target.folderId);
   }
 
 
@@ -2338,25 +1863,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function getDragPayload(event, allowRead) {
     if (dragPayload) return dragPayload;
-    if (dragStartPayload) return dragStartPayload;
-    if (pointerPayload) return pointerPayload;
-    if (!allowRead || !event || !event.dataTransfer) return null;
+    if (!ownedDragActive || !allowRead || !event?.dataTransfer) return null;
     try {
       const raw = event.dataTransfer.getData(DRAG_MIME);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (payloadKind(parsed)) return parsed;
-      }
-    } catch (_) {}
-    const types = ['text/uri-list', 'text/plain', 'text/html'];
-    for (const type of types) {
-      try {
-        const text = event.dataTransfer.getData(type);
-        const chat = extractChatFromText(text);
-        if (chat) return chat;
-      } catch (_) {}
-    }
-    return null;
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return payloadKind(parsed) ? parsed : null;
+    } catch (_) { return null; }
   }
 
   function extractChatFromNativeElement(element) {
@@ -2368,59 +1881,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
     const anchor = element.matches('a[href*="/c/"]') ? element : element.closest('a[href*="/c/"]');
     return anchor ? extractChatFromAnchor(anchor) : null;
-  }
-
-  function extractChatFromEvent(event) {
-    const source = findNativeChatElementFromEvent(event);
-    return source ? extractChatFromNativeElement(source) : null;
-  }
-
-  function findNativeChatElementFromEvent(event) {
-    if (!event) return null;
-    const isElement = node => node && node.nodeType === 1;
-    const insideRoot = node => {
-      try { return !!(rootEl && node instanceof Node && rootEl.contains(node)); }
-      catch (_) { return false; }
-    };
-
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
-    for (const node of path) {
-      if (!(node instanceof Node)) continue;
-      if (insideRoot(node)) return null;
-      if (!isElement(node)) continue;
-      if (node.matches?.(NATIVE_CHAT_ROW_SELECTOR)) return node;
-      if (node.matches?.('a[href*="/c/"]')) return node;
-      if (node.closest) {
-        const row = node.closest(NATIVE_CHAT_ROW_SELECTOR);
-        if (row && !insideRoot(row)) return row;
-        const anchor = node.closest('a[href*="/c/"]');
-        if (anchor && !insideRoot(anchor)) return anchor;
-      }
-    }
-
-    const target = event.target;
-    if (target instanceof Element && target.closest) {
-      const row = target.closest(NATIVE_CHAT_ROW_SELECTOR);
-      if (row && !insideRoot(row)) return row;
-      const anchor = target.closest('a[href*="/c/"]');
-      if (anchor && !insideRoot(anchor)) return anchor;
-    }
-    return null;
-  }
-
-  function extractChatFromText(text) {
-    const id = extractConversationId(text);
-    if (!id) return null;
-
-    const row = findNativeConversationRowById(id);
-    if (row) return extractChatFromRow(row);
-
-    let title = '';
-    try {
-      const anchor = document.querySelector('a[href*="/c/' + cssEscape(id) + '"]');
-      title = anchor ? extractTitleFromAnchor(anchor) : '';
-    } catch (_) {}
-    return { kind: 'chat', id, title: title || 'Untitled chat', url: '/c/' + id };
   }
 
   function canMoveFolderTo(sourceId, targetParentId) {
@@ -4348,11 +3808,18 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (list.innerHTML !== nextHtml) list.innerHTML = nextHtml;
   }
 
+  function finishPanelDrag() {
+    if (rootEl) rootEl.querySelectorAll('.cgfm-dragging-folder').forEach(el => el.classList.remove('cgfm-dragging-folder'));
+    dragPayload = null;
+    clearDropHighlight();
+    finishOwnedPanelDrag();
+  }
+
   function beginOwnedPanelDrag() {
     ownedDragActive = true;
     clearTimeout(folderCloseTimer);
     clearTimeout(ownedDragSafetyTimer);
-    ownedDragSafetyTimer = setTimeout(finishOwnedPanelDrag, 30000);
+    ownedDragSafetyTimer = setTimeout(finishPanelDrag, 30000);
     syncSidebarVisibility();
   }
 
@@ -4370,8 +3837,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   // Only this predicate decides which interactions keep the independent pane open.
   function panelHasVisibilityHold() {
-    return ownedDragActive || hasActiveChatEditor() || folderButtonPinned ||
-      !!nativeChatPointerDrag?.active;
+    return ownedDragActive || hasActiveChatEditor() || folderButtonPinned;
   }
 
   function shouldShowFolderPanel() {
@@ -4501,8 +3967,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       else {
         ensureFolderRailButton();
         watchRecentListChanges();
-        setupNativeDragCache();
-        setupNativeMenuHook();
+            setupNativeMenuHook();
         applySidebarWidth();
         syncSidebarVisibility();
         if (beforeAccount && afterAccount && beforeAccount !== afterAccount) queueRender();
@@ -4523,7 +3988,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && ownedDragActive) finishOwnedPanelDrag();
+        if (event.key === 'Escape' && ownedDragActive) finishPanelDrag();
         if (event.key === 'Escape' && !menuEl && !modalEl && !editingFolderId && !hasActiveChatEditor()) {
           folderButtonPinned = false;
           folderPointerInButton = false;
@@ -4531,8 +3996,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
           syncSidebarVisibility();
         }
       });
-      // The independent panel responds only to its own button/hover events.
-      // No global pointer tracking or native sidebar pinning.
+      // Panel drag/drop is scoped to the script-owned root.
       // Mount once outside the React tree; sparse recovery handles body replacement only.
       [0, 700, 2800, 8000, 21000, 55000].forEach(delay => setTimeout(ensureMountedLight, delay));
       const idle = window.requestIdleCallback || (fn => setTimeout(fn, 3500));
@@ -4555,11 +4019,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   // Capture only official authenticated history request metadata, in memory.
   installOfficialHistoryCapture();
 
-  // Register the gesture capture layer as early as possible, before ChatGPT attaches
-  // its sortable sensors. The handler itself stays inert until mount() marks the UI ready.
-  setupNativeDragCache();
 
-  // Keep all DOM/state boot work deferred; document-start is used only for listener order.
+  // Keep DOM/state boot deferred until document structure is ready.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot, { once: true });
   } else {
