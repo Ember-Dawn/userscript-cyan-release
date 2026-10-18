@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.5
+// @version      1.4.6
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.5';
+  const VERSION = '1.4.6';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -89,6 +89,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let folderPointerInPane = false;
   let folderCloseTimer = null;
   let ownedDragActive = false;
+  let renderDeferredDuringPanelDrag = false;
   let ownedDragSafetyTimer = null;
   let recentMutationObserver = null;
   let recentObserverHost = null;
@@ -1285,11 +1286,13 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function queueRender() {
     if (hasActiveChatEditor()) { renderDeferredDuringChatEdit = true; return; }
+    if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
     if (renderQueued) return;
     renderQueued = true;
     requestAnimationFrame(() => {
       renderQueued = false;
       if (hasActiveChatEditor()) { renderDeferredDuringChatEdit = true; return; }
+      if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
       if (!rootEl || !document.body.contains(rootEl)) mount();
       else render();
     });
@@ -1297,6 +1300,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function render() {
     if (!rootEl) return;
+    if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
     if (hasActiveChatEditor()) { renderDeferredDuringChatEdit = true; return; }
     const p = getProfile();
     const collapsed = !!p.settings.ui.sectionCollapsed;
@@ -1391,10 +1395,14 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       beginOwnedPanelDrag();
     });
     el.addEventListener('dragend', finishPanelDrag);
-    el.addEventListener('drop', () => { if (ownedDragActive) queueMicrotask(finishPanelDrag); });
-    el.addEventListener('dragover', onRootDragOver);
+    // Handle target admission/commit in capture phase. These events may otherwise
+    // be stopped by nested controls before reaching a bubbling root listener.
+    el.addEventListener('dragenter', onRootDragOver, true);
+    el.addEventListener('dragover', onRootDragOver, true);
     el.addEventListener('dragleave', onRootDragLeave);
-    el.addEventListener('drop', onRootDrop);
+    el.addEventListener('drop', onRootDrop, true);
+    // Drop commits synchronously above; cleanup must wait until dispatch ends.
+    el.addEventListener('drop', () => { if (ownedDragActive) queueMicrotask(finishPanelDrag); });
     el.addEventListener('keydown', onRootKeydown, true);
     el.addEventListener('focusout', onRootFocusOut, true);
     el.addEventListener('contextmenu', onChatRenameContextMenu);
@@ -1805,6 +1813,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onRootDragOver(event) {
+    if (!ownedDragActive || !dragPayload) return;
     const payload = getDragPayload(event, false);
     const target = event.target instanceof Element
       ? resolveFolderDropTargetFromElement(event.target, payload, false) : null;
@@ -1825,11 +1834,15 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   }
 
   function onRootDrop(event) {
+    if (!ownedDragActive || !dragPayload) return;
     const payload = getDragPayload(event, true);
     const target = event.target instanceof Element
       ? resolveFolderDropTargetFromElement(event.target, payload, false) : null;
     clearDropHighlight();
-    if (!target) return;
+    if (!target) {
+      toast('未找到有效的目标文件夹，请拖到文件夹名称所在行。');
+      return;
+    }
     event.preventDefault();
     commitDropPayload(payload, target.folderId);
   }
@@ -3855,6 +3868,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       renderDeferredDuringChatEdit = true;
       return;
     }
+    // Never replace a drag source node while the browser owns its DnD gesture.
+    if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
     if (active && list.contains(active)) return;
     const nextHtml = renderRecentChats();
     // Reobserving the official sidebar may re-deliver unchanged titles. Avoid
@@ -3880,6 +3895,8 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function finishOwnedPanelDrag() {
     if (!ownedDragActive) return;
     ownedDragActive = false;
+    const needsRender = renderDeferredDuringPanelDrag;
+    renderDeferredDuringPanelDrag = false;
     clearTimeout(ownedDragSafetyTimer);
     ownedDragSafetyTimer = null;
     // Native DnD can suppress pointerenter/leave. Reconcile from geometry after drop.
@@ -3887,6 +3904,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     folderPointerInPane = hovered;
     syncSidebarVisibility();
     if (!hovered) scheduleFolderClose();
+    if (needsRender) queueRender();
   }
 
   // Only this predicate decides which interactions keep the independent pane open.
