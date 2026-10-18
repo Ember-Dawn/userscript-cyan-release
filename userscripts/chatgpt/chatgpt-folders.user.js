@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.4.8
+// @version      1.4.9
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -29,7 +29,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 - DOM：#cgfm-root 是 document.body 的持久直属子节点，不进入 React 内容容器；独立文件夹按钮插入导航 rail，浮层相对 rail 右侧定位。优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
 - Hydration：DOM/state boot 延后至 DOMContentLoaded；独立面板不依赖官方 sidebar hydration。
 - 性能：禁止长期观察 document/sidebar subtree、mousemove 热路径和高频全量扫描。新增入口使用导航列表 childList 窄观察以恢复重建；最近对话在打开时限频收集；原生三点菜单仍只短时观察。
-- 交互：仅在脚本自有面板中使用 HTML5 拖拽；官方最近对话仅用于采集与菜单入口，不拦截其拖拽或点击。
+- 交互：仅在脚本自有面板中使用 Pointer Events 拖拽；官方最近对话仅用于采集与菜单入口，不拦截其拖拽或点击。
 - 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
 - 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
 */
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.4.8';
+  const VERSION = '1.4.9';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -49,7 +49,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   const LAST_ACCOUNT_KEY = 'cgfm.v1.lastAccount';
   const CURRENT_PROFILE_ID = 'local_current';
   const ROOT_ID = 'root';
-  const DRAG_MIME = 'application/x-chatgpt-folder-manager';
   const SIDEBAR_CONVERSATION_PREFIX = 'chatgpt:conversation:';
   const NATIVE_CHAT_ROW_SELECTOR = '[data-sidebar-chatgpt-conversation-key^="' + SIDEBAR_CONVERSATION_PREFIX + '"][role="listitem"]';
   const RECENTS_SECTION_SELECTOR = 'section[data-app-action-sidebar-section-heading="Recents"]';
@@ -124,7 +123,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let editingFolderId = '';
   let editingNewFolderId = '';
   let editingOriginalName = '';
-  let dragPayload = null;
+  let pointerDragSession = null;
   let pendingPanelMove = null; // Replay only this move if another tab wins a storage revision race.
   let panelMoveRebaseAttempts = 0;
   let menuEl = null;
@@ -1112,8 +1111,10 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       #cgfm-root .cgfm-empty { color:var(--cgfm-muted); padding:7px 12px 11px 16px; font-size:12px; line-height:1.45; }
       #cgfm-root .cgfm-folder-row, #cgfm-root .cgfm-chat-row { display:flex; align-items:center; min-height:32px; gap:4px; padding:2px 6px 2px calc(8px + var(--depth, 0) * 20px); border-radius:9px; margin:1px 8px; position:relative; color:var(--cgfm-text); }
       #cgfm-root .cgfm-folder-row:hover, #cgfm-root .cgfm-chat-row:hover { background:var(--cgfm-hover); }
-      #cgfm-root .cgfm-folder-row[draggable="true"] { cursor:grab; }
-      #cgfm-root .cgfm-folder-row.cgfm-dragging-folder { opacity:.55; cursor:grabbing; }
+      #cgfm-root .cgfm-folder-row { cursor:grab; }
+      #cgfm-root .cgfm-pointer-source { opacity:.48; }
+      #cgfm-root .cgfm-folder-row, #cgfm-root .cgfm-chat-row, #cgfm-root .cgfm-recent-chat { touch-action:pan-y; }
+      .cgfm-pointer-preview { position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:8px 12px;border-radius:9px;background:var(--main-surface-primary,#fff);color:var(--text-primary,#111827);border:1px solid rgba(128,128,128,.35);box-shadow:0 9px 24px rgba(0,0,0,.22);font:13px/18px system-ui,sans-serif;will-change:transform; }
       #cgfm-root .cgfm-folder-row.cgfm-selected { background:var(--cgfm-active); }
       #cgfm-root .cgfm-caret { width:18px; min-width:18px; height:22px; border:0; padding:0; background:transparent; display:flex; align-items:center; justify-content:center; color:var(--cgfm-muted); border-radius:6px; cursor:pointer; }
       #cgfm-root .cgfm-caret:hover { background:rgba(128,128,128,.12); color:var(--cgfm-text); }
@@ -1380,7 +1381,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     ].join('');
     return `
       <div class="cgfm-folder-block" data-folder-block="${escapeAttr(fid)}">
-        <div class="cgfm-folder-row${selected}" data-folder-id="${escapeAttr(fid)}" data-depth="${depth}" draggable="${isEditing ? 'false' : 'true'}" style="--depth:${depth};--folder-color:${escapeAttr(normalizeColor(f.color))}">
+        <div class="cgfm-folder-row${selected}" data-folder-id="${escapeAttr(fid)}" data-depth="${depth}"  style="--depth:${depth};--folder-color:${escapeAttr(normalizeColor(f.color))}">
           <button class="cgfm-caret ${open ? 'cgfm-open' : ''}" data-action="toggle-folder" data-folder-id="${escapeAttr(fid)}" title="折叠/展开">${icon('chevron')}</button>
           <span class="cgfm-folder-icon">${icon('folder')}</span>
           ${nameHtml}
@@ -1396,7 +1397,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     const title = guardConversationTitle(cid, c.title || 'Untitled chat');
     const url = normalizeStoredUrl(c.url || ('/c/' + cid));
     return `
-      <div class="cgfm-chat-row" data-chat-id="${escapeAttr(cid)}" data-folder-id="${escapeAttr(folderId)}" data-depth="${depth}" draggable="true" style="--depth:${depth}">
+      <div class="cgfm-chat-row" data-chat-id="${escapeAttr(cid)}" data-folder-id="${escapeAttr(folderId)}" data-depth="${depth}" style="--depth:${depth}">
         <span class="cgfm-spacer"></span>
         <span class="cgfm-chat-icon">${icon('chat')}</span>
         <a class="cgfm-chat-title" draggable="false" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>
@@ -1414,20 +1415,11 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   function bindRootEvents(el) {
     el.addEventListener('click', onRootClick);
-    el.addEventListener('dragstart', onRootDragStart);
+    el.addEventListener('pointerdown', onPanelPointerDown);
+    // Disable accidental browser-native image/link drags inside our own rows.
     el.addEventListener('dragstart', event => {
-      if (event.defaultPrevented || !event.target?.closest?.('[draggable="true"]')) return;
-      beginOwnedPanelDrag();
+      if (event.target?.closest?.('.cgfm-folder-row,.cgfm-chat-row,.cgfm-recent-chat')) event.preventDefault();
     });
-    el.addEventListener('dragend', finishPanelDrag);
-    // Handle target admission/commit in capture phase. These events may otherwise
-    // be stopped by nested controls before reaching a bubbling root listener.
-    el.addEventListener('dragenter', onRootDragOver, true);
-    el.addEventListener('dragover', onRootDragOver, true);
-    el.addEventListener('dragleave', onRootDragLeave);
-    el.addEventListener('drop', onRootDrop, true);
-    // Drop commits synchronously above; cleanup must wait until dispatch ends.
-    el.addEventListener('drop', () => { if (ownedDragActive) queueMicrotask(finishPanelDrag); });
     el.addEventListener('keydown', onRootKeydown, true);
     el.addEventListener('focusout', onRootFocusOut, true);
     el.addEventListener('contextmenu', onChatRenameContextMenu);
@@ -1781,97 +1773,92 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     return '';
   }
 
-  function onRootDragStart(event) {
-    if (!event || !event.target || !rootEl || !rootEl.contains(event.target)) return;
-    const interactive = event.target.closest && event.target.closest('button,input,textarea,select,[contenteditable="true"]');
-    if (interactive) { event.preventDefault(); return; }
-    // Folder-managed chats must establish their own drag payload. Browser link dragging
-    // otherwise shows a native preview without consistently producing a usable drop.
-    const chatRow = event.target.closest && event.target.closest('.cgfm-chat-row[data-chat-id]');
-    if (chatRow && rootEl.contains(chatRow)) {
-      const p = getProfile();
-      const id = chatRow.getAttribute('data-chat-id');
-      const chat = p.conversations[id];
-      if (!chat) { event.preventDefault(); return; }
+  // All three source types share one pointer session; no HTML5 DataTransfer.
+  function getPanelPointerPayload(target) {
+    if (!(target instanceof Element) || !rootEl?.contains(target)) return null;
+    if (target.closest('button,input,textarea,select,[contenteditable="true"]')) return null;
+    const row = target.closest('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id],.cgfm-folder-row[data-folder-id]');
+    if (!row || !rootEl.contains(row) || row.closest('[hidden]')) return null;
+    if (row.classList.contains('cgfm-folder-row')) {
+      const id = row.dataset.folderId;
+      const folder = getProfile().folders[id];
+      return folder && id !== ROOT_ID ? { payload: {kind:'folder',folderId:id}, title:folder.name, row } : null;
+    }
+    const id = row.dataset.chatId;
+    const chat = getProfile().conversations[id] || recentKnown.find(item => item.id === id);
+    if (!chat) return null;
+    return { payload:{kind:'chat',id,title:chat.title,url:chat.url || '/c/' + id}, title:chat.title || '未命名对话', row };
+  }
+
+  function onPanelPointerDown(event) {
+    if (event.button !== 0 || !event.isPrimary || pointerDragSession) return;
+    const source = getPanelPointerPayload(event.target);
+    if (!source || hasActiveChatEditor()) return;
+    pointerDragSession = {
+      pointerId:event.pointerId, startX:event.clientX, startY:event.clientY,
+      x:event.clientX,y:event.clientY, source, active:false, target:null,
+      account:currentAccount, preview:null, frame:0
+    };
+    window.addEventListener('pointermove', onPanelPointerMove, true);
+    window.addEventListener('pointerup', onPanelPointerUp, true);
+    window.addEventListener('pointercancel', cancelPanelPointerDrag, true);
+    window.addEventListener('blur', cancelPanelPointerDrag);
+  }
+
+  function onPanelPointerMove(event) {
+    const session = pointerDragSession;
+    if (!session || event.pointerId !== session.pointerId) return;
+    session.x = event.clientX; session.y = event.clientY;
+    if (!session.active) {
+      if (Math.hypot(session.x-session.startX,session.y-session.startY) < 5) return;
+      // No click interception until the pointer has actually moved beyond the threshold.
+      session.active = true;
       closeMenu();
-      const payload = { kind: 'chat', id, title: chat.title, url: chat.url || ('/c/' + id) };
-      dragPayload = payload;
-      clearDropHighlight();
-      try {
-        if (event.dataTransfer) {
-          event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
-          event.dataTransfer.setData('text/plain', location.origin + payload.url);
-          event.dataTransfer.effectAllowed = 'move';
-        }
-      } catch (_) {}
-      return;
-    }
-    const recentRow = event.target.closest && event.target.closest('.cgfm-recent-chat[data-chat-id]');
-    if (recentRow && rootEl.contains(recentRow)) {
-      const id = recentRow.getAttribute('data-chat-id');
-      const chat = recentKnown.find(item => item.id === id);
-      if (!chat) { event.preventDefault(); return; }
-      const payload = { kind:'chat', id, title:chat.title, url:'/c/'+id };
-      dragPayload = payload;
-      try {
-        event.dataTransfer?.setData(DRAG_MIME, JSON.stringify(payload));
-        event.dataTransfer?.setData('text/plain', location.origin + payload.url);
-        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
-      } catch (_) {}
-      return;
-    }
-    const row = event.target.closest && event.target.closest('.cgfm-folder-row[data-folder-id]');
-    if (!row || !rootEl.contains(row)) return;
-    const fid = row.getAttribute('data-folder-id');
-    if (!fid || fid === ROOT_ID || !getProfile().folders[fid]) return;
-    closeMenu();
-    const payload = { kind: 'folder', folderId: fid };
-    dragPayload = payload;
-    row.classList.add('cgfm-dragging-folder');
-    try {
-      if (event.dataTransfer) {
-        event.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
-        event.dataTransfer.setData('text/plain', 'chatgpt-folder:' + fid);
-        event.dataTransfer.effectAllowed = 'move';
-      }
-    } catch (_) {}
-  }
-
-  function onRootDragOver(event) {
-    if (!ownedDragActive || !dragPayload) return;
-    const payload = getDragPayload(event, false);
-    const target = event.target instanceof Element
-      ? resolveFolderDropTargetFromElement(event.target, payload, false) : null;
-    if (!target) { clearDropHighlight(); return; }
-    event.preventDefault();
-    try {
-      if (event.dataTransfer) event.dataTransfer.dropEffect = payloadKind(payload) === 'folder' ? 'move' : 'copy';
-    } catch (_) {}
-    clearDropHighlight(target.element);
-    target.element.classList.add(target.isRoot ? 'cgfm-root-drop' : 'cgfm-drop-inside');
-  }
-
-  function onRootDragLeave(event) {
-    const row = event.target.closest && event.target.closest('.cgfm-folder-row[data-folder-id]');
-    if (row && (!event.relatedTarget || !row.contains(event.relatedTarget))) row.classList.remove('cgfm-drop-inside');
-    const header = event.target.closest && event.target.closest('.cgfm-header[data-root-drop]');
-    if (header && (!event.relatedTarget || !header.contains(event.relatedTarget))) header.classList.remove('cgfm-root-drop');
-  }
-
-  function onRootDrop(event) {
-    if (!ownedDragActive || !dragPayload) return;
-    const payload = getDragPayload(event, true);
-    const target = event.target instanceof Element
-      ? resolveFolderDropTargetFromElement(event.target, payload, false) : null;
-    clearDropHighlight();
-    if (!target) {
-      toast('未找到有效的目标文件夹，请拖到文件夹名称所在行。');
-      return;
+      beginOwnedPanelDrag();
+      const preview = document.createElement('div');
+      preview.className = 'cgfm-pointer-preview';
+      preview.textContent = session.source.title;
+      document.body.appendChild(preview);
+      session.preview = preview;
+      session.source.row.classList.add('cgfm-pointer-source');
+      document.addEventListener('click', suppressPanelDragClick, true);
     }
     event.preventDefault();
-    commitDropPayload(payload, target.folderId);
+    if (!session.frame) session.frame = requestAnimationFrame(() => {
+      session.frame = 0;
+      if (pointerDragSession !== session || !session.active) return;
+      session.preview.style.transform = `translate3d(${session.x+12}px,${session.y+12}px,0)`;
+      const element = document.elementFromPoint(session.x, session.y);
+      session.target = resolveFolderDropTargetFromElement(element, session.source.payload, false);
+      clearDropHighlight(session.target?.element);
+      if (session.target) session.target.element.classList.add(session.target.isRoot ? 'cgfm-root-drop' : 'cgfm-drop-inside');
+    });
   }
 
+  function suppressPanelDragClick(event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    document.removeEventListener('click', suppressPanelDragClick, true);
+  }
+
+  function onPanelPointerUp(event) {
+    const session = pointerDragSession;
+    if (!session || session.pointerId !== event.pointerId) return;
+    if (!session.active) { finishPanelDrag(); return; }
+    event.preventDefault();
+    const element = document.elementFromPoint(event.clientX,event.clientY);
+    const target = resolveFolderDropTargetFromElement(element,session.source.payload,false);
+    const sameAccount = session.account === currentAccount;
+    const payload = session.source.payload;
+    finishPanelDrag(true);
+    // A completed pointer gesture must not activate a chat link or folder selector.
+    setTimeout(() => document.removeEventListener('click',suppressPanelDragClick,true),0);
+    if (!sameAccount) { toast('账号已切换，移动已取消。'); return; }
+    if (!target) { toast('未找到有效目标文件夹，移动已取消。'); return; }
+    commitDropPayload(payload,target.folderId);
+  }
+
+  function cancelPanelPointerDrag() { finishPanelDrag(); }
 
   function resolveFolderDropTargetFromElement(element, payload, allowUnknownChat) {
     if (!(element instanceof Element) || !rootEl) return null;
@@ -1924,17 +1911,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (move.kind === 'folder') return moveFolderToFolder(move.id, move.folderId, { persist:false, notify });
     if (move.kind === 'chat') return addChatToFolder({ id:move.id, title:move.title, url:move.url }, move.folderId, { persist:false, notify });
     return false;
-  }
-
-  function getDragPayload(event, allowRead) {
-    if (dragPayload) return dragPayload;
-    if (!ownedDragActive || !allowRead || !event?.dataTransfer) return null;
-    try {
-      const raw = event.dataTransfer.getData(DRAG_MIME);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      return payloadKind(parsed) ? parsed : null;
-    } catch (_) { return null; }
   }
 
   function extractChatFromNativeElement(element) {
@@ -3979,7 +3955,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   function renderRecentChats() {
     readRecentCache();
     if (!recentKnown.length) return '<div class="cgfm-recent-empty">暂无最近对话。若官方历史尚未加载，将在正常展开官方侧栏后补充。</div>';
-    return reconcileConversationTitles(recentKnown).map(chat => `<div class="cgfm-recent-chat" draggable="true" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a><button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
+    return reconcileConversationTitles(recentKnown).map(chat => `<div class="cgfm-recent-chat" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a><button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
   }
 
   function updateRecentDom() {
@@ -3999,9 +3975,17 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     if (list.innerHTML !== nextHtml) list.innerHTML = nextHtml;
   }
 
-  function finishPanelDrag() {
-    if (rootEl) rootEl.querySelectorAll('.cgfm-dragging-folder').forEach(el => el.classList.remove('cgfm-dragging-folder'));
-    dragPayload = null;
+  function finishPanelDrag(keepClickSuppression = false) {
+    const session = pointerDragSession;
+    if (!keepClickSuppression) document.removeEventListener('click',suppressPanelDragClick,true);
+    pointerDragSession = null;
+    window.removeEventListener('pointermove',onPanelPointerMove,true);
+    window.removeEventListener('pointerup',onPanelPointerUp,true);
+    window.removeEventListener('pointercancel',cancelPanelPointerDrag,true);
+    window.removeEventListener('blur',cancelPanelPointerDrag);
+    if (session?.frame) cancelAnimationFrame(session.frame);
+    session?.preview?.remove();
+    session?.source?.row?.classList.remove('cgfm-pointer-source');
     clearDropHighlight();
     finishOwnedPanelDrag();
   }
@@ -4021,7 +4005,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     renderDeferredDuringPanelDrag = false;
     clearTimeout(ownedDragSafetyTimer);
     ownedDragSafetyTimer = null;
-    // Native DnD can suppress pointerenter/leave. Reconcile from geometry after drop.
+    // Reconcile pointer hover after the overlay is removed.
     const hovered = rootEl?.matches(':hover') || false;
     folderPointerInPane = hovered;
     syncSidebarVisibility();
@@ -4182,7 +4166,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       lastSeenStorageProjection = storageBusinessProjectionKey(state);
       setupCrossTabStorageSync();
       document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && ownedDragActive) finishPanelDrag();
+        if (event.key === 'Escape' && pointerDragSession) finishPanelDrag();
         if (event.key === 'Escape' && !menuEl && !modalEl && !editingFolderId && !hasActiveChatEditor()) {
           folderButtonPinned = false;
           folderPointerInButton = false;
