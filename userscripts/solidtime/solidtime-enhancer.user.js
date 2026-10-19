@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.8.2
+// @version      0.8.3
 // @description  优化 solidtime 的计时器与 Project/Task 交互：阻止非必要自动聚焦，并将 Project 和 Task 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
 // @match        https://solidtime.380782744.xyz/*
@@ -72,6 +72,10 @@
                     display: inline-block !important;
                     vertical-align: middle;
                 }
+                /* 仅高亮目标 Project 下的目标 Task；不影响弹层或 PC。 */
+                [data-testid="dashboard_timer"] button > span.solidtime-enhancer-cooking-task {
+                    color: #FACC15 !important;
+                }
                 /* 给圆点、Project、分隔箭头、Task 留出清晰但紧凑的间距。 */
                 [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > div:first-child {
                     margin-right: 6px !important;
@@ -89,6 +93,56 @@
         installMobileTrackerLayout();
     } else {
         document.addEventListener('DOMContentLoaded', installMobileTrackerLayout, { once: true });
+    }
+
+    // 只识别顶部计时器已选中的 Project / Task，不改动其他同名任务。
+    // 原生 trigger 的直接子元素顺序：颜色圆点、Project span、箭头、Task span、可选 Client。
+    function updateMobileCookingTaskHighlight() {
+        const root = document.querySelector('[data-testid="dashboard_timer"]');
+        if (!root) return;
+
+        const buttons = root.querySelectorAll('button');
+        for (const button of buttons) {
+            const children = Array.from(button.children);
+            const projectText = children[1];
+            const separator = children[2];
+            const taskText = children[3];
+            if (
+                children[0]?.tagName !== 'DIV' ||
+                projectText?.tagName !== 'SPAN' ||
+                separator?.tagName?.toLowerCase() !== 'svg' ||
+                taskText?.tagName !== 'SPAN'
+            ) continue;
+
+            const shouldHighlight =
+                projectText.textContent.trim() === '01生活' &&
+                taskText.textContent.trim() === '06做饭';
+            taskText.classList.toggle('solidtime-enhancer-cooking-task', shouldHighlight);
+        }
+    }
+
+    // Vue 更新选中项时只需重新检查名称。仅监听节点/文本变化，
+    // 不监听属性，从而不会因自身添加 CSS class 触发循环。
+    let cookingHighlightScheduled = false;
+    function scheduleMobileCookingTaskHighlight() {
+        if (cookingHighlightScheduled) return;
+        cookingHighlightScheduled = true;
+        requestAnimationFrame(() => {
+            cookingHighlightScheduled = false;
+            updateMobileCookingTaskHighlight();
+        });
+    }
+
+    function installMobileCookingTaskHighlight() {
+        if (!document.body) return;
+        const observer = new MutationObserver(scheduleMobileCookingTaskHighlight);
+        observer.observe(document.body, { childList: true, characterData: true, subtree: true });
+        scheduleMobileCookingTaskHighlight();
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', installMobileCookingTaskHighlight, { once: true });
+    } else {
+        installMobileCookingTaskHighlight();
     }
 
     const TIMER_BUTTON_SELECTOR = '[data-testid="timer_button"]';
