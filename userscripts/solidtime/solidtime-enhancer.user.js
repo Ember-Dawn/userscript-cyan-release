@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         solidtime 交互增强助手
 // @namespace    https://github.com/Ember-Dawn/userscript-cyan
-// @version      0.8.3
+// @version      0.8.4
 // @description  优化 solidtime 的计时器与 Project/Task 交互：阻止非必要自动聚焦，并将 Project 和 Task 按中英混合名称自然升序排列；PC 和手机通用。
 // @author       Ember-Dawn
 // @match        https://solidtime.380782744.xyz/*
@@ -76,6 +76,10 @@
                 [data-testid="dashboard_timer"] button > span.solidtime-enhancer-cooking-task {
                     color: #FACC15 !important;
                 }
+                /* 仅对已确认所属 Project 的下拉 Task 名称着色。 */
+                [data-task-id] > span.solidtime-enhancer-cooking-dropdown-task {
+                    color: #FACC15 !important;
+                }
                 /* 给圆点、Project、分隔箭头、Task 留出清晰但紧凑的间距。 */
                 [data-testid="dashboard_timer"] > div:first-child > div:nth-child(2) > div:first-child button > div:first-child {
                     margin-right: 6px !important;
@@ -121,7 +125,32 @@
         }
     }
 
-    // Vue 更新选中项时只需重新检查名称。仅监听节点/文本变化，
+    // 下拉菜单是虚拟列表，只根据当前可见的 Project 分组识别 Task。
+    // 如果对应 Project 标题不在已挂载的窗口中，宁可不着色，避免错误标记同名任务。
+    function updateMobileCookingDropdownHighlight() {
+        const searchInputs = document.querySelectorAll('[data-testid="client_dropdown_search"]');
+        for (const searchInput of searchInputs) {
+            const panel = searchInput.parentElement;
+            if (!panel) continue;
+            const rows = panel.querySelectorAll('[data-project-id], [data-task-id]');
+            let activeProject = null;
+            for (const row of rows) {
+                if (row.hasAttribute('data-project-id')) {
+                    activeProject = row.querySelector('span.truncate')?.textContent?.trim() ?? null;
+                    continue;
+                }
+                const taskText = row.querySelector(':scope > span.truncate');
+                if (!taskText) continue;
+                taskText.classList.toggle(
+                    'solidtime-enhancer-cooking-dropdown-task',
+                    activeProject === '01生活' && taskText.textContent.trim() === '06做饭'
+                );
+            }
+        }
+    }
+
+    // Vue 更新选中项、打开菜单及虚拟行变动时，复用现有观察者。
+    // 仅监听节点/文本变化，
     // 不监听属性，从而不会因自身添加 CSS class 触发循环。
     let cookingHighlightScheduled = false;
     function scheduleMobileCookingTaskHighlight() {
@@ -130,6 +159,7 @@
         requestAnimationFrame(() => {
             cookingHighlightScheduled = false;
             updateMobileCookingTaskHighlight();
+            updateMobileCookingDropdownHighlight();
         });
     }
 
