@@ -1,4 +1,4 @@
-# NocoDB Rich Text × Mind-map 联动（v0.1.0）
+# NocoDB Rich Text × Mind-map 联动（v0.1.1）
 
 ## 目标与职责
 
@@ -23,7 +23,7 @@
 ## 打开流程
 
 1. 查找 `.nc-long-text-expanded-modal[role="dialog"]` 内的 `.tiptap.ProseMirror`；验证 `el.editor` 可用且 `editor.view.dom === el`。
-2. 在当前 Modal 中查找 `.tm-rmd-export-download-v1`，于其右侧插入自有按钮，不干预其他工具。
+2. 在当前 Modal 中查找 `.tm-rmd-export-download-v1`，以相同的绝对定位容器作为参照，在下载按钮右侧 6px 放置 30×30px 纯图标按钮。仅插入 DOM 相邻位置不足以决定视觉位置；不干预其他工具。
 3. 点击时检查当前 ProseMirror 文档中的标志：没有则插入，有且有效则直接打开；重复或畸形则停止。
 4. 在 NocoDB 页面创建约 `92vw × 90vh` 的 Modal，创建新的 iframe，打开 `https://mindmap.380782744.xyz/m/{uuid}`。
 5. Mind-map 自行判断：未登录则登录并回到原 UUID；文件缺失则显示确认创建；已有文件则进入编辑。GET 页面本身不会创建 JSON。
@@ -31,7 +31,8 @@
 
 ## UI 与兼容性
 
-- 标准入口位于“下载 Markdown”右边，不占用 NocoDB 原生右侧关闭按钮区域。
+- 标准入口位于“下载 Markdown”右边，不占用 NocoDB 原生右侧关闭按钮区域。按钮只显示 30×30px 图标，悬停显示「打开关联的思维导图」提示；与 TOC/导出按钮共享绝对定位参照，根据下载按钮的 offsetTop、offsetLeft、offsetWidth 更新坐标。
+- 通过 ResizeObserver 监听下载按钮尺寸变化、MutationObserver 监听其 class/style，窗口 resize 时同步位置；富文本弹窗或锚点被卸载、替换时销毁旧按钮及观察器，避免重复挂载。
 - 尽量不抢走编辑器焦点，工具栏按下鼠标时使用 `preventDefault()`，不要在文档正文增加 UI 节点。
 - 弹窗 UI 采用深色外框；iframe 内的 UI 由 Mind-map 自己控制。
 - 使用预连接提升首次启动网络准备，但不创建隐藏 iframe、不复用常驻实例、不建立 Service Worker/持久缓存。
@@ -54,7 +55,7 @@
 4. 未登录、缺失 JSON、已有 JSON、回收站、无权限：Mind-map 页面分别按自身规则处理。
 5. 关闭并重新打开：每次是新的 iframe；多个 Rich Text 不串 UUID。
 6. 其他工具栏脚本：TOC、复制/下载 Markdown、Markdown 表格、图片查看器与输入法不受影响。
-7. NocoDB 工具栏被 SPA 卸载后重建：按钮不累积、不操作旧编辑器实例。
+7. NocoDB 工具栏被 SPA 卸载后重建：按钮不累积、不操作旧编辑器实例；调整弹窗大小、TOC 显隐与页面窗口尺寸时按钮保持在下载按钮右侧，不掉到正文底部。
 8. 通过 HTTPS 实际地址测试 iframe 的 CSP、登录 Cookie、跨域及 Cloudflare 路径。
 9. 确认图片粘贴、节点快捷键、后台自动保存和 HTML 导出均由 Mind-map 控制。
 

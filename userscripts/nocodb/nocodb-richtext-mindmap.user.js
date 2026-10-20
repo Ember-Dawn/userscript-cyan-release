@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.1.0
+// @version      0.1.1
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在新建的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -26,6 +26,7 @@
   const UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
   const VALID_URL = new RegExp(`^https:\\/\\/mindmap\\.380782744\\.xyz\\/m\\/(${UUID_PATTERN})\\/?$`, 'i');
   const MARKER = new RegExp(`^${PREFIX}\\s*(https:\\/\\/\\S+)\\s*$`);
+  const buttonStates = new Map();
   let scheduled = false;
   let activeOverlay = null;
   let busy = false;
@@ -45,7 +46,8 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      .${BUTTON_CLASS} { display:inline-flex!important;align-items:center;justify-content:center;gap:5px;white-space:nowrap;flex-shrink:0; }
+      .${BUTTON_CLASS} { position:absolute;z-index:31;width:30px;min-width:30px;height:30px;padding:0;display:inline-flex!important;align-items:center;justify-content:center;visibility:hidden;opacity:0;transition:opacity 120ms ease; }
+      .${BUTTON_CLASS}.is-visible { visibility:visible;opacity:1; }
       .${BUTTON_CLASS} svg { width:15px;height:15px;flex:none; }
       #${OVERLAY_ID} { position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box;background:rgba(12,16,25,.67); }
       #${OVERLAY_ID} .tm-rmm-dialog { display:flex;flex-direction:column;width:92vw;height:90vh;min-width:0;min-height:0;background:#171b22;color:#e5e7eb;border:1px solid #3b4553;border-radius:11px;overflow:hidden;box-shadow:0 24px 75px rgba(0,0,0,.4);font:13px/1.5 system-ui,sans-serif; }
@@ -103,26 +105,70 @@
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="9" width="7" height="6" rx="1.5"/><rect x="15" y="3" width="7" height="6" rx="1.5"/><rect x="15" y="15" width="7" height="6" rx="1.5"/><path d="M9 12h3m0 0V6h3m-3 6v6h3"/></svg>';
   }
 
+  function destroyButtonState(state) {
+    if (!state || state.destroyed) return;
+    state.destroyed = true;
+    state.resizeObserver?.disconnect();
+    state.anchorObserver?.disconnect();
+    state.button.remove();
+    buttonStates.delete(state.dialog);
+  }
+
+  function positionButton(state) {
+    if (!state || state.destroyed) return;
+    const { dialog, anchor, host, button } = state;
+    if (!dialog.isConnected || !anchor.isConnected || anchor.parentElement !== host ||
+        !getEditor(dialog) || anchor.getClientRects().length === 0) {
+      button.classList.remove('is-visible');
+      return;
+    }
+    // The Markdown export buttons are absolutely positioned in this same host.
+    // DOM sibling order alone does not position our button beside them.
+    button.style.top = `${anchor.offsetTop}px`;
+    button.style.left = `${anchor.offsetLeft + anchor.offsetWidth + 6}px`;
+    button.classList.add('is-visible');
+  }
+
   function syncButtons() {
+    for (const state of [...buttonStates.values()]) {
+      if (!state.dialog.isConnected || !state.anchor.isConnected ||
+          state.anchor.parentElement !== state.host ||
+          !state.dialog.contains(state.editorDom) || !getEditor(state.dialog)) {
+        destroyButtonState(state);
+      } else {
+        positionButton(state);
+      }
+    }
+
     const dialogs = [...document.querySelectorAll(MODAL_SELECTOR)];
     for (const dialog of dialogs) {
       const editor = getEditor(dialog);
       const anchor = dialog.querySelector(ANCHOR_SELECTOR);
       if (!editor || !anchor || !anchor.isConnected) continue;
-      const parent = anchor.parentElement;
-      if (!parent) continue;
-      let button = parent.querySelector(`.${BUTTON_CLASS}`);
-      if (!button) {
-        button = document.createElement('button');
-        button.type = 'button';
-        button.className = `ant-btn ant-btn-text small theme-default bordered nc-btn-shadow nc-button ${BUTTON_CLASS}`;
-        button.title = '打开关联的思维导图';
-        button.setAttribute('aria-label', '思维导图');
-        button.innerHTML = `${buttonIcon()}<span>思维导图</span>`;
-        button.addEventListener('mousedown', (event) => event.preventDefault());
-        button.addEventListener('click', () => openFromDialog(dialog));
-        anchor.insertAdjacentElement('afterend', button);
+      const host = anchor.parentElement;
+      if (!host) continue;
+      if (buttonStates.has(dialog)) continue;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `ant-btn ant-btn-text small theme-default bordered nc-btn-shadow nc-button ${BUTTON_CLASS}`;
+      button.title = '打开关联的思维导图';
+      button.setAttribute('aria-label', '思维导图');
+      button.innerHTML = buttonIcon();
+      button.addEventListener('mousedown', (event) => event.preventDefault());
+      button.addEventListener('click', () => openFromDialog(dialog));
+      anchor.insertAdjacentElement('afterend', button);
+      const state = {
+        dialog, anchor, host, editorDom: editor.view.dom, button,
+        resizeObserver: null, anchorObserver: null, destroyed: false,
+      };
+      buttonStates.set(dialog, state);
+      if (typeof ResizeObserver === 'function') {
+        state.resizeObserver = new ResizeObserver(() => positionButton(state));
+        state.resizeObserver.observe(anchor);
       }
+      state.anchorObserver = new MutationObserver(() => positionButton(state));
+      state.anchorObserver.observe(anchor, { attributes: true, attributeFilter: ['class', 'style'] });
+      positionButton(state);
     }
   }
 
@@ -220,4 +266,5 @@
   addStyle();
   scheduleSync();
   new MutationObserver(scheduleSync).observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('resize', scheduleSync, { passive: true });
 })();
