@@ -4,6 +4,13 @@
 
 该脚本集中维护 ChatGPT 网页版中不改变对话内容和发送行为的显示层增强。当前版本整合了原“ChatGPT 宽屏”和“ChatGPT 文件链接高亮助手”的现役功能，并在 Composer 上沿显示当前对话名称。
 
+## v0.3.5 底部 Composer 周围背景统一
+
+- 依据页面 Console 结果，主界面 `main` 已是 `#f4f4f2`，但 `FullHeightPageSurfaceLayout` 的直接子布局容器 `::before` 仍使用 `#fcfcfc`，造成输入框周边颜色不一致。
+- 仅在浅色模式下覆盖该伪元素的 `background-color: #f4f4f2`；选择器限定在页面布局容器的直接子级，不使用构建生成的完整 hash 类名，也不隐藏伪元素。
+- Composer 输入框本体继续沿用 `#fafaf9`，不修改布局、尺寸、圆角、阴影、代码块、弹窗或深色模式。
+- 真实页面需验证底部背景无色差、浅色输入框保持原样及深色模式不受影响。
+
 ## v0.3.4 浅色模式对话背景统一
 
 - 根据浏览器 computed style 诊断，原主对话区域 `main.MainContentSurface-*` 为 `#fcfcfc`，外围 `FullHeightPageSurfaceLayout-*` 为 `#f9f9f9`，即使 `--main-surface-primary` 已设为 `#f4f4f2` 也不会自动覆盖这两层。
@@ -129,7 +136,7 @@ SPA 路由通过 `pushState`、`replaceState` 和 `popstate` 变化时，脚本�
 --composer-surface-primary: #fafaf9
 ```
 
-同时覆盖新版对话主内容表面和外层整页布局的非主题变量背景；`html` / `body` 一并统一为 `#f4f4f2`。代码块等内层组件不受影响，深色模式不应用这部分背景覆盖。
+同时覆盖新版对话主内容表面和外层整页布局的非主题变量背景；`html` / `body` 一并统一为 `#f4f4f2`。代码块等内层组件不受影响，浅色模式另对 `FullHeightPageSurfaceLayout` 直接子布局容器的 `::before` 背景色设为 `#f4f4f2`，解决 Composer 周边底色不一致；深色模式不应用这部分背景覆盖。
 
 ## 历史合并
 

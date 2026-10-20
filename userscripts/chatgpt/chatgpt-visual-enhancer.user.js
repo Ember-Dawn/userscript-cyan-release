@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.3.4
+// @version      0.3.5
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，显示当前对话名称，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.4';
+    const VERSION = '0.3.5';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -53,6 +53,11 @@ html:not(.dark),
 html:not(.dark) body,
 html:not(.dark) main[class*="MainContentSurface-"],
 html:not(.dark) [class*="FullHeightPageSurfaceLayout-"] {
+    background-color: #f4f4f2 !important;
+}
+
+/* 浅色模式：修正页面布局直系容器的底部背景伪元素，保留其原有遮罩与布局。 */
+html:not(.dark) [class*="FullHeightPageSurfaceLayout-"] > div.relative.flex::before {
     background-color: #f4f4f2 !important;
 }
 
