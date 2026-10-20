@@ -1,4 +1,4 @@
-# NocoDB Rich Text × Mind-map 联动（v0.1.1）
+# NocoDB Rich Text × Mind-map 联动（v0.1.2）
 
 ## 目标与职责
 
@@ -17,7 +17,7 @@
 - 接受预期域名、HTTPS、`/m/{uuid}`（末尾斜杠可选）和规范 UUID 格式，读取已有关联；新建 UUID 使用 `crypto.randomUUID()`。
 - 每个 Rich Text 只允许一个标志。多条、畸形、或写在段落以外的可疑标志必须阻止操作并提示手动处理。
 - URL 可由 Tiptap 自动生成链接节点；检查时读取 ProseMirror 文档文本而非解析 `innerHTML`。
-- 在没有标志时，使用当前 DOM 的 `editor.editor.commands.insertContentAt(doc.content.size, paragraph, { updateSelection: false })` 插入独立段落，并立即检查写入结果。不会直接修改 ProseMirror DOM，也不会直接发送 NocoDB API 请求。
+- 在没有标志时，使用当前 `editor.editor` 的 ProseMirror `state.tr` + `view.dispatch()` 一次性写入两个顶层段落：关联标志段落与一个末尾空段落。若整个编辑器只有一个默认空段落，就替换它而不在标志前留下空行；若末尾已有空段落则复用其位置；否则追加。末尾空段落由 ProseMirror 自然渲染为带 `ProseMirror-trailingBreak` 的 `<br>`。此操作参与原生撤销/重做，不修改 `innerHTML`、不发送 NocoDB API。
 - 成功插入后乐观地立即打开 Modal；NocoDB 的保存是否已持久化是另一回事。若用户撤销标志或 NocoDB 保存失败，Mind-map 可能留下未关联文件，此风险按照设计备忘接受。
 
 ## 打开流程
@@ -49,7 +49,7 @@
 
 ## 回归检查
 
-1. 无标志：插入独立段落，检查 Tiptap 撤销/重做与 NocoDB 保存。
+1. 无标志：空文档不产生前置空段落；非空文档保留已有正文；关联标志后始终恰好追加或保留一个空段落（由 ProseMirror 显示末尾 `<br>`）；检查撤销/重做和 NocoDB 保存。
 2. 已有合法标志：复用 UUID，不重复插入；自动链接格式仍能识别。
 3. 畸形、多条或代码块中的标志：停止并提示。
 4. 未登录、缺失 JSON、已有 JSON、回收站、无权限：Mind-map 页面分别按自身规则处理。

@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.1.1
+// @version      0.1.2
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在新建的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -94,11 +94,29 @@
   function buildUrl(id) { return `${ORIGIN}/m/${id}`; }
 
   function insertMarker(editor, url) {
-    const before = editor.state.doc.content.size;
-    const paragraph = { type: 'paragraph', content: [{ type: 'text', text: `${PREFIX}${url}` }] };
-    // At the end of the document, the block is a sibling, not text pasted into a current paragraph.
-    const ok = editor.commands.insertContentAt(before, paragraph, { updateSelection: false });
-    return Boolean(ok);
+    const { state, view } = editor;
+    const { doc, schema } = state;
+    const paragraphType = schema.nodes.paragraph;
+    if (!paragraphType || !view || view.dom !== editor.view.dom) return false;
+
+    const marker = paragraphType.create(null, schema.text(`${PREFIX}${url}`));
+    const trailing = paragraphType.create(); // Renders as <p><br class="ProseMirror-trailingBreak"></p>.
+    const last = doc.lastChild;
+    const lastIsEmpty = last?.type === paragraphType && last.content.size === 0;
+    const isEmptyDocument = doc.childCount === 1 && lastIsEmpty;
+    const tr = state.tr;
+
+    if (isEmptyDocument) {
+      // Replace the editor's placeholder, rather than leaving a blank line above the marker.
+      tr.replaceWith(0, doc.content.size, [marker, trailing]);
+    } else if (lastIsEmpty) {
+      // Reuse the final empty paragraph as the marker, and create one trailing blank.
+      tr.replaceWith(doc.content.size - last.nodeSize, doc.content.size, [marker, trailing]);
+    } else {
+      tr.insert(doc.content.size, [marker, trailing]);
+    }
+    view.dispatch(tr);
+    return true;
   }
 
   function buttonIcon() {
