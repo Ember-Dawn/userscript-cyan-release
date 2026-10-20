@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.1.2
+// @version      0.1.3
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在新建的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -100,7 +100,11 @@
     if (!paragraphType || !view || view.dom !== editor.view.dom) return false;
 
     const marker = paragraphType.create(null, schema.text(`${PREFIX}${url}`));
-    const trailing = paragraphType.create(); // Renders as <p><br class="ProseMirror-trailingBreak"></p>.
+    // A hardBreak makes the trailing empty line visibly editable, not just a
+    // ProseMirror placeholder that can be hard to notice after blur.
+    const trailing = schema.nodes.hardBreak
+      ? paragraphType.create(null, schema.nodes.hardBreak.create())
+      : paragraphType.create();
     const last = doc.lastChild;
     const lastIsEmpty = last?.type === paragraphType && last.content.size === 0;
     const isEmptyDocument = doc.childCount === 1 && lastIsEmpty;
@@ -116,7 +120,9 @@
       tr.insert(doc.content.size, [marker, trailing]);
     }
     view.dispatch(tr);
-    return true;
+    const newLast = editor.state.doc.lastChild;
+    return Boolean(newLast?.type === paragraphType &&
+      (newLast.content.size === 0 || newLast.firstChild?.type === schema.nodes.hardBreak));
   }
 
   function buttonIcon() {

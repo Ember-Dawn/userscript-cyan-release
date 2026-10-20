@@ -1,4 +1,4 @@
-# NocoDB Rich Text × Mind-map 联动（v0.1.2）
+# NocoDB Rich Text × Mind-map 联动（v0.1.3）
 
 ## 目标与职责
 
@@ -68,3 +68,11 @@
 正式安装和自动更新使用公开发布仓库 `userscript-cyan-release` 中的 `userscripts/nocodb/nocodb-richtext-mindmap.user.js`。源脚本 metadata 中的私有开发 Raw 地址由发布工作流在公开脚本副本中自动替换；本说明不嵌入私有 Raw 下载链接。
 
 发布后由 `userscript-cyan-release` 提供公开安装和更新。
+
+
+### v0.1.3 可见尾部空行
+
+- 新插入一条关联标志时，单个 ProseMirror transaction 同时写入标志段落和一个尾部空段落。
+- 尾部优先使用 `hardBreak` 节点，使末尾的空行明确可见；若 Schema 不支持 hardBreak，则保留普通空段落。
+- 空白编辑器不保留标志前的占位空段落，已有合法标志再次打开时不改动内容。
+- 实测时重点检查保存后重新打开以及一次撤销是否可以整体恢复插入前的文档。
