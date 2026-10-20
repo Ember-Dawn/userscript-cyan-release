@@ -4,6 +4,12 @@
 
 该脚本集中维护 ChatGPT 网页版中不改变对话内容和发送行为的显示层增强。当前版本整合了原“ChatGPT 宽屏”和“ChatGPT 文件链接高亮助手”的现役功能，并在 Composer 上沿显示当前对话名称。
 
+## v0.3.6 Footer 独立背景层适配
+
+- 页面 DOM 中 `[data-thread-scroll-footer="true"]` 包含一个 `aria-hidden="true"`、`bg-surface` 的独立绝对定位背景子节点，与 `data-pip-obstacle="thread-footer"` 所在的 Composer 内容层分离。
+- 浅色模式仅覆盖 `[data-thread-scroll-footer="true"] > [aria-hidden="true"].bg-surface` 的 `background-color: #f4f4f2`，避免依赖 `background-*`、`surface-*` 的构建 hash 后缀，也不改变定位、层级、宽度或交互。
+- 保留 v0.3.5 已生效的 Workspace `::before` 背景覆盖、Composer 本体的 `#fafaf9` 主题变量及深色模式。HTML 结构已确认，但需在真实浏览器中检查背景色覆盖后的视觉效果。
+
 ## v0.3.5 底部 Composer 周围背景统一
 
 - 依据页面 Console 结果，主界面 `main` 已是 `#f4f4f2`，但 `FullHeightPageSurfaceLayout` 的直接子布局容器 `::before` 仍使用 `#fcfcfc`，造成输入框周边颜色不一致。
@@ -136,7 +142,7 @@ SPA 路由通过 `pushState`、`replaceState` 和 `popstate` 变化时，脚本�
 --composer-surface-primary: #fafaf9
 ```
 
-同时覆盖新版对话主内容表面和外层整页布局的非主题变量背景；`html` / `body` 一并统一为 `#f4f4f2`。代码块等内层组件不受影响，浅色模式另对 `FullHeightPageSurfaceLayout` 直接子布局容器的 `::before` 背景色设为 `#f4f4f2`，解决 Composer 周边底色不一致；深色模式不应用这部分背景覆盖。
+同时覆盖新版对话主内容表面和外层整页布局的非主题变量背景；`html` / `body` 一并统一为 `#f4f4f2`。代码块等内层组件不受影响，浅色模式另对 `FullHeightPageSurfaceLayout` 直接子布局容器的 `::before` 和 `data-thread-scroll-footer` 下独立的 `bg-surface` 背景层设为 `#f4f4f2`；深色模式不应用这部分背景覆盖。
 
 ## 历史合并
 
@@ -187,4 +193,4 @@ node --check userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 5. 新对话显示“新对话”，`temporary-chat=true` 显示“临时对话”；
 6. 长标题不会侵入右侧顺序任务按钮和轮数 badge，占用空间不足时单行省略，悬停仍能看到完整标题；
 7. 旧版 `a[href]`、`button`、`[data-file-reference="true"]` 和新版 DIL `span[role="link"]` 的下载入口均能高亮，包括流式补全文案；普通链接不得误高亮；
-8. 浅色模式下检测对话 `main`、整页布局、`html` 和 `body` 为 `#f4f4f2`，代码块背景与 Composer 背景保持自身颜色；深色模式不应用该背景覆盖；正文宽屏与临时对话提示保持不变。
+8. 浅色模式下检测对话 `main`、整页布局、`html`、`body` 以及 Footer 独立 `bg-surface` 背景层为 `#f4f4f2`，代码块背景与 Composer 本体背景保持自身颜色；深色模式不应用该背景覆盖；正文宽屏与临时对话提示保持不变。
