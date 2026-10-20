@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.1.3
+// @version      0.1.4
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在新建的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -61,6 +61,15 @@
       #${OVERLAY_ID} .tm-rmm-loading[hidden] { display:none!important; }
       #${OVERLAY_ID} .tm-rmm-actions { display:flex;gap:10px; }
       #${OVERLAY_ID} .tm-rmm-retry { cursor:pointer;padding:6px 15px;border-radius:6px;border:1px solid #687587;background:#293344;color:#fff; }
+      /* Parent modal follows the OS/browser theme; iframe theme remains independent. */
+      @media (prefers-color-scheme: light) {
+        #${OVERLAY_ID} .tm-rmm-dialog { background:#f7f8fa;color:#243247;border-color:#d6dee8;box-shadow:0 24px 75px rgba(28,42,62,.18); }
+        #${OVERLAY_ID} .tm-rmm-header { border-bottom-color:#dce3ec; }
+        #${OVERLAY_ID} .tm-rmm-close:hover { background:#e9edf4; }
+        #${OVERLAY_ID} .tm-rmm-loading { background:#f7f8fa;color:#516176; }
+        #${OVERLAY_ID} .tm-rmm-retry { border-color:#c7d2e1;background:#fff;color:#243247; }
+        #${OVERLAY_ID} .tm-rmm-retry:hover { background:#edf2f8; }
+      }
       @media(max-width:700px) { #${OVERLAY_ID} { padding:5px; } #${OVERLAY_ID} .tm-rmm-dialog { width:100%;height:96vh; } }
     `;
     (document.head || document.documentElement).appendChild(style);
@@ -100,11 +109,10 @@
     if (!paragraphType || !view || view.dom !== editor.view.dom) return false;
 
     const marker = paragraphType.create(null, schema.text(`${PREFIX}${url}`));
-    // A hardBreak makes the trailing empty line visibly editable, not just a
-    // ProseMirror placeholder that can be hard to notice after blur.
-    const trailing = schema.nodes.hardBreak
-      ? paragraphType.create(null, schema.nodes.hardBreak.create())
-      : paragraphType.create();
+    // NocoDB strips one trailing empty paragraph on initial persistence.
+    // Two real empty paragraphs preserve one visible blank paragraph on reopen.
+    // Keep the marker and both blanks in a single undoable transaction.
+    const trailing = [paragraphType.create(), paragraphType.create()];
     const last = doc.lastChild;
     const lastIsEmpty = last?.type === paragraphType && last.content.size === 0;
     const isEmptyDocument = doc.childCount === 1 && lastIsEmpty;
@@ -112,17 +120,22 @@
 
     if (isEmptyDocument) {
       // Replace the editor's placeholder, rather than leaving a blank line above the marker.
-      tr.replaceWith(0, doc.content.size, [marker, trailing]);
+      tr.replaceWith(0, doc.content.size, [marker, ...trailing]);
     } else if (lastIsEmpty) {
       // Reuse the final empty paragraph as the marker, and create one trailing blank.
-      tr.replaceWith(doc.content.size - last.nodeSize, doc.content.size, [marker, trailing]);
+      tr.replaceWith(doc.content.size - last.nodeSize, doc.content.size, [marker, ...trailing]);
     } else {
-      tr.insert(doc.content.size, [marker, trailing]);
+      tr.insert(doc.content.size, [marker, ...trailing]);
     }
     view.dispatch(tr);
-    const newLast = editor.state.doc.lastChild;
-    return Boolean(newLast?.type === paragraphType &&
-      (newLast.content.size === 0 || newLast.firstChild?.type === schema.nodes.hardBreak));
+    const updated = editor.state.doc;
+    if (updated.childCount < 3) return false;
+    const markerNode = updated.child(updated.childCount - 3);
+    const blankA = updated.child(updated.childCount - 2);
+    const blankB = updated.child(updated.childCount - 1);
+    return markerNode.type === paragraphType && markerNode.textContent === `${PREFIX}${url}` &&
+      blankA.type === paragraphType && blankA.content.size === 0 &&
+      blankB.type === paragraphType && blankB.content.size === 0;
   }
 
   function buttonIcon() {
