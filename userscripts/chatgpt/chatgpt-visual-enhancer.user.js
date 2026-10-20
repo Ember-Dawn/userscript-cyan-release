@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.3.3
+// @version      0.3.4
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，显示当前对话名称，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.3';
+    const VERSION = '0.3.4';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -49,7 +49,10 @@ html:not(.dark) {
     --composer-surface-primary: #fafaf9 !important;
 }
 
-html:not(.dark) body {
+html:not(.dark),
+html:not(.dark) body,
+html:not(.dark) main[class*="MainContentSurface-"],
+html:not(.dark) [class*="FullHeightPageSurfaceLayout-"] {
     background-color: #f4f4f2 !important;
 }
 

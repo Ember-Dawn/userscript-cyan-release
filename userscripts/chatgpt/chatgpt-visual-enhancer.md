@@ -4,6 +4,12 @@
 
 该脚本集中维护 ChatGPT 网页版中不改变对话内容和发送行为的显示层增强。当前版本整合了原“ChatGPT 宽屏”和“ChatGPT 文件链接高亮助手”的现役功能，并在 Composer 上沿显示当前对话名称。
 
+## v0.3.4 浅色模式对话背景统一
+
+- 根据浏览器 computed style 诊断，原主对话区域 `main.MainContentSurface-*` 为 `#fcfcfc`，外围 `FullHeightPageSurfaceLayout-*` 为 `#f9f9f9`，即使 `--main-surface-primary` 已设为 `#f4f4f2` 也不会自动覆盖这两层。
+- 仅在 `html:not(.dark)` 浅色模式下，将 `html`、`body`、主内容表面 `main[class*="MainContentSurface-"]` 及整页布局 `[class*="FullHeightPageSurfaceLayout-"]` 背景统一为 `#f4f4f2`；不匹配代码块和弹窗，也不修改 Composer 原有 `#fafaf9`。
+- 使用组件类名的稳定语义前缀，不依赖构建生成的后缀；文件高亮、标题完整性检查和其余交互维持 v0.3.3 行为。
+
 ## v0.3.3 对话标题 Composer 迁移与完整性修复
 
 - 当前存在 `/c/<id>` 时只选择 `thread` Composer；优先选择与 URL ID 一致的 portal，同时允许 `local-chatgpt:*` / `WEB:*` 作为有效的临时身份，避免首条消息绑定正式 UUID 后丢失标题。明确属于其他正式 UUID 的 portal 会被拒绝。
@@ -123,7 +129,7 @@ SPA 路由通过 `pushState`、`replaceState` 和 `popstate` 变化时，脚本�
 --composer-surface-primary: #fafaf9
 ```
 
-深色模式不应用这部分背景覆盖。
+同时覆盖新版对话主内容表面和外层整页布局的非主题变量背景；`html` / `body` 一并统一为 `#f4f4f2`。代码块等内层组件不受影响，深色模式不应用这部分背景覆盖。
 
 ## 历史合并
 
@@ -174,4 +180,4 @@ node --check userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 5. 新对话显示“新对话”，`temporary-chat=true` 显示“临时对话”；
 6. 长标题不会侵入右侧顺序任务按钮和轮数 badge，占用空间不足时单行省略，悬停仍能看到完整标题；
 7. 旧版 `a[href]`、`button`、`[data-file-reference="true"]` 和新版 DIL `span[role="link"]` 的下载入口均能高亮，包括流式补全文案；普通链接不得误高亮；
-8. 原有白天模式、正文宽屏和临时对话 Composer 背景行为保持不变。
+8. 浅色模式下检测对话 `main`、整页布局、`html` 和 `body` 为 `#f4f4f2`，代码块背景与 Composer 背景保持自身颜色；深色模式不应用该背景覆盖；正文宽屏与临时对话提示保持不变。
