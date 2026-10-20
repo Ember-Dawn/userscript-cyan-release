@@ -27,7 +27,7 @@
 3. 点击时检查当前 ProseMirror 文档中的标志：没有则插入，有且有效则直接打开；重复或畸形则停止。
 4. 在 NocoDB 页面创建约 `92vw × 90vh` 的 Modal，创建新的 iframe，打开 `https://mindmap.380782744.xyz/m/{uuid}`。
 5. Mind-map 自行判断：未登录则登录并回到原 UUID；文件缺失则显示确认创建；已有文件则进入编辑。GET 页面本身不会创建 JSON。
-6. 关闭 Modal 时移除 iframe，下次打开重新创建。打开过程中提供加载界面；iframe `error` 可重试或新标签页打开。跨域页面内的登录/HTTP 状态无法由油猴直接读取。
+6. v0.1.4 关闭 Modal 时移除 iframe；v0.2.0 关闭时保存并隐藏单个常驻 iframe。打开过程中提供加载界面；iframe `error` 可重试或新标签页打开。跨域页面内的登录/HTTP 状态无法由油猴直接读取。
 
 ## UI 与兼容性
 
@@ -35,7 +35,7 @@
 - 通过 ResizeObserver 监听下载按钮尺寸变化、MutationObserver 监听其 class/style，窗口 resize 时同步位置；富文本弹窗或锚点被卸载、替换时销毁旧按钮及观察器，避免重复挂载。
 - 尽量不抢走编辑器焦点，工具栏按下鼠标时使用 `preventDefault()`，不要在文档正文增加 UI 节点。
 - 弹窗 UI 采用深色外框；iframe 内的 UI 由 Mind-map 自己控制。
-- 使用预连接提升首次启动网络准备，但不创建隐藏 iframe、不复用常驻实例、不建立 Service Worker/持久缓存。
+- 使用预连接提升首次启动网络准备，但首次点击前不创建 iframe；v0.2.0 在 NocoDB 页面生命周期内复用单个 iframe，不建立 Service Worker/持久缓存。
 - 编辑器内容由 Tiptap 正常事务修改，以配合撤销/重做、NocoDB 自动保存和其他 Rich Text 脚本。
 - 不向 Mind-map iframe 发送 NocoDB 正文、API 凭据或 `postMessage` 旧版数据协议。
 
@@ -53,7 +53,7 @@
 2. 已有合法标志：复用 UUID，不重复插入；自动链接格式仍能识别。
 3. 畸形、多条或代码块中的标志：停止并提示。
 4. 未登录、缺失 JSON、已有 JSON、回收站、无权限：Mind-map 页面分别按自身规则处理。
-5. 关闭并重新打开：每次是新的 iframe；多个 Rich Text 不串 UUID。
+5. 关闭并重新打开：v0.2.0 复用同一个 iframe，但必须安全卸载旧 UUID 对应画布；多个 Rich Text 不串 UUID。
 6. 其他工具栏脚本：TOC、复制/下载 Markdown、Markdown 表格、图片查看器与输入法不受影响。
 7. NocoDB 工具栏被 SPA 卸载后重建：按钮不累积、不操作旧编辑器实例；调整弹窗大小、TOC 显隐与页面窗口尺寸时按钮保持在下载按钮右侧，不掉到正文底部。
 8. 通过 HTTPS 实际地址测试 iframe 的 CSP、登录 Cookie、跨域及 Cloudflare 路径。
@@ -84,3 +84,11 @@
 - 两个空段落是基于当前 NocoDB 的实测兼容方案：初次插入两个，关闭并重新打开后保留一个。此行为取决于宿主的持久化/规范化，未来升级 NocoDB 必须回归验证。
 - 不使用 `hardBreak` 伪造尾部空段落；插入后检查末尾三个节点的内容和顺序。已有合法标志时不修改正文。
 - 回归测试应覆盖：空正文/非空正文插入、一次撤销、关闭再打开后是否保留一个空段落、系统浅色/深色切换时 Modal 外框和加载状态是否随之变化。
+
+## v0.2.0：单 iframe + SPA 内部切换
+
+- 首次点击时仍以 `/m/{uuid}` 创建 iframe。关闭不再直接移除：发送 `CLOSE`，等待 MindMap 现有保存守卫通过并内部返回主页后才隐藏 Modal。保存失败时保留画布，不强制重载。
+- 再次打开不同 UUID 时，发送 `OPEN`，复用 Vue SPA / JS 模块；不复用旧导图 JSON、撤销历史或画布实例。整个 NocoDB 页面只保留一个 iframe，关闭/刷新 NocoDB 页面时由浏览器自然销毁。
+- 协议 `mindmap-embed` v1，消息 `READY`、`OPEN`、`CLOSE`、`RESULT`，含 requestId；严格校验消息来源、窗口对象和 UUID。无需 NocoDB API 或后端接口。
+- 部署必须先更新 MindMap 再更新本油猴脚本。若超时/未收到协议回应，Modal 保留，并提示检查或重试，避免误认为已经安全保存。
+- 回归测试：打开 A → 修改立即关闭 → 打开 B → 打开 C；断网、revision 冲突、登录失效；富文本标志验证和主题兼容继续保持。

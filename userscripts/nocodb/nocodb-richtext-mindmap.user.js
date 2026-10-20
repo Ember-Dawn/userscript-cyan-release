@@ -5,8 +5,8 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.1.4
-// @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在新建的 Modal iframe 中编辑；富文本只保存永久 URL。
+// @version      0.2.0
+// @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在复用的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
 // @run-at       document-idle
@@ -31,6 +31,8 @@
   let activeOverlay = null;
   let busy = false;
   let overlayKeydownCleanup = null;
+  let session = null;
+  const PROTOCOL = 'mindmap-embed';
 
   function addPreconnect() {
     if (document.querySelector('link[data-tm-rmm-preconnect]')) return;
@@ -49,6 +51,7 @@
       .${BUTTON_CLASS} { position:absolute;z-index:31;width:30px;min-width:30px;height:30px;padding:0;display:inline-flex!important;align-items:center;justify-content:center;visibility:hidden;opacity:0;transition:opacity 120ms ease; }
       .${BUTTON_CLASS}.is-visible { visibility:visible;opacity:1; }
       .${BUTTON_CLASS} svg { width:15px;height:15px;flex:none; }
+      #${OVERLAY_ID}[hidden] { display:none!important; }
       #${OVERLAY_ID} { position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box;background:rgba(12,16,25,.67); }
       #${OVERLAY_ID} .tm-rmm-dialog { display:flex;flex-direction:column;width:92vw;height:90vh;min-width:0;min-height:0;background:#171b22;color:#e5e7eb;border:1px solid #3b4553;border-radius:11px;overflow:hidden;box-shadow:0 24px 75px rgba(0,0,0,.4);font:13px/1.5 system-ui,sans-serif; }
       #${OVERLAY_ID} .tm-rmm-header { display:flex;align-items:center;gap:12px;padding:0 12px;min-height:41px;border-bottom:1px solid #343c49; }
@@ -215,24 +218,81 @@
     requestAnimationFrame(() => { scheduled = false; syncButtons(); });
   }
 
-  function closeOverlay() {
-    if (!activeOverlay) return;
-    overlayKeydownCleanup?.();
-    overlayKeydownCleanup = null;
-    activeOverlay.remove();
-    activeOverlay = null;
+  // Keep exactly one iframe for the lifetime of the NocoDB page. Closing
+  // unmounts the active map in MindMap before hiding the iframe.
+  function pendingRequest(type, uuid) {
+    if (!session || !session.ready || session.pending) return Promise.reject(new Error('编辑器尚未准备好或正在处理其他操作'));
+    const current = session;
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (current.pending?.requestId !== requestId) return;
+        current.pending = null;
+        reject(new Error('MindMap 响应超时，请检查当前页面后重试'));
+      }, 20000);
+      current.pending = { requestId, resolve, reject, timer };
+      current.iframe.contentWindow.postMessage({ protocol: PROTOCOL, version: 1,
+        type, requestId, ...(uuid ? { uuid } : {}) }, ORIGIN);
+    });
   }
 
-  function openIframe(url) {
+  function showFailure(text) {
+    if (!session) return;
+    const {loading, message, retry, login} = session;
+    message.textContent = text;
+    loading.hidden = false;
+    retry.hidden = false;
+    login.hidden = false;
+  }
+
+  async function closeOverlay() {
+    if (!session || !activeOverlay || session.pending || session.closing) return;
+    const current = session;
+    current.closing = true;
+    current.message.textContent = '正在保存并关闭导图…';
+    current.loading.hidden = false;
+    try {
+      await pendingRequest('CLOSE');
+      current.overlay.hidden = true;
+      current.loading.hidden = true;
+      activeOverlay = null;
+      current.uuid = null;
+    } catch (error) {
+      // Never reload a possibly dirty editor after a failed/unknown save.
+      current.loading.hidden = true;
+      window.alert('未能安全关闭导图：' + error.message + '。请在 MindMap 内确认保存状态后重试。');
+    } finally { current.closing = false; }
+  }
+
+  async function openIframe(url) {
     addStyle();
-    closeOverlay();
+    const uuid = VALID_URL.exec(url)?.[1]?.toLowerCase();
+    if (!uuid) return;
+    if (session) {
+      const current = session;
+      current.desiredUuid = uuid;
+      current.overlay.hidden = false;
+      activeOverlay = current.overlay;
+      current.loading.hidden = false;
+      current.message.textContent = '正在打开思维导图…';
+      current.retry.hidden = true;
+      current.login.hidden = true;
+      try {
+        if (current.uuid !== uuid) await pendingRequest('OPEN', uuid);
+        current.uuid = uuid;
+        current.loading.hidden = true;
+      } catch (error) {
+        showFailure('无法切换导图：' + error.message);
+      }
+      return;
+    }
     const overlay = document.createElement('div');
     overlay.id = OVERLAY_ID;
     overlay.innerHTML = `
       <section class="tm-rmm-dialog" role="dialog" aria-modal="true" aria-label="思维导图">
         <header class="tm-rmm-header"><div class="tm-rmm-title">思维导图</div><button type="button" class="tm-rmm-close" aria-label="关闭思维导图" title="关闭">×</button></header>
         <div class="tm-rmm-body"><iframe title="Mind-map 编辑器" allow="clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>
-          <div class="tm-rmm-loading"><span class="tm-rmm-message">正在加载 Mind-map…</span><div class="tm-rmm-actions"><button type="button" class="tm-rmm-retry" hidden>重新加载</button><button type="button" class="tm-rmm-retry tm-rmm-login" hidden>在新标签页打开</button></div></div>
+          <div class="tm-rmm-loading"><span class="tm-rmm-message">正在加载 Mind-map…</span><div class="tm-rmm-actions"><button type="button" class="tm-rmm-retry" hidden>重试</button><button type="button" class="tm-rmm-retry tm-rmm-login" hidden>在新标签页打开</button></div></div>
         </div>
       </section>`;
     const iframe = overlay.querySelector('iframe');
@@ -240,38 +300,54 @@
     const message = overlay.querySelector('.tm-rmm-message');
     const retry = overlay.querySelector('.tm-rmm-retry');
     const login = overlay.querySelector('.tm-rmm-login');
-    const launch = () => {
+    session = { overlay, iframe, loading, message, retry, login, uuid, desiredUuid: uuid, ready: false, pending: null, closing: false };
+    activeOverlay = overlay;
+    iframe.addEventListener('load', () => { loading.hidden = true; });
+    iframe.addEventListener('error', () => showFailure('导图页面加载失败，请重试或在新标签页打开。'));
+    retry.addEventListener('click', async () => {
+      if (session.pending || session.closing) return;
       loading.hidden = false;
       retry.hidden = true;
       login.hidden = true;
-      message.textContent = '正在加载 Mind-map…';
-      // Create a new iframe on each Modal open; never reuse a previous editor instance.
-      iframe.src = url;
-    };
-    iframe.addEventListener('load', () => { loading.hidden = true; });
-    iframe.addEventListener('error', () => {
-      message.textContent = '导图页面加载失败，请重新加载，或在新标签页打开。';
-      loading.hidden = false;
-      retry.hidden = false;
-      login.hidden = false;
+      message.textContent = '正在重新连接 MindMap…';
+      if (!session.ready) {
+        // Only retry a failed initial bootstrap. Never reload a live editor.
+        iframe.src = buildUrl(session.desiredUuid);
+        return;
+      }
+      try {
+        await pendingRequest('OPEN', session.desiredUuid);
+        session.uuid = session.desiredUuid;
+        loading.hidden = true;
+      } catch (error) { showFailure('无法切换导图：' + error.message); }
     });
-    retry.addEventListener('click', () => {
-      iframe.src = 'about:blank';
-      launch();
-    });
-    login.addEventListener('click', () => window.open(url, '_blank', 'noopener,noreferrer'));
+    login.addEventListener('click', () => window.open(buildUrl(session.desiredUuid), '_blank', 'noopener,noreferrer'));
     overlay.querySelector('.tm-rmm-close').addEventListener('click', closeOverlay);
-    overlay.addEventListener('mousedown', (event) => { if (event.target === overlay) closeOverlay(); });
-    const onKeydown = (event) => { if (event.key === 'Escape' && activeOverlay === overlay) { event.stopPropagation(); closeOverlay(); } };
+    overlay.addEventListener('mousedown', event => { if (event.target === overlay) closeOverlay(); });
+    const onKeydown = event => {
+      if (event.key === 'Escape' && activeOverlay === overlay) { event.stopPropagation(); closeOverlay(); }
+    };
     document.addEventListener('keydown', onKeydown, true);
     overlayKeydownCleanup = () => document.removeEventListener('keydown', onKeydown, true);
     document.body.appendChild(overlay);
-    activeOverlay = overlay;
-    launch();
+    iframe.src = url;
   }
 
+  window.addEventListener('message', event => {
+    if (!session || event.origin !== ORIGIN || event.source !== session.iframe.contentWindow) return;
+    const data = event.data;
+    if (!data || data.protocol !== PROTOCOL || data.version !== 1) return;
+    if (data.type === 'READY') { session.ready = true; return; }
+    if (data.type !== 'RESULT' || !session.pending || data.requestId !== session.pending.requestId) return;
+    const pending = session.pending;
+    session.pending = null;
+    clearTimeout(pending.timer);
+    if (data.ok === true) pending.resolve();
+    else pending.reject(new Error(typeof data.message === 'string' && data.message ? data.message : '操作未完成'));
+  });
+
   function openFromDialog(dialog) {
-    if (busy || activeOverlay) return;
+    if (busy || activeOverlay || session?.pending || session?.closing) return;
     const editor = getEditor(dialog);
     if (editor?.view?.composing) { window.alert('请先完成当前输入法输入，再打开思维导图。'); return; }
     if (!editor || !dialog.isConnected) { window.alert('当前 Rich Text 编辑器已关闭，请重新打开后再试。'); return; }
