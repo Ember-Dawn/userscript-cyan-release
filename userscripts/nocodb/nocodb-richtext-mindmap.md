@@ -92,3 +92,9 @@
 - 协议 `mindmap-embed` v1，消息 `READY`、`OPEN`、`CLOSE`、`RESULT`，含 requestId；严格校验消息来源、窗口对象和 UUID。无需 NocoDB API 或后端接口。
 - 部署必须先更新 MindMap 再更新本油猴脚本。若超时/未收到协议回应，Modal 保留，并提示检查或重试，避免误认为已经安全保存。
 - 回归测试：打开 A → 修改立即关闭 → 打开 B → 打开 C；断网、revision 冲突、登录失效；富文本标志验证和主题兼容继续保持。
+
+### v0.2.1: Embedded navigation safety
+
+- Wait for actual iframe OPEN completion (including canvas readiness) before removing the parent overlay; allow a longer bounded timeout for opening a map.
+- A timed-out operation is considered *indeterminate*, not canceled: keep the pending request slot until the matching RESULT arrives, so a second UUID switch cannot overtake it. A lost reply requires a parent-page reload; never reload an iframe that might contain unsaved edits.
+- Preserve single-iframe lifetime and the existing NocoDB marker/ProseMirror behavior.

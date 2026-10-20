@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.2.0
+// @version      0.2.1
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在复用的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -227,10 +227,12 @@
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (current.pending?.requestId !== requestId) return;
-        current.pending = null;
-        reject(new Error('MindMap 响应超时，请检查当前页面后重试'));
-      }, 20000);
-      current.pending = { requestId, resolve, reject, timer };
+        // Do not free this slot: the child may still complete the operation.
+        // A late RESULT will reconcile the session before another command.
+        current.pending.timedOut = true;
+        reject(new Error('MindMap 响应超时；操作结果尚不确定，请等待完成或刷新 NocoDB 页面'));
+      }, type === 'OPEN' ? 70000 : 25000);
+      current.pending = { requestId, resolve, reject, timer, type, uuid, timedOut: false };
       current.iframe.contentWindow.postMessage({ protocol: PROTOCOL, version: 1,
         type, requestId, ...(uuid ? { uuid } : {}) }, ORIGIN);
     });
@@ -342,6 +344,18 @@
     const pending = session.pending;
     session.pending = null;
     clearTimeout(pending.timer);
+    if (pending.timedOut) {
+      // The parent already reported uncertainty; reconcile safely instead of
+      // pretending the old UUID is still active.
+      if (data.ok === true) {
+        session.uuid = pending.type === 'CLOSE' ? null : pending.uuid;
+        if (pending.type === 'CLOSE') {
+          session.overlay.hidden = true;
+          activeOverlay = null;
+        } else if (session.desiredUuid === pending.uuid) session.loading.hidden = true;
+      }
+      return;
+    }
     if (data.ok === true) pending.resolve();
     else pending.reject(new Error(typeof data.message === 'string' && data.message ? data.message : '操作未完成'));
   });
