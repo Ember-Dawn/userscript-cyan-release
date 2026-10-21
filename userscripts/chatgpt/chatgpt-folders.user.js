@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.5.1
+// @version      1.5.2
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -40,7 +40,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
 
   const APP = 'cgfm';
   const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.5.1';
+  const VERSION = '1.5.2';
   const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
   const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
   const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
@@ -86,6 +86,7 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
   let folderButtonPinned = false;
   let folderPointerInButton = false;
   let folderPointerInPane = false;
+  let lastPanelPointer = null; // Pointer coordinates, recorded only inside the owned panel.
   let folderCloseTimer = null;
   let ownedDragActive = false;
   let renderDeferredDuringPanelDrag = false;
@@ -1296,11 +1297,16 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
       rootEl.setAttribute('data-cgfm-version', VERSION);
       bindRootEvents(rootEl);
       rootEl.addEventListener('pointerenter', event => {
+        lastPanelPointer = { x: event.clientX, y: event.clientY };
         folderPointerInPane = true;
         clearTimeout(folderCloseTimer);
         syncSidebarVisibility();
       });
+      rootEl.addEventListener('pointermove', event => {
+        lastPanelPointer = { x: event.clientX, y: event.clientY };
+      }, { passive: true });
       rootEl.addEventListener('pointerleave', event => {
+        lastPanelPointer = { x: event.clientX, y: event.clientY };
         folderPointerInPane = false;
         scheduleFolderClose();
       });
@@ -3720,11 +3726,17 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     else updateRecentDom();
   }
 
-  // Reconcile hover after a rename. Pointerleave may have fired during DOM replacement,
-  // so the cached hover booleans must not keep an unpinned panel open forever.
+  // DOM replacement after rename can transiently invalidate :hover. Re-check the
+  // last pointer location against the panel rectangle only when visibility is reconciled.
   function reconcileFolderHover() {
     folderPointerInButton = !!(folderButton?.querySelector('button')?.matches(':hover'));
-    folderPointerInPane = !!(rootEl?.matches(':hover'));
+    if (rootEl?.isConnected && lastPanelPointer && rootEl.getAttribute('data-cgfm-visible') === 'true') {
+      const rect = rootEl.getBoundingClientRect();
+      folderPointerInPane = lastPanelPointer.x >= rect.left && lastPanelPointer.x < rect.right &&
+        lastPanelPointer.y >= rect.top && lastPanelPointer.y < rect.bottom;
+    } else {
+      folderPointerInPane = !!(rootEl?.matches(':hover'));
+    }
   }
 
   // A single DOM-local edit session; never re-render its owning row until it ends.
@@ -3953,12 +3965,6 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     } finally {
       clearTimeout(timeout);
       session.busy = false;
-      if (chatRenameDialog !== session) {
-        requestAnimationFrame(() => {
-          reconcileFolderHover(); syncSidebarVisibility();
-          if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
-        });
-      }
     }
   }
 
@@ -4087,10 +4093,9 @@ ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folde
     clearTimeout(ownedDragSafetyTimer);
     ownedDragSafetyTimer = null;
     // Reconcile pointer hover after the overlay is removed.
-    const hovered = rootEl?.matches(':hover') || false;
-    folderPointerInPane = hovered;
+    reconcileFolderHover();
     syncSidebarVisibility();
-    if (!hovered) scheduleFolderClose();
+    if (!folderPointerInPane) scheduleFolderClose();
     if (needsRender) queueRender();
   }
 
