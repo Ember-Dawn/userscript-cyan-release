@@ -98,3 +98,10 @@
 - Wait for actual iframe OPEN completion (including canvas readiness) before removing the parent overlay; allow a longer bounded timeout for opening a map.
 - A timed-out operation is considered *indeterminate*, not canceled: keep the pending request slot until the matching RESULT arrives, so a second UUID switch cannot overtake it. A lost reply requires a parent-page reload; never reload an iframe that might contain unsaved edits.
 - Preserve single-iframe lifetime and the existing NocoDB marker/ProseMirror behavior.
+
+## v0.2.3：无标题栏嵌入弹窗
+
+- 移除 NocoDB 侧 MindMap 弹窗的顶部“思维导图”标题栏；iframe 画布直接占满弹窗高度，保留原有尺寸。
+- 关闭按钮改为弹窗右上角 32×32px 悬浮叉号，使用随浅色/深色系统主题调整的半透明背景；不修改 MindMap iframe 内的 UI。
+- 关闭按钮仍调用既有 `closeOverlay()`，保留 CLOSE 保存守卫、单 iframe 复用、失败提示和按 Esc 关闭逻辑；原有 `fullscreen` iframe 权限继续保留。
+- 回归：浅/深色主题下关闭按钮可见且不遮挡主要编辑控件；CLOSE 成功才隐藏，保存失败不隐藏；全屏/退出全屏、再次打开不同 UUID 仍正常。
