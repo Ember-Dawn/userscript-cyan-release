@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.2.1
+// @version      0.2.2
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在复用的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -293,7 +293,7 @@
     overlay.innerHTML = `
       <section class="tm-rmm-dialog" role="dialog" aria-modal="true" aria-label="思维导图">
         <header class="tm-rmm-header"><div class="tm-rmm-title">思维导图</div><button type="button" class="tm-rmm-close" aria-label="关闭思维导图" title="关闭">×</button></header>
-        <div class="tm-rmm-body"><iframe title="Mind-map 编辑器" allow="clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+        <div class="tm-rmm-body"><iframe title="Mind-map 编辑器" allow="clipboard-read; clipboard-write; fullscreen" referrerpolicy="strict-origin-when-cross-origin"></iframe>
           <div class="tm-rmm-loading"><span class="tm-rmm-message">正在加载 Mind-map…</span><div class="tm-rmm-actions"><button type="button" class="tm-rmm-retry" hidden>重试</button><button type="button" class="tm-rmm-retry tm-rmm-login" hidden>在新标签页打开</button></div></div>
         </div>
       </section>`;
