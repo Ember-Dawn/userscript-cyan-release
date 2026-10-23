@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.2.7
+// @version      0.2.8
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -54,6 +54,7 @@
         liveUserMessageIds: new Map(),
         pendingNewConversationUserIds: new Map(),
         mappingBaselineReady: false,
+        freshAwaitingBaseline: false,
     };
 
     let statusButton = null;
@@ -129,13 +130,24 @@
         }
     }
 
+    function normalizeConversationId(conversationId) {
+        if (typeof conversationId !== 'string') {
+            return conversationId;
+        }
+        try {
+            return decodeURIComponent(conversationId);
+        } catch {
+            return conversationId;
+        }
+    }
+
     function isLocalConversationId(conversationId) {
-        return typeof conversationId === 'string' && /^local-chatgpt:/i.test(conversationId);
+        return typeof conversationId === 'string' && /^local-chatgpt:/i.test(normalizeConversationId(conversationId));
     }
 
     function isTemporaryConversationId(conversationId) {
         return typeof conversationId === 'string' && (
-            /^WEB:/i.test(conversationId) ||
+            /^WEB:/i.test(normalizeConversationId(conversationId)) ||
             isLocalConversationId(conversationId)
         );
     }
@@ -296,6 +308,19 @@
             state.knownUserMessageIds.add(id);
         }
         state.liveUserMessageIds = trailingLiveIds;
+        if (state.freshAwaitingBaseline && mappingIds.size > 0) {
+            // A newly created conversation must establish a server-backed count
+            // before enabling the persistent historical-maximum rule.
+            state.totalRounds = state.knownUserMessageIds.size;
+            state.source = 'mapping';
+            state.freshAwaitingBaseline = false;
+            state.mappingBaselineReady = true;
+            state.domIncrementReady = true;
+            seedVisibleUserMessageIds();
+            setCachedRoundCount(conversationId, state.totalRounds);
+            renderUiState();
+            return;
+        }
         // A natural batch can contain only a partial mapping after ChatGPT UI updates.
         // Never let that snapshot erase a higher cumulative count.
         const historicMaximum = getCachedRoundCount(conversationId)?.maxRounds ?? 0;
@@ -319,6 +344,27 @@
             if (cachedTotal === null || nextTotal > cachedTotal) {
                 setCachedRoundCount(conversationId, nextTotal);
             }
+            return;
+        }
+
+        if (state.freshAwaitingBaseline) {
+            if (messageIds.size === 0) {
+                return;
+            }
+            // Temporary/local DOM identities may differ from persisted IDs.
+            // The first server messages response supplies the authoritative
+            // initial count, while visible DOM IDs are seeded only for dedup.
+            state.knownUserMessageIds = new Set(messageIds);
+            for (const id of getVisibleUserMessageIds()) {
+                state.knownUserMessageIds.add(id);
+            }
+            state.totalRounds = messageIds.size;
+            state.source = 'messages';
+            state.freshAwaitingBaseline = false;
+            state.domIncrementReady = true;
+            seedVisibleUserMessageIds();
+            setCachedRoundCount(conversationId, state.totalRounds);
+            renderUiState();
             return;
         }
 
@@ -846,7 +892,9 @@
     }
 
     function renderTemporaryConversationStats() {
-        state.totalRounds = state.pendingNewConversationUserIds.size;
+        // Before a server baseline, one pending user turn can expose multiple
+        // transient DOM identities. Do not equate ID count with round count.
+        state.totalRounds = state.pendingNewConversationUserIds.size > 0 ? 1 : 0;
         state.source = 'live';
         renderUiState();
     }
@@ -858,11 +906,13 @@
 
         state.knownUserMessageIds = new Set(state.pendingNewConversationUserIds.keys());
         state.liveUserMessageIds = new Map(state.pendingNewConversationUserIds);
-        state.totalRounds = state.knownUserMessageIds.size;
+        // Show a provisional first turn, but do not persist provisional IDs
+        // to maxRounds or enable +1 until a server baseline is established.
+        state.totalRounds = 1;
         state.source = 'live';
-        state.domIncrementReady = true;
+        state.freshAwaitingBaseline = true;
+        state.domIncrementReady = false;
         seedVisibleUserMessageIds();
-        setCachedRoundCount(conversationId, state.totalRounds);
         renderUiState();
         return true;
     }
@@ -929,7 +979,7 @@
 
     function extractConversationPageId() {
         const match = location.pathname.match(/(?:^|\/)c\/([^/]+)\/?$/);
-        return match?.[1] ?? null;
+        return match ? normalizeConversationId(match[1]) : null;
     }
 
     function resetConversationRuntimeState() {
@@ -940,6 +990,7 @@
         state.knownUserMessageIds.clear();
         state.liveUserMessageIds.clear();
         state.mappingBaselineReady = false;
+        state.freshAwaitingBaseline = false;
     }
 
     function handleNavigation() {

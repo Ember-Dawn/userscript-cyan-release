@@ -2,6 +2,21 @@
 
 `chatgpt-conversation-round-counter.user.js` 是用于 ChatGPT 网页版的 Tampermonkey 用户脚本。v0.2.x 使用被动 conversation 数据源计数核心：脚本不主动分页抓取历史，而是读取 ChatGPT 页面自己已经请求到的 conversation `mapping`，统计其中全部用户消息节点，并用 DOM 增量维护当前页面的新消息。v0.2.1 进一步修复 F5 首次加载时 Composer badge 可能错过挂载的问题。
 
+## v0.2.8 新建对话首轮误计数修复（2026-10-23）
+
+2026-10-23 复现：新建对话只发送一条 user 消息，badge 却显示 `5`；当时来源标记为 `messages`，但诊断中自然 GET `messages` 实际只有一条用户消息，且页面可见新版 search/bubble 对应同一个 message id。`messages` 来源标记只代表最后一次处理的数据源，不能推断 5 是由该响应产生。
+
+根因风险与修复：
+
+- ChatGPT 新会话路由可能出现 `/c/local-chatgpt%3A...`（`%3A` 是 `:` 的 URL 编码）。旧脚本直接取 pathname 片段，用 `/^local-chatgpt:/` 判临时 ID，因此误把编码状态当成正式 conversation。现在提取路由 ID 时进行安全 URL 解码，临时 ID 检测也统一规范化，保留解码失败容错。
+- 新会话临时 DOM 可能对同一轮产生多个不同的过渡 ID。临时状态仅用是否已有 pending user 消息显示 `0/1`，不再把临时 ID 集合大小直接当轮数；转换为正式 UUID 时先显示暂定 `1`，但**不写入 GM `maxRounds`**，也不提前启用 DOM `+1`。
+- 正式 UUID 之后，等待页面自然 GET `messages` 或 batch `mapping` 给出至少一个服务器 user message ID，再建立可信基线、恢复去重和正常增量，并从此启用历史最高值保护。首次 GET 建立时，当前可见 DOM 的 ID 只参与去重，不增加服务器返回的初始计数。
+- 这只影响新建对话的初次绑定；已有对话继续沿用 v0.2.7 的 `maxRounds` 单调保护。无需手动恢复、主动请求或自动分页。
+
+已知取舍：如果新建会话始终没有自然返回可用的服务器 user ID，正式 UUID 阶段将继续显示暂定轮数，且不会持久化该临时数；若很快连续发送多轮而服务器仍未提供基线，临时显示可能暂时偏低。这样优先避免把误增值永久写入 `maxRounds`。已存在的错误高缓存不会被本次自动清理。
+
+回归建议：新对话 `/ → /c/local-chatgpt%3A... → /c/<uuid>` 第一条只显示 1；自然 GET 返回 1 条 user 时保持 1；以后每发一条递增一次；切换已有长对话后不回退；DOM 不同锚点但同 ID 不重复计数。
+
 ## v0.2.7 历史累计轮数防回退（2026-10-08）
 
 2026-10-08 有用户反馈：持续聊天时轮数已达到 50 多轮，切换其他对话再回来后却只显示十多轮；新消息仍可实时递增。诊断发现降至 18 时 `badge.dataset.source = "messages"`，但这**不能证明** `messages` 导致下降：原有 `messages` fallback 本身使用 `Math.max`，不允许直接降低旧缓存。代码检查确认，v0.2.6 的 `applyMappingSnapshot()` 会无条件按当次 mapping 的 user message id 数重写 `totalRounds`，`setCachedRoundCount()` 也会无条件覆盖同一 conversation 的 GM 缓存。因此，一旦自然 batch 返回的 mapping 比之前少（可能为局部窗口、分支变化或真正数据减少；尚未抓包确定原因），旧累计轮数可能被覆盖并永久遗失。
