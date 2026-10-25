@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.2.3
+// @version      0.2.4
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在复用的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -23,7 +23,7 @@
   const OVERLAY_ID = 'tm-rmm-overlay-v1';
   const STYLE_ID = 'tm-rmm-style-v1';
   const PREFIX = '【mindmap】';
-  const UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  const UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
   const VALID_URL = new RegExp(`^https:\\/\\/mindmap\\.380782744\\.xyz\\/m\\/(${UUID_PATTERN})\\/?$`, 'i');
   const MARKER = new RegExp(`^${PREFIX}\\s*(https:\\/\\/\\S+)\\s*$`);
   const buttonStates = new Map();
@@ -33,6 +33,7 @@
   let overlayKeydownCleanup = null;
   let session = null;
   const PROTOCOL = 'mindmap-embed';
+  const INITIAL_READY_TIMEOUT_MS = 15000;
 
   function addPreconnect() {
     if (document.querySelector('link[data-tm-rmm-preconnect]')) return;
@@ -245,6 +246,14 @@
     login.hidden = false;
   }
 
+  function waitForBridge(current) {
+    clearTimeout(current.readyTimer);
+    current.readyTimer = setTimeout(() => {
+      if (session !== current || current.ready || activeOverlay !== current.overlay) return;
+      showFailure('尚未收到 MindMap 的通信就绪消息。请检查嵌入权限、网络或在新标签页打开。');
+    }, INITIAL_READY_TIMEOUT_MS);
+  }
+
   async function closeOverlay() {
     if (!session || !activeOverlay || session.pending || session.closing) return;
     const current = session;
@@ -300,10 +309,20 @@
     const message = overlay.querySelector('.tm-rmm-message');
     const retry = overlay.querySelector('.tm-rmm-retry');
     const login = overlay.querySelector('.tm-rmm-login');
-    session = { overlay, iframe, loading, message, retry, login, uuid, desiredUuid: uuid, ready: false, pending: null, closing: false };
+    session = { overlay, iframe, loading, message, retry, login, uuid, desiredUuid: uuid,
+      ready: false, readyTimer: null, pending: null, closing: false };
     activeOverlay = overlay;
-    iframe.addEventListener('load', () => { loading.hidden = true; });
-    iframe.addEventListener('error', () => showFailure('导图页面加载失败，请重试或在新标签页打开。'));
+    const current = session;
+    // iframe load is not authentication, bridge, or canvas readiness.
+    iframe.addEventListener('load', () => {
+      if (session !== current || current.ready || activeOverlay !== overlay || !retry.hidden) return;
+      message.textContent = '页面已加载，正在等待 MindMap 通信就绪…';
+    });
+    iframe.addEventListener('error', () => {
+      if (session !== current) return;
+      clearTimeout(current.readyTimer);
+      showFailure('导图页面加载失败，请重试或在新标签页打开。');
+    });
     retry.addEventListener('click', async () => {
       if (session.pending || session.closing) return;
       loading.hidden = false;
@@ -311,7 +330,13 @@
       login.hidden = true;
       message.textContent = '正在重新连接 MindMap…';
       if (!session.ready) {
-        // Only retry a failed initial bootstrap. Never reload a live editor.
+        // No READY means we cannot prove the child is inactive. The overlay has
+        // kept it inaccessible; require confirmation before reloading anyway.
+        if (!window.confirm('MindMap 尚未确认通信就绪。重新加载 iframe 可能丢失未保存内容，确定重试吗？')) {
+          showFailure('尚未重新加载。请在新标签页检查 MindMap 状态。');
+          return;
+        }
+        waitForBridge(session);
         iframe.src = buildUrl(session.desiredUuid);
         return;
       }
@@ -330,6 +355,7 @@
     document.addEventListener('keydown', onKeydown, true);
     overlayKeydownCleanup = () => document.removeEventListener('keydown', onKeydown, true);
     document.body.appendChild(overlay);
+    waitForBridge(current);
     iframe.src = url;
   }
 
@@ -337,7 +363,18 @@
     if (!session || event.origin !== ORIGIN || event.source !== session.iframe.contentWindow) return;
     const data = event.data;
     if (!data || data.protocol !== PROTOCOL || data.version !== 1) return;
-    if (data.type === 'READY') { session.ready = true; return; }
+    if (data.type === 'READY') {
+      session.ready = true;
+      clearTimeout(session.readyTimer);
+      // READY confirms only the embedded message bridge. The iframe itself
+      // remains responsible for showing login, missing-map and canvas states.
+      if (activeOverlay === session.overlay && !session.pending && !session.closing) {
+        session.loading.hidden = true;
+        session.retry.hidden = true;
+        session.login.hidden = true;
+      }
+      return;
+    }
     if (data.type !== 'RESULT' || !session.pending || data.requestId !== session.pending.requestId) return;
     const pending = session.pending;
     session.pending = null;
