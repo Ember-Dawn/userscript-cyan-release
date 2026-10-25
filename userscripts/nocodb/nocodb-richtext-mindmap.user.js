@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.2.4
+// @version      0.2.5
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在复用的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -33,7 +33,6 @@
   let overlayKeydownCleanup = null;
   let session = null;
   const PROTOCOL = 'mindmap-embed';
-  const INITIAL_READY_TIMEOUT_MS = 15000;
 
   function addPreconnect() {
     if (document.querySelector('link[data-tm-rmm-preconnect]')) return;
@@ -246,14 +245,6 @@
     login.hidden = false;
   }
 
-  function waitForBridge(current) {
-    clearTimeout(current.readyTimer);
-    current.readyTimer = setTimeout(() => {
-      if (session !== current || current.ready || activeOverlay !== current.overlay) return;
-      showFailure('尚未收到 MindMap 的通信就绪消息。请检查嵌入权限、网络或在新标签页打开。');
-    }, INITIAL_READY_TIMEOUT_MS);
-  }
-
   async function closeOverlay() {
     if (!session || !activeOverlay || session.pending || session.closing) return;
     const current = session;
@@ -310,18 +301,21 @@
     const retry = overlay.querySelector('.tm-rmm-retry');
     const login = overlay.querySelector('.tm-rmm-login');
     session = { overlay, iframe, loading, message, retry, login, uuid, desiredUuid: uuid,
-      ready: false, readyTimer: null, pending: null, closing: false };
+      ready: false, pending: null, closing: false };
     activeOverlay = overlay;
     const current = session;
-    // iframe load is not authentication, bridge, or canvas readiness.
+    // load only means that the iframe document loaded. Show the embedded page
+    // regardless of READY so login, error and create-confirmation screens remain visible.
+    // READY is still required before issuing OPEN/CLOSE bridge commands.
     iframe.addEventListener('load', () => {
-      if (session !== current || current.ready || activeOverlay !== overlay || !retry.hidden) return;
-      message.textContent = '页面已加载，正在等待 MindMap 通信就绪…';
+      if (session !== current || activeOverlay !== overlay || current.pending || current.closing) return;
+      current.loading.hidden = true;
+      current.retry.hidden = true;
+      current.login.hidden = true;
     });
     iframe.addEventListener('error', () => {
       if (session !== current) return;
-      clearTimeout(current.readyTimer);
-      showFailure('导图页面加载失败，请重试或在新标签页打开。');
+      showFailure('导图页面加载失败，请在新标签页打开检查。');
     });
     retry.addEventListener('click', async () => {
       if (session.pending || session.closing) return;
@@ -330,13 +324,12 @@
       login.hidden = true;
       message.textContent = '正在重新连接 MindMap…';
       if (!session.ready) {
-        // No READY means we cannot prove the child is inactive. The overlay has
-        // kept it inaccessible; require confirmation before reloading anyway.
+        // No READY does not mean the iframe is empty. Its contents may already
+        // be editable, so require confirmation before reloading.
         if (!window.confirm('MindMap 尚未确认通信就绪。重新加载 iframe 可能丢失未保存内容，确定重试吗？')) {
           showFailure('尚未重新加载。请在新标签页检查 MindMap 状态。');
           return;
         }
-        waitForBridge(session);
         iframe.src = buildUrl(session.desiredUuid);
         return;
       }
@@ -355,7 +348,6 @@
     document.addEventListener('keydown', onKeydown, true);
     overlayKeydownCleanup = () => document.removeEventListener('keydown', onKeydown, true);
     document.body.appendChild(overlay);
-    waitForBridge(current);
     iframe.src = url;
   }
 
@@ -365,7 +357,6 @@
     if (!data || data.protocol !== PROTOCOL || data.version !== 1) return;
     if (data.type === 'READY') {
       session.ready = true;
-      clearTimeout(session.readyTimer);
       // READY confirms only the embedded message bridge. The iframe itself
       // remains responsible for showing login, missing-map and canvas states.
       if (activeOverlay === session.overlay && !session.pending && !session.closing) {

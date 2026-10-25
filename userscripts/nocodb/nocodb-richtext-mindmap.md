@@ -1,4 +1,4 @@
-# NocoDB Rich Text × MindMap 联动（v0.2.4）
+# NocoDB Rich Text × MindMap 联动（v0.2.5）
 
 ## 职责与数据边界
 
@@ -30,9 +30,8 @@
 
 - 协议为 `mindmap-embed` **v1**：MindMap 发 `READY`，油猴发 `OPEN`/`CLOSE`（含 `requestId`、可选 UUID），MindMap 回 `RESULT`。双方校验 `postMessage` 的 origin、source、协议及版本；不传递富文本正文和凭据。
 - `READY` **只代表 MindMap 通信桥已启动**，不代表登录成功、文件存在或画布已经就绪。MindMap 自己负责显示登录、缺失文件的创建确认、画布加载和错误；`OPEN` 的成功 `RESULT` 则由 MindMap 在切换完成后发送。
-- **v0.2.4 首次加载行为**：iframe 的 `load` 事件不再自动隐藏 NocoDB 侧加载层；必须收到来自指定 MindMap origin、指定 iframe window 的有效 `READY` 才展示 iframe 内容。等待 15 秒仍未收到时保留加载层，提供重试和在新标签页打开；此超时不表示 MindMap 一定故障，也不会自动重载 iframe。
-- 未收到 `READY` 时，用户主动重试重新加载 iframe 需要二次确认（可能丢失未保存内容）；新标签页入口不强制关闭现有 iframe。`READY` 到达后不再把同一等待当成失败。
-- `OPEN` 默认最多等待约 70 秒，`CLOSE` 约 25 秒。超时只代表结果未知，不自动释放 pending 请求槽；必须等待匹配的迟到 `RESULT`，才能避免后续操作越过仍在进行的请求。丢失响应时，建议先在 MindMap 检查保存状态，再决定是否刷新 NocoDB 页面。
+- **v0.2.5 首次加载行为**：iframe 触发 `load` 时隐藏 NocoDB 外层加载层，让用户直接看到 MindMap 的登录、缺失文件、画布或错误页面。`load` 不代表通信桥、认证或画布就绪；`READY` 仍独立标记通信可用，只有收到它才能发送 `OPEN/CLOSE`。
+- 不再因首次 15 秒未收到 `READY` 而显示阻挡 iframe 的失败遮罩。若确实触发 `error`，才提供重试与新标签页入口；没有 `READY` 时，重载 iframe 前仍需要用户确认，防止覆盖可能存在的编辑状态。
 - 关闭时依赖 MindMap 的 `flushActiveEditor()` 和路由保存守卫，而不是油猴读取 iframe 内的 dirty 状态；`CLOSE` 成功才隐藏。若 MindMap 尚未准备好或请求失败，弹窗不应伪装成安全关闭。
 
 ## 部署与兼容性
@@ -40,7 +39,7 @@
 - MindMap 必须配置 `MINDMAP_EMBED_ALLOWED_ORIGINS=https://nocodb.380782744.xyz`，其后端 CSP `frame-ancestors` 必须允许 NocoDB 嵌入；保留 Cookie、CSRF、权限及 origin 校验，不为方便 iframe 放宽鉴权。
 - 必须通过实际 HTTPS 站点验证跨域 iframe、登录跳转、Cookie、反向代理及 Cloudflare 行为。iframe 的 `load` 和 `error` 事件不能可靠反映内部 HTTP 状态。
 - 与 TOC、Markdown 导出、表格、图片查看器共存。不要向 ProseMirror 正文插入工具 UI，也不要修改其 selection 或注册多余插件。
-- 首次引入 MindMap 协议或以后修改联动协议时，先部署 MindMap，确认生效，再安装新版油猴；此次 v0.2.4 不改变 v1 消息结构，MindMap 核心无需因本次更新重新部署。
+- 首次引入 MindMap 协议或以后修改联动协议时，先部署 MindMap，确认生效，再安装新版油猴；此次 v0.2.5 不改变 v1 消息结构，MindMap 核心无需因本次更新重新部署。
 - 开发源脚本 metadata 的 Raw 链接指向私有 `userscript-cyan/main`；公开发布由工作流同步至 `userscript-cyan-release`，正式安装和更新通过公开 Raw 地址完成。
 
 ## 回归检查
@@ -48,13 +47,14 @@
 1. 标志：空/非空正文插入、已有有效 URL 复用、自动链接、多条/畸形/非段落标志拒绝；测试 UUID v4 正例，以及 v1/v7/版本位异常与非法 variant 的拒绝。
 2. ProseMirror：一次事务、撤销/重做、保存后重开、尾部空段落；中文输入法组词期间应先完成输入再打开。
 3. 工具栏：按钮始终位于下载 Markdown 右侧；调整弹窗大小、TOC 显隐、SPA 卸载/重建后不重挂、不错位、不抢编辑焦点。
-4. 首次打开：iframe `load` 不提前隐藏加载层；有效 `READY` 显示 iframe；无 `READY` 超时提示与重试、新标签页入口；迟到 `READY` 能恢复显示。
+4. 首次打开：iframe `load` 后可直接看到 MindMap 页面；即使尚未收到 `READY` 也不被遮罩阻挡；收到 `READY` 后允许安全发送 `OPEN/CLOSE`，并验证出错时的新标签页入口。
 5. 登录、缺失文件、回收站、权限异常、画布正在加载时，由 MindMap 内部展示正确页面，不把通信 `READY` 误写成“画布已准备好”。
 6. 复用与保存：打开 A → 改动并 CLOSE → 打开 B → 打开 C；冲突/断网/请求超时/迟到 RESULT 时不丢数据或串 UUID；重复操作不会覆盖已有 pending 请求。
 7. 全屏、Esc、关闭按钮、浅色/深色主题；关闭失败时保留弹窗，检查图片、节点快捷键、自动保存与 HTML 导出仍由 MindMap 控制。
 
 ## 版本记录与历史
 
+- **v0.2.5**：恢复 iframe `load` 后显示嵌入页面，避免等待 READY 遮挡登录或画布；READY 仍作为通信能力标记，保留安全重载确认。
 - **v0.2.4**：URL 关联校验与 MindMap UUID v4 一致；首次加载由可信 `READY` 而非 iframe `load` 控制外层加载状态；增加未收到 READY 的提示和谨慎重试。
 - **v0.2.3**：去掉外层 Modal 标题栏；右上角使用悬浮关闭按钮，保留全屏权限与保存守卫。
 - **v0.2.1**：打开其他 UUID 时等待 `OPEN RESULT`；请求超时后保留不确定状态，防止后续切换竞态。
