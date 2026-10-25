@@ -84,3 +84,10 @@ docker compose exec frontend sh -c 'printf "VITE_EMBED_ALLOWED_ORIGINS=%s\n" "$V
 - **v0.1.4**：外层弹窗根据系统主题变色；首次插入改为一个事务创建标志及两个真实空段落。
 
 旧版 NocoDB Grid Button + `MindMapData` 脚本 v0.3.2 已归档为 `archive/userscripts/nocodb-mindmap-v0.3.2.user.js` 与 `.md`。使用此新版联动时应在 Tampermonkey 停用/卸载旧版脚本。旧数据不会自动迁移到 MindMap Docker 文件。
+
+## v0.2.6：嵌入全屏与关闭手势
+
+- 删除 iframe 弹窗右上角额外叉号，避免遮挡 MindMap 自身的全屏及编辑工具。
+- 点击弹窗以外的暗色遮罩（按下与释放均在遮罩上）触发原有 `CLOSE` 保存守卫；从编辑器内部拖动到外侧不关闭。保存失败、冲突或超时仍保留弹窗。
+- 非全屏时，在 NocoDB 父页面按 Esc 仍可安全关闭；浏览器全屏状态及刚退出全屏的瞬间不得误触发 CLOSE。MindMap iframe 内部的 Esc 由 MindMap 自己优先处理全屏退出。
+- 回归：在 iframe 内进入/退出全屏，不意外关闭；正常点遮罩关闭；文件未保存时仍阻止关闭；连续 OPEN/CLOSE 不复用旧导图状态。

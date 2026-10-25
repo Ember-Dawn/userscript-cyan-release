@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-mindmap.user.js
-// @version      0.2.5
+// @version      0.2.6
 // @description  在 NocoDB LongText Rich Text 工具栏关联独立 Mind-map 文件，在复用的 Modal iframe 中编辑；富文本只保存永久 URL。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        none
@@ -54,8 +54,6 @@
       #${OVERLAY_ID}[hidden] { display:none!important; }
       #${OVERLAY_ID} { position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box;background:rgba(12,16,25,.67); }
       #${OVERLAY_ID} .tm-rmm-dialog { position:relative;display:flex;flex-direction:column;width:92vw;height:90vh;min-width:0;min-height:0;background:#171b22;color:#e5e7eb;border:1px solid #3b4553;border-radius:11px;overflow:hidden;box-shadow:0 24px 75px rgba(0,0,0,.4);font:13px/1.5 system-ui,sans-serif; }
-      #${OVERLAY_ID} .tm-rmm-close { position:absolute;top:8px;right:8px;z-index:3;display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;cursor:pointer;border:0;background:rgba(23,27,34,.82);color:#e5e7eb;font-size:23px;line-height:1;border-radius:7px; }
-      #${OVERLAY_ID} .tm-rmm-close:hover { background:#303845; }
       #${OVERLAY_ID} .tm-rmm-body { flex:1;position:relative;min-height:0;background:#fff; }
       #${OVERLAY_ID} iframe { width:100%;height:100%;border:0;display:block;background:#fff; }
       #${OVERLAY_ID} .tm-rmm-loading { position:absolute;inset:0;display:flex;justify-content:center;align-items:center;flex-direction:column;gap:13px;background:#171b22;color:#c9d2dd;z-index:1;padding:24px;text-align:center; }
@@ -65,8 +63,6 @@
       /* Parent modal follows the OS/browser theme; iframe theme remains independent. */
       @media (prefers-color-scheme: light) {
         #${OVERLAY_ID} .tm-rmm-dialog { background:#f7f8fa;color:#243247;border-color:#d6dee8;box-shadow:0 24px 75px rgba(28,42,62,.18); }
-        #${OVERLAY_ID} .tm-rmm-close { background:rgba(255,255,255,.9);color:#243247; }
-        #${OVERLAY_ID} .tm-rmm-close:hover { background:#e9edf4; }
         #${OVERLAY_ID} .tm-rmm-loading { background:#f7f8fa;color:#516176; }
         #${OVERLAY_ID} .tm-rmm-retry { border-color:#c7d2e1;background:#fff;color:#243247; }
         #${OVERLAY_ID} .tm-rmm-retry:hover { background:#edf2f8; }
@@ -290,7 +286,6 @@
     overlay.id = OVERLAY_ID;
     overlay.innerHTML = `
       <section class="tm-rmm-dialog" role="dialog" aria-modal="true" aria-label="思维导图">
-        <button type="button" class="tm-rmm-close" aria-label="关闭思维导图" title="关闭">×</button>
         <div class="tm-rmm-body"><iframe title="Mind-map 编辑器" allow="clipboard-read; clipboard-write; fullscreen" referrerpolicy="strict-origin-when-cross-origin"></iframe>
           <div class="tm-rmm-loading"><span class="tm-rmm-message">正在加载 Mind-map…</span><div class="tm-rmm-actions"><button type="button" class="tm-rmm-retry" hidden>重试</button><button type="button" class="tm-rmm-retry tm-rmm-login" hidden>在新标签页打开</button></div></div>
         </div>
@@ -340,10 +335,29 @@
       } catch (error) { showFailure('无法切换导图：' + error.message); }
     });
     login.addEventListener('click', () => window.open(buildUrl(session.desiredUuid), '_blank', 'noopener,noreferrer'));
-    overlay.querySelector('.tm-rmm-close').addEventListener('click', closeOverlay);
-    overlay.addEventListener('mousedown', event => { if (event.target === overlay) closeOverlay(); });
+    // A full click on the backdrop closes the editor, not a pointer drag that
+    // begins inside the iframe/dialog and happens to end outside.
+    let backdropPointer = null;
+    overlay.addEventListener('pointerdown', event => {
+      backdropPointer = event.target === overlay && event.button === 0 ? event.pointerId : null;
+    });
+    overlay.addEventListener('pointercancel', () => { backdropPointer = null; });
+    overlay.addEventListener('pointerup', event => {
+      const close = backdropPointer === event.pointerId && event.target === overlay;
+      backdropPointer = null;
+      if (close) void closeOverlay();
+    });
+    // Esc belongs to browser fullscreen first. A native fullscreen exit can
+    // precede keydown, so also ignore the immediate post-fullscreen interval.
+    let lastFullscreenExit = -Infinity;
+    document.addEventListener('fullscreenchange', () => {
+      if (!document.fullscreenElement) lastFullscreenExit = performance.now();
+    });
     const onKeydown = event => {
-      if (event.key === 'Escape' && activeOverlay === overlay) { event.stopPropagation(); closeOverlay(); }
+      if (event.key !== 'Escape' || activeOverlay !== overlay || event.isComposing) return;
+      if (document.fullscreenElement || performance.now() - lastFullscreenExit < 500) return;
+      event.stopPropagation();
+      void closeOverlay();
     };
     document.addEventListener('keydown', onKeydown, true);
     overlayKeydownCleanup = () => document.removeEventListener('keydown', onKeydown, true);
