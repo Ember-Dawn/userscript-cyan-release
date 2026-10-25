@@ -37,6 +37,28 @@
 ## 部署与兼容性
 
 - MindMap 必须配置 `MINDMAP_EMBED_ALLOWED_ORIGINS=https://nocodb.380782744.xyz`，其后端 CSP `frame-ancestors` 必须允许 NocoDB 嵌入；保留 Cookie、CSRF、权限及 origin 校验，不为方便 iframe 放宽鉴权。
+
+### NocoDB 能打开画布，却无法安全关闭：检查嵌入来源白名单
+
+**已实际遇到并确认的部署问题**：NocoDB 中的 MindMap iframe 可以显示并编辑导图；v0.2.4 可能一直显示「尚未收到 MindMap 的通信就绪消息」，v0.2.5 虽然能显示画布，点击右上角关闭按钮却提示「编辑器尚未准备好或正在处理其他操作」。即使 MindMap 内已手动返回「我的文件」页面，外层弹窗也可能无法关闭。用户补充 `MINDMAP_EMBED_ALLOWED_ORIGINS` 后已恢复正常。
+
+**原因**：iframe 页面能加载，不代表跨 origin 的 `postMessage` 已被授权。MindMap 的 `embedBridge.ts` 只会向允许的父页面 origin 发送 `READY`，也只会接收这些来源的 `OPEN`/`CLOSE`。没有把 NocoDB 源站加入白名单时，油猴始终保持 `session.ready=false`，因此不能发送安全关闭指令。**这不等同于导图保存失败；不要通过跳过 CLOSE 保存守卫来“修复”。**
+
+在 **MindMap 项目服务器**的 `~/app/mindmap/.env`（不是油猴脚本配置、也不是 NocoDB 的 `.env`）中设置：
+
+```dotenv
+MINDMAP_EMBED_ALLOWED_ORIGINS=https://nocodb.380782744.xyz
+```
+
+修改 `.env` 后，需要重新创建前端容器，让新的 Compose 环境变量传入 Vite；`docker compose restart frontend` **不会更新**已有容器的环境变量，无需仅为此重建镜像：
+
+```bash
+cd ~/app/mindmap
+docker compose up -d --no-deps frontend
+docker compose exec frontend sh -c 'printf "VITE_EMBED_ALLOWED_ORIGINS=%s\n" "$VITE_EMBED_ALLOWED_ORIGINS"'
+```
+
+应看到 `VITE_EMBED_ALLOWED_ORIGINS=https://nocodb.380782744.xyz`。随后**刷新 NocoDB 父页面**，重新打开同一张导图，验证关闭、再次打开与切换不同 UUID 均可正常执行。来源必须是完整的 HTTPS origin（不含路径、末尾斜杠或 `*`）；如果仍有问题，再单独排查 CSP `frame-ancestors`、登录 Cookie 与反向代理。不要把真实密码、Cookie 或 Token 粘贴到诊断记录中。
 - 必须通过实际 HTTPS 站点验证跨域 iframe、登录跳转、Cookie、反向代理及 Cloudflare 行为。iframe 的 `load` 和 `error` 事件不能可靠反映内部 HTTP 状态。
 - 与 TOC、Markdown 导出、表格、图片查看器共存。不要向 ProseMirror 正文插入工具 UI，也不要修改其 selection 或注册多余插件。
 - 首次引入 MindMap 协议或以后修改联动协议时，先部署 MindMap，确认生效，再安装新版油猴；此次 v0.2.5 不改变 v1 消息结构，MindMap 核心无需因本次更新重新部署。
