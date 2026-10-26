@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.2.0
+// @version      0.2.1
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -889,6 +889,10 @@
           return;
         }
         if (state.manualTocBrowsing) exitManualTocBrowsing(state, false);
+        // Images and asynchronous layout can invalidate cached heading offsets
+        // without changing heading text. Re-measure only after scroll is quiet.
+        syncScrollContainer(state);
+        refreshHeadingGeometry(state);
         commitActiveFromScroll(state, true);
       }, CONFIG.scrollQuietStage2Ms);
     }, CONFIG.scrollQuietStage1Ms);
@@ -1094,6 +1098,12 @@
     state.scrollContainer.addEventListener('scroll', state.onScroll, { passive: true });
     state.editor.addEventListener('compositionstart', state.onCompositionStart, false);
     state.editor.addEventListener('compositionend', state.onCompositionEnd, false);
+    // Image load does not necessarily resize the outer editor viewport.
+    // Capture it without per-image listeners; reuse the debounced geometry path.
+    state.onMediaLoad = (event) => {
+      if (event.target instanceof HTMLImageElement) scheduleGeometryRefresh(state, 100);
+    };
+    state.editor.addEventListener('load', state.onMediaLoad, true);
 
     state.editorObserver = new MutationObserver((mutations) => {
       if (!state || state.destroyed || !state.open) return;
@@ -1122,6 +1132,8 @@
       });
       state.layoutObserver.observe(state.root);
       state.layoutObserver.observe(state.contentWrap);
+      // Observe editor box changes too; scroll-stop calibration covers content-only shifts.
+      state.layoutObserver.observe(state.editor);
     }
     state.runtimeBound = true;
   }
@@ -1131,6 +1143,8 @@
     try { state.scrollContainer.removeEventListener('scroll', state.onScroll, false); } catch (_) {}
     try { state.editor.removeEventListener('compositionstart', state.onCompositionStart, false); } catch (_) {}
     try { state.editor.removeEventListener('compositionend', state.onCompositionEnd, false); } catch (_) {}
+    try { state.editor.removeEventListener('load', state.onMediaLoad, true); } catch (_) {}
+    state.onMediaLoad = null;
     try { state.editorObserver?.disconnect(); } catch (_) {}
     try { state.layoutObserver?.disconnect(); } catch (_) {}
     state.editorObserver = null;
