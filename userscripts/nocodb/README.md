@@ -12,6 +12,7 @@
 | NocoDB Rich Text 视觉样式增强 | `nocodb-richtext-style.user.js` | 为 H1-H6、加粗文字、`【xxx】` 和 `「xxx」` 提供显示层颜色增强；顶层普通段落与有序/无序列表后统一使用 1.0em 间距，列表内部和纯空段落不额外放大。 |
 | NocoDB Rich Text 图片查看器 | `nocodb-richtext-image.user.js` | 调整 Rich Text 正文图片宽度并居中；双击图片可在独立查看器中缩放、拖拽和查看原始尺寸。 |
 | NocoDB Markdown 表格 | `nocodb-markdown-table.user.js` | 将粘贴的 Markdown 表格转换为可显示、可编辑的表格。 |
+| NocoDB Rich Text Markdown 序列化修复 | `nocodb-richtext-markdown-fix.user.js` | 修复块级图片与后续标题、代码块、连续图片保存时拼接的问题；自动为新 Tiptap 实例安装。参见[详细说明](./nocodb-richtext-markdown-fix.md)。 |
 | NocoDB Rich Text Markdown 导出 | `nocodb-richtext-markdown-export.user.js` | 复制或下载当前 Rich Text 编辑器的全部内容为普通 Markdown。 |
 | NocoDB Rich Text 大纲 | `nocodb-richtext-outline.user.js` | 以纯 DOM 旁路方式显示可滚动、可调整宽度的 H1-H6 TOC。参见[详细说明](./nocodb-richtext-outline.md)。 |
 
@@ -22,6 +23,10 @@
 `nocodb-folders.user.js` 已归档并停止公开发布。该脚本曾长期配合 NocoDB v2026.05.1 使用；NocoDB v2026.08.1 原生加入 Data 侧边栏文件夹（Base Sections）后，不再作为现役脚本维护。
 
 旧版 `nocodb-richtext-outline.user.js` v46.0.2 已归档。归档版本采用 ProseMirror bridge + 标题快照 + DOM TOC 的混合路线，并已确认会触发“第一次按键后 selection 跳到文档后部”的编辑器异常。现役脚本已从零重写为纯 DOM 旁路方案，并从 v0.1.x 重新编号；不注册 ProseMirror plugin、不读写 selection；归档脚本仍保留在 `archive/userscripts/nocodb-richtext-outline-v46.0.2.user.js`，新架构详见 [`nocodb-richtext-outline.md`](./nocodb-richtext-outline.md)。
+
+## 块级图片的 Markdown 保存修复
+
+`nocodb-richtext-markdown-fix.user.js` 仅包装 NocoDB Tiptap Markdown 序列化器中的块级图片规则：先调用原生图片规则，再调用 `state.closeBlock(node)`，为图片后续的标题、代码块与连续图片保留块边界。它不修改原有 ProseMirror 文档、网络请求或数据库；对每个新建 Rich Text 编辑器实例独立安装。无法兼容时跳过，不尝试还原历史损坏数据。详细原理、安全边界与验收流程见 [`nocodb-richtext-markdown-fix.md`](./nocodb-richtext-markdown-fix.md)。
 
 ## Markdown 表格的实际保存与渲染结果
 
