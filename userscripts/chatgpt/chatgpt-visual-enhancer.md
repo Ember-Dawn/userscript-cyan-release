@@ -4,6 +4,12 @@
 
 该脚本集中维护 ChatGPT 网页版中不改变对话内容和发送行为的显示层增强。当前版本整合了原“ChatGPT 宽屏”和“ChatGPT 文件链接高亮助手”的现役功能，并在 Composer 上沿显示当前对话名称。
 
+## v0.3.7 临时对话 Composer 底部白条修复
+
+- 根据临时对话的浏览器 computed style，`[data-composer-body]` 背景已是浅青色，但其内部 `rounded-full bg-(--composer-layout-surface-background)` 工具栏容器为纯白色 `rgb(255, 255, 255)`，因此出现白条。
+- 只在标记了 `data-cg-temporary-chat="true"` 的 Composer 内，对使用 `bg-(--composer-layout-surface-background)` 的子容器设置 `background-color: transparent !important`，让外层临时对话浅青色透出。其他 Composer、按钮颜色和布局保持不变。
+- 此规则不限制浅色/深色主题，与现有临时对话高亮在两种主题下均生效的设计一致；需要在真实浏览器中确认浅青色连贯、普通对话及深色模式未发生回归。
+
 ## v0.3.6 Footer 独立背景层适配
 
 - 页面 DOM 中 `[data-thread-scroll-footer="true"]` 包含一个 `aria-hidden="true"`、`bg-surface` 的独立绝对定位背景子节点，与 `data-pip-obstacle="thread-footer"` 所在的 Composer 内容层分离。
@@ -128,7 +134,7 @@ SPA 路由继续复用本脚本已有的 `pushState`、`replaceState` 和 `popst
 
 临时状态直接标记在当前 Composer 节点上，而不再依赖页面根元素。这样浏览器刷新后，即使 ChatGPT 在初始化过程中重新创建 Composer，脚本现有的 MutationObserver 也会在新节点插入时重新同步临时状态。
 
-临时对话仅在原 Composer 背景中混入 10% `#0891B2`，浅色和深色模式采用相同混合比例；不增加边框、外环或阴影。
+临时对话在原 Composer 背景中混入 10% `#0891B2`，浅色和深色模式采用相同混合比例；新版 Composer 内部的圆角工具栏如果使用独立白色背景，则仅在临时对话时将其设为透明以透出主体颜色，不增加边框、外环或阴影。
 
 SPA 路由通过 `pushState`、`replaceState` 和 `popstate` 变化时，脚本会重新同步当前 Composer 状态。
 
@@ -193,4 +199,5 @@ node --check userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 5. 新对话显示“新对话”，`temporary-chat=true` 显示“临时对话”；
 6. 长标题不会侵入右侧顺序任务按钮和轮数 badge，占用空间不足时单行省略，悬停仍能看到完整标题；
 7. 旧版 `a[href]`、`button`、`[data-file-reference="true"]` 和新版 DIL `span[role="link"]` 的下载入口均能高亮，包括流式补全文案；普通链接不得误高亮；
-8. 浅色模式下检测对话 `main`、整页布局、`html`、`body` 以及 Footer 独立 `bg-surface` 背景层为 `#f4f4f2`，代码块背景与 Composer 本体背景保持自身颜色；深色模式不应用该背景覆盖；正文宽屏与临时对话提示保持不变。
+8. 临时对话输入区与底部工具栏颜色连贯、无白条；普通对话的工具栏背景保持原样，深色临时对话也维持青色提示；
+9. 浅色模式下检测对话 `main`、整页布局、`html`、`body` 以及 Footer 独立 `bg-surface` 背景层为 `#f4f4f2`，代码块背景与 Composer 本体背景保持自身颜色；深色模式不应用该背景覆盖；正文宽屏与临时对话提示保持不变。

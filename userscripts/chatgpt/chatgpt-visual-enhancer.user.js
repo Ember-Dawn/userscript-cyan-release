@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.3.6
+// @version      0.3.7
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，显示当前对话名称，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.6';
+    const VERSION = '0.3.7';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -79,6 +79,11 @@ html:not(.dark) [data-thread-scroll-footer="true"] > [aria-hidden="true"].bg-sur
 /* 临时对话：直接标记当前 Composer，并混入 10% #0891B2 背景。 */
 [data-composer-body][${TEMPORARY_CHAT_ATTRIBUTE}="true"] {
     background-color: color-mix(in srgb, var(--composer-surface-primary) 90%, #0891B2 10%) !important;
+}
+
+/* 临时对话：新版 Composer 底部圆角工具栏不再用白色遮住浅青色主体。 */
+[data-composer-body][${TEMPORARY_CHAT_ATTRIBUTE}="true"] [class*="bg-(--composer-layout-surface-background)"] {
+    background-color: transparent !important;
 }
 
 /* 当前对话名称：占用 Composer 左上沿，并为右侧顺序任务与轮数控件预留空间。 */
