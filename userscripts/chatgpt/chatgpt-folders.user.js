@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.9
+// @version      2.1.0
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -437,7 +437,7 @@ class FolderApplication {
     recoveryQueued = false;
     recovering = false;
     collapsedLocal = {};
-    start() { this.device = GM_getValue('cgfm.next.device', '') || (0, model_1.uid)(); GM_setValue('cgfm.next.device', this.device); this.account = this.detectAccount(); this.load(); this.loadCollapsed(); this.loadTitleGuards(); this.restoreAuth(); this.build(); this.updateTheme(); this.installAuthCapture(); this.bindGlobal(); this.scanRecents(); this.render(); this.timer = window.setInterval(() => { this.checkAccount(); if (Date.now() - this.lastRefresh > 30000) {
+    start() { this.device = GM_getValue('cgfm.next.device', '') || (0, model_1.uid)(); GM_setValue('cgfm.next.device', this.device); this.account = this.detectAccount(); this.load(); this.loadCollapsed(); this.loadTitleGuards(); this.loadRecents(); this.restoreAuth(); this.build(); this.updateTheme(); this.installAuthCapture(); this.bindGlobal(); this.scanRecents(); this.render(); this.timer = window.setInterval(() => { this.checkAccount(); if (Date.now() - this.lastRefresh > 30000) {
         this.lastRefresh = Date.now();
         if (this.isOpen())
             this.scanRecents();
@@ -477,7 +477,7 @@ class FolderApplication {
         return 'local';
     }
     checkAccount() { const next = this.detectAccount(); if (next === this.account)
-        return; this.generation++; this.account = next; this.busy = false; this.recent = []; this.selected = null; this.dismissPopup(); this.load(); this.loadCollapsed(); this.loadTitleGuards(); this.restoreAuth(); this.render(); }
+        return; this.generation++; this.account = next; this.busy = false; this.recent = []; this.selected = null; this.dismissPopup(); this.load(); this.loadCollapsed(); this.loadTitleGuards(); this.loadRecents(); this.restoreAuth(); this.render(); }
     load() {
         this.readOnly = false;
         if (this.listener)
@@ -709,8 +709,10 @@ class FolderApplication {
         }
     } }; walk(null, 0); add('最近对话'); for (const c of this.recent.slice(0, 100))
         this.list.append(this.row('recent', c.id, c.title, 0)); this.renderStatus(); }
-    row(type, id, name, depth, color) { const el = document.createElement('div'); el.className = 'cgfm-row' + (type === 'folder' && id === this.selected ? ' cgfm-selected' : ''); el.dataset.type = type; el.dataset.id = id; el.style.paddingLeft = `${Math.min(depth, 20) * 14 + 5}px`; const ico = document.createElement('span'); ico.className = 'cgfm-item-icon'; ico.innerHTML = (0, icons_1.icon)(type === 'folder' ? 'folder' : 'message-circle'); if (color)
-        ico.style.color = color; const span = document.createElement('span'); span.className = 'cgfm-name'; span.textContent = name; el.append(ico, span); if (type === 'folder') {
+    row(type, id, name, depth, color) { const el = document.createElement('div'); el.className = 'cgfm-row' + (type === 'folder' && id === this.selected ? ' cgfm-selected' : ''); el.dataset.type = type; el.dataset.id = id; el.style.paddingLeft = `${Math.min(depth, 20) * 14 + 5}px`; const ico = document.createElement('span'); ico.className = 'cgfm-item-icon'; ico.innerHTML = (0, icons_1.icon)(type === 'folder' ? 'folder' : 'message-circle'); if (color && color.toLowerCase() !== '#6b7280')
+        ico.style.color = color;
+    else
+        ico.style.color = ''; const span = document.createElement('span'); span.className = 'cgfm-name'; span.textContent = name; el.append(ico, span); if (type === 'folder') {
         const btn = document.createElement('button');
         btn.dataset.act = 'menu';
         btn.innerHTML = (0, icons_1.icon)('ellipsis');
@@ -772,8 +774,10 @@ class FolderApplication {
         const w = el.getBoundingClientRect().width;
         const h = el.getBoundingClientRect().height;
         if (isSettings) {
-            el.style.left = Math.max(12, (innerWidth - w) / 2) + 'px';
-            el.style.top = Math.max(12, (innerHeight - h) / 2) + 'px';
+            const pr = this.panel.getBoundingClientRect();
+            el.style.left = Math.min(innerWidth - w - 8, Math.max(8, pr.right + 6)) + 'px';
+            el.style.top = Math.max(0, pr.top) + 'px';
+            el.style.maxHeight = 'calc(100dvh - 16px)';
         }
         else if (r) {
             let left = r.right + 4;
@@ -796,7 +800,7 @@ class FolderApplication {
         b.type = 'button';
         b.className = 'cgfm-menu-item' + (danger ? ' cgfm-menu-danger' : '');
         b.innerHTML = `<span class="cgfm-menu-icon">${(0, icons_1.icon)(iconName)}</span><span class="cgfm-menu-label">${label}</span>`;
-        b.addEventListener('click', () => { this.dismissPopup(); fn(); });
+        b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); this.dismissPopup(); fn(); });
         box.append(b);
     }
     menuDivider(box) {
@@ -804,7 +808,7 @@ class FolderApplication {
         d.className = 'cgfm-menu-divider';
         box.append(d);
     }
-    menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { this.dismissPopup(); fn(); }); box.append(b); }
+    menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); this.dismissPopup(); fn(); }); box.append(b); }
     colorMenuItem(box, id) {
         const item = document.createElement('div');
         item.className = 'cgfm-menu-item cgfm-menu-has-sub';
@@ -818,17 +822,18 @@ class FolderApplication {
             sub.className = 'cgfm-pop cgfm-submenu';
             const grid = document.createElement('div');
             grid.className = 'cgfm-color-grid';
-            const curColor = this.profile.data.folders[id]?.color || '#6b7280';
+            const curColor = (this.profile.data.folders[id]?.color || '#6b7280').toLowerCase();
             for (const c of colors) {
                 const dot = document.createElement('button');
                 dot.type = 'button';
-                dot.className = 'cgfm-color-dot' + (curColor === c ? ' cgfm-color-active' : '');
+                dot.className = 'cgfm-color-dot' + (curColor === c.toLowerCase() ? ' cgfm-color-active' : '');
                 dot.style.backgroundColor = c;
                 dot.title = c;
                 dot.addEventListener('click', e => {
+                    e.preventDefault();
                     e.stopPropagation();
-                    this.dismissPopup();
                     this.apply({ type: 'folder.color', id, color: c });
+                    this.dismissPopup();
                 });
                 grid.append(dot);
             }
@@ -836,15 +841,20 @@ class FolderApplication {
             this.root.append(sub);
             const r = item.getBoundingClientRect();
             const sw = sub.getBoundingClientRect().width || 150;
-            let left = r.right + 4;
+            let left = r.right;
             if (left + sw > innerWidth - 8)
-                left = Math.max(8, r.left - sw - 4);
+                left = Math.max(8, r.left - sw);
             let top = r.top - 4;
             const sh = sub.getBoundingClientRect().height || 70;
             if (top + sh > innerHeight - 8)
                 top = Math.max(8, innerHeight - sh - 8);
             sub.style.left = left + 'px';
             sub.style.top = top + 'px';
+            sub.addEventListener('pointerleave', e => {
+                const rel = e.relatedTarget;
+                if (sub && (!rel || (!sub.contains(rel) && !box.contains(rel))))
+                    closeSub();
+            });
         };
         const closeSub = () => { sub?.remove(); sub = null; };
         item.addEventListener('pointerenter', openSub);
@@ -869,9 +879,27 @@ class FolderApplication {
         this.menuItem(box, '重命名', 'pencil', () => this.editFolder(f.parentId, id));
         this.colorMenuItem(box, id);
         this.menuDivider(box);
-        this.menuItem(box, '删除文件夹', 'trash-2', () => { if (confirm(`删除「${f.name}」及其子文件夹和分类引用？不会删除 ChatGPT 对话。`))
-            this.apply({ type: 'folder.delete', id }); }, true);
+        this.menuItem(box, '删除文件夹', 'trash-2', () => this.confirmDeleteFolder(id, box.getBoundingClientRect()), true);
         this.showPopup(box, anchor);
+    }
+    confirmDeleteFolder(id, menuRect) {
+        const f = this.profile.data.folders[id];
+        if (!f)
+            return;
+        this.dismissPopup();
+        const box = document.createElement('div');
+        box.className = 'cgfm-pop cgfm-confirm-pop';
+        box.innerHTML = `<div class="cgfm-confirm-title">确认删除文件夹？</div><div class="cgfm-confirm-desc">「${f.name}」及其分类将被移除，ChatGPT 官方对话不会被删除。</div><div class="cgfm-confirm-actions"><button type="button" class="cgfm-btn-cancel">取消</button><button type="button" class="cgfm-btn-danger">删除</button></div>`;
+        box.querySelector('.cgfm-btn-cancel')?.addEventListener('click', e => { e.stopPropagation(); this.dismissPopup(); });
+        box.querySelector('.cgfm-btn-danger')?.addEventListener('click', e => {
+            e.stopPropagation();
+            this.apply({ type: 'folder.delete', id });
+            this.dismissPopup();
+        });
+        box.style.cssText = `position:fixed;z-index:2147483002;left:${menuRect.left}px;top:${menuRect.top}px;min-width:210px;max-width:260px;padding:12px;border-radius:10px;box-shadow:0 12px 32px var(--cg-shadow);border:1px solid var(--cg-border);background:var(--cg-bg);`;
+        this.popup = box;
+        this.root.append(box);
+        this.updateOpen();
     }
     chatMenu(id, recent, anchor) {
         const box = document.createElement('div');
@@ -884,12 +912,35 @@ class FolderApplication {
         }
         this.showPopup(box, anchor);
     }
-    promptInput(title, value, onSave) { const box = document.createElement('div'); const label = document.createElement('label'); label.textContent = title; const input = document.createElement('input'); input.value = value; label.append(input); box.append(label); const save = document.createElement('button'); save.textContent = '保存'; const close = () => { this.editId = null; this.dismissPopup(); this.render(); }; save.addEventListener('click', () => { const v = input.value.trim(); if (v) {
-        close();
-        onSave(v);
-    } }); input.addEventListener('keydown', e => { if (e.key === 'Enter')
-        save.click(); if (e.key === 'Escape')
-        close(); }); this.menuButton(box, '取消', close); box.append(save); this.editId = 'editor'; this.showPopup(box); input.focus(); input.select(); }
+    promptInput(title, value, onSave) {
+        this.dismissPopup();
+        const box = document.createElement('div');
+        box.className = 'cgfm-pop cgfm-prompt-pop';
+        box.innerHTML = `<div class="cgfm-confirm-title">${title}</div><input type="text" class="cgfm-prompt-input" value="${value}" style="width:100%;margin:8px 0;padding:6px 8px;border:1px solid var(--cg-border);border-radius:6px;background:var(--cg-input);color:var(--cg-text)"><div class="cgfm-confirm-actions"><button type="button" class="cgfm-btn-cancel">取消</button><button type="button" class="cgfm-btn-save">确定</button></div>`;
+        const input = box.querySelector('input');
+        const save = box.querySelector('.cgfm-btn-save');
+        const cancel = box.querySelector('.cgfm-btn-cancel');
+        const close = () => { this.editId = null; this.dismissPopup(); this.render(); };
+        cancel.addEventListener('click', e => { e.stopPropagation(); close(); });
+        save.addEventListener('click', e => {
+            e.stopPropagation();
+            const v = input.value.trim();
+            if (v) {
+                close();
+                onSave(v);
+            }
+        });
+        input.addEventListener('keydown', e => {
+            e.stopPropagation();
+            if (e.key === 'Enter')
+                save.click();
+            if (e.key === 'Escape')
+                close();
+        });
+        this.editId = 'editor';
+        this.showPopup(box);
+        setTimeout(() => { input.focus(); input.select(); }, 50);
+    }
     inlineEdit(row, initial, onSave) {
         if (this.editId)
             return;
@@ -921,7 +972,7 @@ class FolderApplication {
                 return;
             }
         }
-        this.promptInput('新建文件夹', '', name => this.apply({ type: 'folder.create', parentId: parent, name }));
+        this.promptInput(parent ? '新建子文件夹' : '新建文件夹', '', name => this.apply({ type: 'folder.create', parentId: parent, name }));
     }
     colorDialog(id) { const box = document.createElement('div'); const input = document.createElement('input'); input.type = 'color'; input.value = this.profile.data.folders[id]?.color || '#6b7280'; box.append(input); this.menuButton(box, '确定', () => this.apply({ type: 'folder.color', id, color: input.value })); this.showPopup(box); }
     folderPicker(type, id) { const box = document.createElement('div'); const title = document.createElement('div'); title.textContent = '选择目标文件夹'; box.append(title); const select = document.createElement('select'); if (type === 'folder') {
@@ -961,18 +1012,32 @@ class FolderApplication {
     titleGuards = new Map();
     loadTitleGuards() { const val = GM_getValue(`cgfm.next.titles.${this.account}`, {}); this.titleGuards = new Map(Object.entries(val).filter(([, v]) => v && Date.now() - v.time < 30 * 24 * 3600000)); }
     persistTitleGuards() { GM_setValue(`cgfm.next.titles.${this.account}`, Object.fromEntries(this.titleGuards)); }
-    scanRecents() { const rows = new Map(); for (const a of document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"],a[href^="/c/"]')) {
-        const key = a.getAttribute('data-sidebar-chatgpt-conversation-key');
-        const id = key?.replace('chatgpt:conversation:', '') || a.getAttribute('href')?.match(/\/c\/([^/?#]+)/)?.[1];
-        const title = (a.innerText || a.getAttribute('title') || a.getAttribute('aria-label') || '').trim();
-        if (id && title) {
-            const guard = this.titleGuards.get(id);
-            rows.set(id, { id, title: guard && Date.now() - guard.time < 60 * 60 * 1000 ? guard.title : title });
+    loadRecents() { const val = GM_getValue(`cgfm.next.recent.${this.account}`, []); if (Array.isArray(val) && val.length)
+        this.recent = val; }
+    persistRecents() { if (this.account === 'local')
+        return; GM_setValue(`cgfm.next.recent.${this.account}`, this.recent); }
+    scanRecents() {
+        const rows = new Map();
+        for (const a of document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"],a[href^="/c/"]')) {
+            const key = a.getAttribute('data-sidebar-chatgpt-conversation-key');
+            const id = key?.replace('chatgpt:conversation:', '') || a.getAttribute('href')?.match(/\/c\/([^/?#]+)/)?.[1];
+            const title = (a.innerText || a.getAttribute('title') || a.getAttribute('aria-label') || '').trim();
+            if (id && title) {
+                const guard = this.titleGuards.get(id);
+                rows.set(id, { id, title: guard && Date.now() - guard.time < 60 * 60 * 1000 ? guard.title : title });
+            }
         }
-    } if (rows.size)
-        this.recent = [...rows.values()].slice(0, 100); if (this.isOpen())
-        this.render(); if (this.isOpen() && Date.now() - this.apiAt > 30 * 60 * 1000)
-        void this.refreshApi(); }
+        if (rows.size) {
+            const next = [...rows.values()].slice(0, 100);
+            const changed = next.length !== this.recent.length || next.some((c, i) => c.id !== this.recent[i]?.id || c.title !== this.recent[i]?.title);
+            if (changed) {
+                this.recent = next;
+                this.persistRecents();
+                if (this.isOpen())
+                    this.render();
+            }
+        }
+    }
     async refreshApi() {
         this.apiAt = Date.now();
         const generation = this.generation;
@@ -1425,7 +1490,7 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.9
+// @version      2.1.0
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
