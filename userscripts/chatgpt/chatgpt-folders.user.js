@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.0
+// @version      2.0.1
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -265,11 +265,11 @@ const model_1 = require("./model");
 const sync_1 = require("./sync");
 const style = `
 #cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--text-primary,#dedede);--cg-bg:var(--main-surface-primary,#202123);--cg-border:var(--border-light,#555)}
-#cgfm-next-root *{box-sizing:border-box}#cgfm-next-launch{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:12px;padding:10px;cursor:pointer}
+#cgfm-next-root *{box-sizing:border-box}#cgfm-next-rail-entry{display:flex;align-items:center;justify-content:center;width:100%;flex:none}#cgfm-next-rail{display:flex;align-items:center;justify-content:center;width:36px;height:36px;padding:8px;border:0;border-radius:10px;background:transparent;color:var(--text-secondary,var(--token-text-tertiary,currentColor));cursor:pointer}#cgfm-next-rail:hover,#cgfm-next-rail[data-cgfm-open="true"]{background:var(--sidebar-surface-secondary,rgba(128,128,128,.14));color:var(--text-primary,currentColor)}#cgfm-next-rail svg{width:20px;height:20px;fill:rgba(58,131,247,.20);stroke:#3A83F7;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#cgfm-next-launch{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:12px;padding:10px;cursor:pointer}
 #cgfm-next-panel{position:absolute;top:0;left:45px;width:330px;max-height:78vh;display:none;flex-direction:column;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:14px;box-shadow:0 8px 36px #0005;overflow:hidden}
 #cgfm-next-root[data-open="yes"] #cgfm-next-panel{display:flex}.cgfm-head{display:flex;align-items:center;gap:6px;padding:11px;border-bottom:1px solid var(--cg-border)}
 .cgfm-scroll{overflow:auto;min-height:70px;padding:7px}.cgfm-row{min-height:32px;display:flex;align-items:center;gap:5px;border-radius:7px;padding:2px 5px;cursor:pointer;user-select:none}.cgfm-row:hover,.cgfm-row.cgfm-selected{background:var(--surface-hover,#6664)}.cgfm-row.cgfm-drop{outline:2px solid #70a6f0}
-.cgfm-row span.cgfm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.cgfm-row button,.cgfm-head button{border:0;color:inherit;background:transparent;cursor:pointer;border-radius:6px;padding:4px 6px}.cgfm-row button:hover,.cgfm-head button:hover{background:#8884}
+.cgfm-item-icon{display:flex;align-items:center;justify-content:center;width:20px;min-width:20px;height:20px}.cgfm-item-icon svg{width:20px;height:20px;stroke-width:2}.cgfm-row span.cgfm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.cgfm-row button,.cgfm-head button{border:0;color:inherit;background:transparent;cursor:pointer;border-radius:6px;padding:4px 6px}.cgfm-row button:hover,.cgfm-head button:hover{background:#8884}
 .cgfm-group{padding:9px 7px 4px;font-size:12px;opacity:.65}.cgfm-pop{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:10px;padding:12px;box-shadow:0 8px 30px #0005;color:inherit}.cgfm-pop input,.cgfm-pop select{color:inherit;background:var(--cg-bg);border:1px solid var(--cg-border);padding:6px;border-radius:6px;width:100%}.cgfm-pop label{display:block;margin:7px 0}.cgfm-pop button{margin:3px;border:1px solid var(--cg-border);border-radius:6px;padding:6px;background:transparent;color:inherit;cursor:pointer}.cgfm-muted{opacity:.7;font-size:11px}.cgfm-foot{padding:7px 11px;border-top:1px solid var(--cg-border);font-size:11px;cursor:pointer}
 `;
 class FolderApplication {
@@ -277,6 +277,8 @@ class FolderApplication {
     profile = (0, model_1.defaultLocal)();
     device = '';
     railButton = null;
+    railEntry = null;
+    closeTimer = 0;
     root;
     panel;
     list;
@@ -431,8 +433,8 @@ class FolderApplication {
         this.launch.addEventListener('click', () => { this.pinned = !this.pinned; this.updateOpen(); });
         this.launch.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
         this.launch.addEventListener('mouseleave', () => { this.hovered = false; window.setTimeout(() => this.updateOpen(), 280); });
-        this.root.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
-        this.root.addEventListener('mouseleave', () => { this.hovered = false; window.setTimeout(() => this.updateOpen(), 250); });
+        this.panel.addEventListener('pointerenter', () => { window.clearTimeout(this.closeTimer); this.hovered = true; this.updateOpen(); });
+        this.panel.addEventListener('pointerleave', () => this.scheduleClose());
         this.panel.addEventListener('click', e => this.click(e));
         this.panel.addEventListener('contextmenu', e => this.context(e));
         this.panel.addEventListener('pointerdown', e => this.dragStart(e));
@@ -441,35 +443,48 @@ class FolderApplication {
         this.panel.addEventListener('pointercancel', () => { this.drag = null; this.removeGhost(); });
         this.mountRail();
     }
+    scheduleClose() { window.clearTimeout(this.closeTimer); this.closeTimer = window.setTimeout(() => { const buttonHover = !!this.railButton?.matches(':hover'); const panelHover = !!this.panel?.matches(':hover'); this.hovered = buttonHover || panelHover || !!this.launch?.matches(':hover'); this.updateOpen(); }, 230); }
     mountRail() {
-        const rail = document.querySelector('nav[aria-label],aside nav,[data-testid="sidebar"] nav');
-        if (!rail || !rail.getBoundingClientRect().width) {
+        // Preserve the original rail mount: the plain navigation group below the three-dot item.
+        // Never append to arbitrary <nav> elements (which may contain the account footer).
+        const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
+        const host = rail?.querySelector('[data-appearance="plain"]');
+        if (!host || !rail?.getBoundingClientRect().width) {
+            this.railEntry?.remove();
             this.launch.style.display = '';
-            this.root.style.left = '8px';
+            this.root.style.left = '52px';
+            this.root.style.top = '72px';
+            this.panel.style.left = '0';
             return;
         }
         if (!this.railButton) {
+            const entry = document.createElement('div');
+            entry.id = 'cgfm-next-rail-entry';
             const btn = document.createElement('button');
-            btn.textContent = '📁';
-            btn.title = 'ChatGPT 文件夹';
             btn.type = 'button';
-            btn.setAttribute('aria-label', 'ChatGPT 文件夹');
             btn.id = 'cgfm-next-rail';
-            btn.style.cssText = 'display:block;background:transparent;border:0;color:inherit;padding:9px;margin:4px;border-radius:9px;cursor:pointer';
-            btn.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
-            btn.addEventListener('mouseleave', () => { this.hovered = false; setTimeout(() => this.updateOpen(), 280); });
-            btn.addEventListener('click', () => { this.pinned = !this.pinned; this.updateOpen(); });
+            btn.title = '文件夹（悬停打开，点击固定）';
+            btn.setAttribute('aria-label', '文件夹');
+            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+            btn.addEventListener('pointerenter', () => { window.clearTimeout(this.closeTimer); this.hovered = true; this.updateOpen(); });
+            btn.addEventListener('pointerleave', () => this.scheduleClose());
+            btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); window.clearTimeout(this.closeTimer); this.pinned = !this.pinned; this.updateOpen(); if (!this.pinned)
+                this.scheduleClose(); });
+            entry.append(btn);
             this.railButton = btn;
+            this.railEntry = entry;
         }
-        if (this.railButton.parentElement !== rail)
-            rail.append(this.railButton);
+        if (this.railEntry?.parentElement !== host)
+            host.append(this.railEntry);
         this.launch.style.display = 'none';
-        const r = this.railButton.getBoundingClientRect();
-        if (r.width) {
-            this.root.style.left = `${Math.max(8, Math.round(r.right - 12))}px`;
-            this.root.style.top = `${Math.max(8, Math.round(r.top))}px`;
-        }
-        this.panel.style.left = '0';
+        const r = rail.getBoundingClientRect();
+        this.root.style.left = `${Math.max(0, Math.round(r.right))}px`;
+        this.root.style.top = '0px';
+        this.panel.style.top = '0px';
+        this.panel.style.left = '0px';
+        this.panel.style.height = '100dvh';
+        this.panel.style.maxHeight = '100dvh';
+        this.railButton.setAttribute('aria-expanded', this.isOpen() ? 'true' : 'false');
     }
     bindGlobal() { document.addEventListener('keydown', e => { if (e.key === 'Escape') {
         this.drag = null;
@@ -486,7 +501,10 @@ class FolderApplication {
         this.scanRecents();
     } }); window.addEventListener('popstate', () => { this.checkAccount(); this.scanRecents(); }); window.addEventListener('online', () => this.scheduleSync()); this.observer = new MutationObserver(() => { if (!this.launch.isConnected)
         this.root.prepend(this.launch); this.mountRail(); }); this.observer.observe(document.body, { childList: true }); window.setInterval(() => { this.mountRail(); this.width(); }, 10000); this.width(); }
-    updateOpen() { this.root.dataset.open = this.pinned || this.hovered || !!this.editId || !!this.popup || !!this.drag ? 'yes' : 'no'; if (this.isOpen())
+    updateOpen() { this.root.dataset.open = this.pinned || this.hovered || !!this.editId || !!this.popup || !!this.drag ? 'yes' : 'no'; if (this.railButton) {
+        this.railButton.dataset.cgfmOpen = String(this.isOpen());
+        this.railButton.setAttribute('aria-expanded', String(this.isOpen()));
+    } if (this.isOpen())
         this.scanRecents(); }
     isOpen() { return this.root.dataset.open === 'yes'; }
     renderStatus() { this.status.textContent = `${this.busy ? '正在同步' : this.dirty ? '待同步' : '已保存'} · ${this.profile.pending.length} 条待同步 · ${this.profile.conflicts.length} 条冲突`; this.status.title = this.profile.conflicts.slice(-8).join('\n'); }
@@ -507,7 +525,7 @@ class FolderApplication {
         }
     } }; walk(null, 0); add('最近对话'); for (const c of this.recent.slice(0, 100))
         this.list.append(this.row('recent', c.id, c.title, 0)); this.renderStatus(); }
-    row(type, id, name, depth, color) { const el = document.createElement('div'); el.className = 'cgfm-row' + (type === 'folder' && id === this.selected ? ' cgfm-selected' : ''); el.dataset.type = type; el.dataset.id = id; el.style.paddingLeft = `${Math.min(depth, 20) * 14 + 5}px`; const ico = document.createElement('span'); ico.textContent = type === 'folder' ? '📁' : '▤'; if (color)
+    row(type, id, name, depth, color) { const el = document.createElement('div'); el.className = 'cgfm-row' + (type === 'folder' && id === this.selected ? ' cgfm-selected' : ''); el.dataset.type = type; el.dataset.id = id; el.style.paddingLeft = `${Math.min(depth, 20) * 14 + 5}px`; const ico = document.createElement('span'); ico.className = 'cgfm-item-icon'; ico.innerHTML = type === 'folder' ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" stroke-linecap="round" stroke-linejoin="round"/></svg>' : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4.5 6.5A4.5 4.5 0 0 1 9 2h6a4.5 4.5 0 0 1 4.5 4.5v4A4.5 4.5 0 0 1 15 15H9l-4.5 4v-4.8A4.5 4.5 0 0 1 2 10.5v-4Z" stroke-linecap="round" stroke-linejoin="round"/></svg>'; if (color)
         ico.style.color = color; const span = document.createElement('span'); span.className = 'cgfm-name'; span.textContent = name; el.append(ico, span); if (type === 'folder') {
         const btn = document.createElement('button');
         btn.dataset.act = 'menu';
@@ -912,7 +930,7 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.0
+// @version      2.0.1
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
