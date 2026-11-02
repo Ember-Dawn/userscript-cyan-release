@@ -5,9 +5,9 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.1.0
-// @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
-// @author       ChatGPT
+// @version      2.0.0
+// @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
+// @author       Euphoria
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-start
@@ -21,131 +21,676 @@
 // @connect      *
 // ==/UserScript==
 
-(function(){'use strict';const registry={"model":function(require,module,exports){
+(function(){'use strict';const registry={"constants":function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.natural = exports.defaultLocal = exports.uid = exports.copy = exports.blank = void 0;
-exports.validate = validate;
-exports.command = command;
-exports.diff = diff;
-const blank = () => ({ schema: 1, folders: {}, conversations: {} });
-exports.blank = blank;
-const copy = (v) => JSON.parse(JSON.stringify(v));
-exports.copy = copy;
-const uid = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+exports.ICONS = exports.PALETTE_COLORS = exports.KEY_AUTH_PREFIX = exports.KEY_TITLES_PREFIX = exports.KEY_COLLAPSED_PREFIX = exports.KEY_LAST_ACCOUNT = exports.KEY_DEVICE = exports.KEY_PREFIX_ACCOUNT = void 0;
+exports.KEY_PREFIX_ACCOUNT = 'cgfm.v2.account.';
+exports.KEY_DEVICE = 'cgfm.v2.device';
+exports.KEY_LAST_ACCOUNT = 'cgfm.v2.lastAccount';
+exports.KEY_COLLAPSED_PREFIX = 'cgfm.v2.collapsed.';
+exports.KEY_TITLES_PREFIX = 'cgfm.v2.titles.';
+exports.KEY_AUTH_PREFIX = 'cgfm.v2.auth.';
+exports.PALETTE_COLORS = [
+    '#6b7280', // 默认灰
+    '#ef4444', // 红
+    '#f97316', // 橙
+    '#f59e0b', // 琥珀/黄
+    '#10b981', // 绿
+    '#06b6d4', // 青
+    '#3b82f6', // 蓝
+    '#6366f1', // 靛蓝
+    '#8b5cf6', // 紫
+    '#ec4899', // 粉
+];
+exports.ICONS = {
+    folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>',
+    folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>',
+    sync: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
+    pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>',
+    dots: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>',
+    palette: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>',
+    chevronRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>',
+    chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
+    rail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>'
+};
+
+},
+"types":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+
+},
+"model":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.naturalSort = exports.defaultProfile = exports.uid = exports.clone = exports.blankData = void 0;
+exports.validateData = validateData;
+exports.executeCommand = executeCommand;
+exports.computeDiff = computeDiff;
+const blankData = () => ({
+    schema: 2,
+    folders: {},
+    conversations: {}
+});
+exports.blankData = blankData;
+const clone = (val) => JSON.parse(JSON.stringify(val));
+exports.clone = clone;
+const uid = () => typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 exports.uid = uid;
-const defaultLocal = () => ({ data: (0, exports.blank)(), base: (0, exports.blank)(), preferences: { sidebarWidth: 312, customWidth: false }, dav: { url: '', username: '', password: '', file: 'chatgpt-folders-ts-v1.json' }, pending: [], baseRevision: 0, etag: null, conflicts: [] });
-exports.defaultLocal = defaultLocal;
-exports.natural = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-function validate(data) {
-    if (data?.schema !== 1 || !data.folders || !data.conversations || Array.isArray(data.folders) || Array.isArray(data.conversations))
-        throw Error('不支持的数据格式');
+const defaultProfile = () => ({
+    data: (0, exports.blankData)(),
+    base: (0, exports.blankData)(),
+    preferences: { sidebarWidth: 312, customWidth: false },
+    dav: { url: '', username: '', password: '', file: 'chatgpt-folders-v2.json' },
+    pending: [],
+    baseRevision: 0,
+    etag: null,
+    conflicts: []
+});
+exports.defaultProfile = defaultProfile;
+exports.naturalSort = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+function validateData(data) {
+    if (data?.schema !== 2 || !data.folders || !data.conversations || Array.isArray(data.folders) || Array.isArray(data.conversations)) {
+        throw new Error('不支持的数据格式或 schema 版本不匹配');
+    }
     for (const [id, f] of Object.entries(data.folders)) {
-        if (f.id !== id || typeof f.name !== 'string' || typeof f.color !== 'string' || !/^#[a-f0-9]{6}$/i.test(f.color))
-            throw Error('文件夹数据损坏');
-        if (f.parentId !== null && !data.folders[f.parentId])
-            throw Error('文件夹的父级不存在');
+        if (f.id !== id || typeof f.name !== 'string' || typeof f.color !== 'string' || !/^#[a-f0-9]{6}$/i.test(f.color)) {
+            throw new Error(`文件夹数据损坏: ${id}`);
+        }
+        if (f.parentId !== null && !data.folders[f.parentId]) {
+            throw new Error(`文件夹的父级不存在: ${f.parentId}`);
+        }
         const visited = new Set([id]);
         let parent = f.parentId;
         while (parent) {
             if (visited.has(parent))
-                throw Error('检测到文件夹循环');
+                throw new Error(`检测到文件夹循环嵌套: ${id}`);
             visited.add(parent);
             parent = data.folders[parent]?.parentId ?? null;
         }
     }
-    for (const [id, c] of Object.entries(data.conversations))
-        if (c.id !== id || !data.folders[c.folderId] || typeof c.title !== 'string')
-            throw Error('对话归属无效');
+    for (const [id, c] of Object.entries(data.conversations)) {
+        if (c.id !== id || !data.folders[c.folderId] || typeof c.title !== 'string') {
+            throw new Error(`对话归属无效或标题损坏: ${id}`);
+        }
+    }
 }
-function command(data, change) {
-    const d = (0, exports.copy)(data), now = Date.now();
-    const f = change.id ? d.folders[change.id] : undefined;
-    switch (change.type) {
+function executeCommand(data, cmd) {
+    const d = (0, exports.clone)(data);
+    const now = Date.now();
+    switch (cmd.type) {
         case 'folder.create': {
-            if (change.parentId && !d.folders[change.parentId])
-                throw Error('父文件夹不存在');
+            if (cmd.parentId && !d.folders[cmd.parentId])
+                throw new Error('父文件夹不存在');
             const id = (0, exports.uid)();
-            d.folders[id] = { id, parentId: change.parentId ?? null, name: (change.name ?? '新建文件夹').trim() || '新建文件夹', color: '#6b7280', collapsed: false, createdAt: now, updatedAt: now };
+            d.folders[id] = {
+                id,
+                parentId: cmd.parentId ?? null,
+                name: (cmd.name ?? '新建文件夹').trim() || '新建文件夹',
+                color: cmd.color && /^#[a-f0-9]{6}$/i.test(cmd.color) ? cmd.color : '#6b7280',
+                createdAt: now,
+                updatedAt: now
+            };
             break;
         }
-        case 'folder.rename':
+        case 'folder.rename': {
+            const f = d.folders[cmd.id];
             if (!f)
-                throw Error('文件夹不存在');
-            f.name = (change.name ?? '').trim() || f.name;
+                throw new Error('文件夹不存在');
+            f.name = cmd.name.trim() || f.name;
             f.updatedAt = now;
             break;
-        case 'folder.color':
-            if (!f || !/^#[a-f0-9]{6}$/i.test(change.color ?? ''))
-                throw Error('无效颜色');
-            f.color = change.color;
+        }
+        case 'folder.color': {
+            const f = d.folders[cmd.id];
+            if (!f || !/^#[a-f0-9]{6}$/i.test(cmd.color))
+                throw new Error('无效颜色或文件夹不存在');
+            f.color = cmd.color;
             f.updatedAt = now;
             break;
-        case 'folder.collapse':
+        }
+        case 'folder.move': {
+            const f = d.folders[cmd.id];
             if (!f)
-                throw Error('文件夹不存在');
-            f.collapsed = !f.collapsed;
-            f.updatedAt = now;
-            break;
-        case 'folder.move':
-            if (!f)
-                throw Error('文件夹不存在');
-            if (change.parentId && !d.folders[change.parentId])
-                throw Error('目标文件夹不存在');
-            f.parentId = change.parentId ?? null;
-            f.updatedAt = now;
-            break;
-        case 'folder.delete': {
-            if (!f)
-                throw Error('文件夹不存在');
-            const ids = new Set([f.id]);
-            let old = 0;
-            while (ids.size !== old) {
-                old = ids.size;
-                for (const x of Object.values(d.folders))
-                    if (x.parentId && ids.has(x.parentId))
-                        ids.add(x.id);
+                throw new Error('文件夹不存在');
+            if (cmd.parentId === cmd.id)
+                throw new Error('不能将文件夹移动到自身');
+            if (cmd.parentId) {
+                if (!d.folders[cmd.parentId])
+                    throw new Error('目标父文件夹不存在');
+                let p = cmd.parentId;
+                while (p) {
+                    if (p === cmd.id)
+                        throw new Error('不能将文件夹移动到其子文件夹中（循环嵌套）');
+                    p = d.folders[p]?.parentId ?? null;
+                }
             }
-            for (const id of ids)
-                delete d.folders[id];
-            for (const c of Object.values(d.conversations))
-                if (ids.has(c.folderId))
-                    delete d.conversations[c.id];
+            f.parentId = cmd.parentId ?? null;
+            f.updatedAt = now;
+            break;
+        }
+        case 'folder.delete': {
+            const f = d.folders[cmd.id];
+            if (!f)
+                throw new Error('文件夹不存在');
+            const idsToDelete = new Set([f.id]);
+            let sizeBefore = 0;
+            while (idsToDelete.size !== sizeBefore) {
+                sizeBefore = idsToDelete.size;
+                for (const item of Object.values(d.folders)) {
+                    if (item.parentId && idsToDelete.has(item.parentId)) {
+                        idsToDelete.add(item.id);
+                    }
+                }
+            }
+            for (const delId of idsToDelete) {
+                delete d.folders[delId];
+            }
+            for (const [cId, conv] of Object.entries(d.conversations)) {
+                if (idsToDelete.has(conv.folderId)) {
+                    delete d.conversations[cId];
+                }
+            }
             break;
         }
         case 'conversation.assign': {
-            const id = change.id, folderId = change.folderId;
-            if (!d.folders[folderId])
-                throw Error('目标文件夹不存在');
-            const prev = d.conversations[id];
-            d.conversations[id] = { id, folderId, title: change.title || prev?.title || '未命名对话', addedAt: prev?.addedAt || now, updatedAt: now };
+            const folder = d.folders[cmd.folderId];
+            if (!folder)
+                throw new Error('目标文件夹不存在');
+            const prev = d.conversations[cmd.id];
+            d.conversations[cmd.id] = {
+                id: cmd.id,
+                folderId: cmd.folderId,
+                title: (cmd.title ?? prev?.title ?? '未命名对话').trim(),
+                addedAt: prev?.addedAt || now,
+                updatedAt: now
+            };
             break;
         }
-        case 'conversation.remove':
-            delete d.conversations[change.id];
+        case 'conversation.remove': {
+            delete d.conversations[cmd.id];
             break;
-        case 'conversation.title':
-            if (d.conversations[change.id]) {
-                d.conversations[change.id].title = change.title ?? '';
-                d.conversations[change.id].updatedAt = now;
+        }
+        case 'conversation.title': {
+            const c = d.conversations[cmd.id];
+            if (c) {
+                c.title = (cmd.title ?? '').trim() || c.title;
+                c.updatedAt = now;
             }
             break;
-        default: throw Error('未知业务命令');
+        }
+        default:
+            throw new Error('未知的业务命令');
     }
-    validate(d);
+    validateData(d);
     return d;
 }
-function diff(before, after, device, sequence) {
+function computeDiff(before, after, device, sequence) {
     const result = [];
-    for (const type of ['folder', 'conversation']) {
-        const a = type === 'folder' ? before.folders : before.conversations, b = type === 'folder' ? after.folders : after.conversations;
-        for (const key of new Set([...Object.keys(a), ...Object.keys(b)]))
-            if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) {
-                result.push({ id: (0, exports.uid)(), device, seq: ++sequence, time: Date.now(), type: `${type}.${b[key] ? 'upsert' : 'delete'}`, key, ...(b[key] ? { value: (0, exports.copy)(b[key]) } : {}) });
+    for (const kind of ['folder', 'conversation']) {
+        const a = kind === 'folder' ? before.folders : before.conversations;
+        const b = kind === 'folder' ? after.folders : after.conversations;
+        const allKeys = new Set([...Object.keys(a), ...Object.keys(b)]);
+        for (const key of allKeys) {
+            const valA = a[key];
+            const valB = b[key];
+            if (JSON.stringify(valA) !== JSON.stringify(valB)) {
+                result.push({
+                    id: (0, exports.uid)(),
+                    device,
+                    seq: ++sequence,
+                    time: Date.now(),
+                    type: `${kind}.${valB ? 'upsert' : 'delete'}`,
+                    key,
+                    ...(valB ? { value: (0, exports.clone)(valB) } : {})
+                });
             }
+        }
     }
     return result;
 }
+
+},
+"storage":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.StorageManager = void 0;
+const constants_1 = require("./constants");
+const model_1 = require("./model");
+class StorageManager {
+    currentAccount = 'local';
+    deviceId;
+    changeListenerId = null;
+    onExternalChange;
+    constructor(onExternalChange) {
+        this.onExternalChange = onExternalChange;
+        this.deviceId = this.getOrCreateDeviceId();
+    }
+    getDeviceId() {
+        return this.deviceId;
+    }
+    getOrCreateDeviceId() {
+        let dev = GM_getValue(constants_1.KEY_DEVICE, null);
+        if (!dev) {
+            dev = (0, model_1.uid)();
+            GM_setValue(constants_1.KEY_DEVICE, dev);
+        }
+        return dev;
+    }
+    setAccount(account) {
+        if (this.currentAccount === account && this.changeListenerId !== null)
+            return;
+        this.unbindListener();
+        this.currentAccount = account;
+        GM_setValue(constants_1.KEY_LAST_ACCOUNT, account);
+        this.bindListener();
+    }
+    getAccount() {
+        return this.currentAccount;
+    }
+    getLastAccount() {
+        return GM_getValue(constants_1.KEY_LAST_ACCOUNT, 'local');
+    }
+    getStorageKey() {
+        return `${constants_1.KEY_PREFIX_ACCOUNT}${this.currentAccount}`;
+    }
+    loadProfile() {
+        const key = this.getStorageKey();
+        const raw = GM_getValue(key, null);
+        if (!raw || raw.data?.schema !== 2) {
+            return (0, model_1.defaultProfile)();
+        }
+        try {
+            (0, model_1.validateData)(raw.data);
+            return raw;
+        }
+        catch (e) {
+            console.warn('[CGFM] Storage validation failed, falling back to clean profile', e);
+            return (0, model_1.defaultProfile)();
+        }
+    }
+    saveProfile(profile) {
+        const key = this.getStorageKey();
+        (0, model_1.validateData)(profile.data);
+        GM_setValue(key, profile);
+    }
+    loadCollapsedFolders() {
+        const key = `${constants_1.KEY_COLLAPSED_PREFIX}${this.currentAccount}`;
+        return GM_getValue(key, {});
+    }
+    saveCollapsedFolders(map) {
+        const key = `${constants_1.KEY_COLLAPSED_PREFIX}${this.currentAccount}`;
+        GM_setValue(key, map);
+    }
+    bindListener() {
+        const key = this.getStorageKey();
+        this.changeListenerId = GM_addValueChangeListener(key, (_k, _old, newVal, remote) => {
+            if (remote && newVal && this.onExternalChange) {
+                try {
+                    const prof = newVal;
+                    if (prof.data?.schema === 2) {
+                        (0, model_1.validateData)(prof.data);
+                        this.onExternalChange(prof);
+                    }
+                }
+                catch {
+                    // 忽略非法外部写入
+                }
+            }
+        });
+    }
+    unbindListener() {
+        if (this.changeListenerId !== null) {
+            GM_removeValueChangeListener(this.changeListenerId);
+            this.changeListenerId = null;
+        }
+    }
+    exportJson(data) {
+        const payload = {
+            format: 'cgfm-v2-export',
+            version: 2,
+            account: this.currentAccount,
+            exportedAt: Date.now(),
+            data: (0, model_1.clone)(data)
+        };
+        return JSON.stringify(payload, null, 2);
+    }
+    importJson(jsonStr) {
+        let payload;
+        try {
+            payload = JSON.parse(jsonStr);
+        }
+        catch {
+            throw new Error('JSON 解析失败，请检查文件格式');
+        }
+        if (payload.format !== 'cgfm-v2-export' || payload.version !== 2) {
+            throw new Error('不支持的文件格式或版本，请导入由本脚本导出的 v2 备份文件');
+        }
+        (0, model_1.validateData)(payload.data);
+        return payload.data;
+    }
+}
+exports.StorageManager = StorageManager;
+
+},
+"api":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ChatApiManager = void 0;
+const constants_1 = require("./constants");
+class ChatApiManager {
+    accountId = 'local';
+    constructor() {
+        this.setupInterceptors();
+    }
+    setAccountId(acc) {
+        this.accountId = acc;
+    }
+    setupInterceptors() {
+        try {
+            const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            const rawFetch = win.fetch;
+            const self = this;
+            win.fetch = async function (...args) {
+                const input = args[0];
+                const init = args[1];
+                const url = typeof input === 'string' ? input : input instanceof Request ? input.url : '';
+                if (url.includes('/backend-api/')) {
+                    let authHeader = null;
+                    if (init?.headers) {
+                        if (init.headers instanceof Headers) {
+                            authHeader = init.headers.get('Authorization');
+                        }
+                        else if (Array.isArray(init.headers)) {
+                            const found = init.headers.find(([k]) => k.toLowerCase() === 'authorization');
+                            authHeader = found ? found[1] : null;
+                        }
+                        else if (typeof init.headers === 'object') {
+                            authHeader = init.headers['Authorization'] || init.headers['authorization'] || null;
+                        }
+                    }
+                    if (authHeader && authHeader.startsWith('Bearer ')) {
+                        self.saveAuthToken(authHeader);
+                    }
+                }
+                return rawFetch.apply(this, args);
+            };
+        }
+        catch (e) {
+            console.warn('[CGFM] Failed to wrap fetch', e);
+        }
+    }
+    saveAuthToken(token) {
+        if (!this.accountId || this.accountId === 'local')
+            return;
+        try {
+            const key = `${constants_1.KEY_AUTH_PREFIX}${this.accountId}`;
+            const payload = { token, time: Date.now() };
+            GM_setValue(key, payload);
+        }
+        catch {
+            // 忽略存储失败
+        }
+    }
+    getAuthToken() {
+        if (!this.accountId || this.accountId === 'local')
+            return null;
+        try {
+            const key = `${constants_1.KEY_AUTH_PREFIX}${this.accountId}`;
+            const cached = GM_getValue(key, null);
+            if (cached && Date.now() - cached.time < 24 * 3600 * 1000) {
+                return cached.token;
+            }
+        }
+        catch {
+            // 忽略
+        }
+        return null;
+    }
+    /**
+     * 调用 ChatGPT 官方接口重命名对话
+     */
+    async renameConversation(chatId, newTitle) {
+        const token = this.getAuthToken();
+        const url = `https://chatgpt.com/backend-api/conversation/id/${chatId}/rename`;
+        return new Promise((resolve) => {
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            if (token) {
+                headers['Authorization'] = token;
+            }
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url,
+                headers,
+                data: JSON.stringify({ title: newTitle }),
+                timeout: 10000,
+                onload: (res) => {
+                    if (res.status >= 200 && res.status < 300) {
+                        this.guardTitle(chatId, newTitle);
+                        resolve(true);
+                    }
+                    else {
+                        console.warn('[CGFM] Rename failed with status', res.status);
+                        resolve(false);
+                    }
+                },
+                onerror: () => resolve(false),
+                ontimeout: () => resolve(false)
+            });
+        });
+    }
+    guardTitle(chatId, title) {
+        if (!this.accountId)
+            return;
+        try {
+            const key = `${constants_1.KEY_TITLES_PREFIX}${this.accountId}`;
+            const map = GM_getValue(key, {});
+            map[chatId] = { title, time: Date.now() };
+            GM_setValue(key, map);
+        }
+        catch {
+            // 忽略
+        }
+    }
+    getGuardedTitle(chatId) {
+        if (!this.accountId)
+            return null;
+        try {
+            const key = `${constants_1.KEY_TITLES_PREFIX}${this.accountId}`;
+            const map = GM_getValue(key, {});
+            const item = map[chatId];
+            if (item && Date.now() - item.time < 7 * 24 * 3600 * 1000) {
+                return item.title;
+            }
+        }
+        catch {
+            // 忽略
+        }
+        return null;
+    }
+}
+exports.ChatApiManager = ChatApiManager;
+
+},
+"dnd":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.PointerDragManager = void 0;
+const constants_1 = require("./constants");
+class PointerDragManager {
+    opts;
+    activeSession = null;
+    constructor(opts) {
+        this.opts = opts;
+        this.init();
+    }
+    init() {
+        const { container } = this.opts;
+        container.addEventListener('pointerdown', (e) => {
+            // 忽略右键、按钮、输入框、上下文菜单
+            if (e.button !== 0)
+                return;
+            const target = e.target;
+            if (target.closest('button, input, textarea, .cgfm-menu, .cgfm-confirm-card'))
+                return;
+            const row = target.closest('.cgfm-row');
+            if (!row)
+                return;
+            const chatId = row.dataset.chatId;
+            const folderId = row.dataset.folderId;
+            if (!chatId && !folderId)
+                return;
+            const titleEl = row.querySelector('.cgfm-title');
+            const title = titleEl?.textContent?.trim() || '拖拽项目';
+            this.activeSession = {
+                type: chatId ? 'chat' : 'folder',
+                sourceId: chatId || folderId,
+                title,
+                startX: e.clientX,
+                startY: e.clientY,
+                isDragging: false,
+                preview: null,
+                currentTarget: null
+            };
+            const onPointerMove = (moveEv) => {
+                if (!this.activeSession)
+                    return;
+                const dx = moveEv.clientX - this.activeSession.startX;
+                const dy = moveEv.clientY - this.activeSession.startY;
+                if (!this.activeSession.isDragging) {
+                    if (Math.hypot(dx, dy) >= 5) {
+                        this.activeSession.isDragging = true;
+                        this.createPreview(moveEv.clientX, moveEv.clientY);
+                        this.opts.onDragStart?.();
+                        document.body.style.userSelect = 'none';
+                    }
+                    else {
+                        return;
+                    }
+                }
+                this.updatePreview(moveEv.clientX, moveEv.clientY);
+                this.highlightDropTarget(moveEv.clientX, moveEv.clientY);
+            };
+            const cleanup = () => {
+                window.removeEventListener('pointermove', onPointerMove);
+                window.removeEventListener('pointerup', onPointerUp);
+                window.removeEventListener('pointercancel', cleanup);
+                window.removeEventListener('keydown', onKeyDown);
+                document.body.style.userSelect = '';
+                if (this.activeSession) {
+                    if (this.activeSession.preview) {
+                        this.activeSession.preview.remove();
+                    }
+                    if (this.activeSession.currentTarget) {
+                        this.activeSession.currentTarget.classList.remove('cgfm-drag-over');
+                    }
+                    if (this.activeSession.isDragging) {
+                        this.opts.onDragEnd?.();
+                    }
+                    this.activeSession = null;
+                }
+            };
+            const onPointerUp = (upEv) => {
+                if (this.activeSession?.isDragging) {
+                    const target = this.resolveDropTarget(upEv.clientX, upEv.clientY);
+                    if (target !== undefined) {
+                        this.opts.onDrop({
+                            type: this.activeSession.type,
+                            sourceId: this.activeSession.sourceId,
+                            targetFolderId: target,
+                            title: this.activeSession.title
+                        });
+                    }
+                }
+                cleanup();
+            };
+            const onKeyDown = (ke) => {
+                if (ke.key === 'Escape')
+                    cleanup();
+            };
+            window.addEventListener('pointermove', onPointerMove, { passive: true });
+            window.addEventListener('pointerup', onPointerUp);
+            window.addEventListener('pointercancel', cleanup);
+            window.addEventListener('keydown', onKeyDown);
+        });
+    }
+    createPreview(x, y) {
+        if (!this.activeSession)
+            return;
+        const preview = document.createElement('div');
+        preview.className = 'cgfm-drag-preview';
+        preview.innerHTML = `${this.activeSession.type === 'folder' ? constants_1.ICONS.folder : constants_1.ICONS.chat}<span>${this.activeSession.title}</span>`;
+        document.body.appendChild(preview);
+        this.activeSession.preview = preview;
+        this.updatePreview(x, y);
+    }
+    updatePreview(x, y) {
+        if (!this.activeSession?.preview)
+            return;
+        this.activeSession.preview.style.left = `${x + 12}px`;
+        this.activeSession.preview.style.top = `${y + 12}px`;
+    }
+    resolveDropTarget(x, y) {
+        if (!this.activeSession)
+            return undefined;
+        const el = document.elementFromPoint(x, y);
+        if (!el)
+            return undefined;
+        // 检查是否落在面板标题区（投放到根目录）
+        if (el.closest('.cgfm-header')) {
+            return null;
+        }
+        const targetRow = el.closest('.cgfm-row[data-folder-id]');
+        if (!targetRow)
+            return undefined;
+        const targetFolderId = targetRow.dataset.folderId;
+        // 拖拽合法性检查
+        if (this.activeSession.type === 'folder') {
+            const sourceFolderId = this.activeSession.sourceId;
+            if (targetFolderId === sourceFolderId)
+                return undefined;
+            // 检查循环嵌套：目标不能是源文件夹的子孙
+            const data = this.opts.getData();
+            let p = targetFolderId;
+            while (p) {
+                if (p === sourceFolderId)
+                    return undefined;
+                p = data.folders[p]?.parentId ?? null;
+            }
+        }
+        return targetFolderId;
+    }
+    highlightDropTarget(x, y) {
+        if (!this.activeSession)
+            return;
+        const el = document.elementFromPoint(x, y);
+        const targetRow = el?.closest('.cgfm-row[data-folder-id]') ?? null;
+        if (this.activeSession.currentTarget && this.activeSession.currentTarget !== targetRow) {
+            this.activeSession.currentTarget.classList.remove('cgfm-drag-over');
+            this.activeSession.currentTarget = null;
+        }
+        if (targetRow) {
+            const valid = this.resolveDropTarget(x, y) !== undefined;
+            if (valid) {
+                targetRow.classList.add('cgfm-drag-over');
+                this.activeSession.currentTarget = targetRow;
+            }
+        }
+    }
+}
+exports.PointerDragManager = PointerDragManager;
 
 },
 "sync":function(require,module,exports){
@@ -155,68 +700,96 @@ exports.merge = merge;
 exports.davRequest = davRequest;
 exports.decodeRemote = decodeRemote;
 exports.createRemote = createRemote;
-exports.addPending = addPending;
 const model_1 = require("./model");
-/* Merge each changed field against a shared snapshot, with deletion winning and
-   a deterministic tie-break on conflicting same-field values. */
+/**
+ * 基于基准快照的三方字段级合并引擎
+ * 删除优先，同属性并发冲突按规范化 JSON 字典序仲裁
+ */
 function merge(base, local, remote) {
-    (0, model_1.validate)(base);
-    (0, model_1.validate)(local);
-    (0, model_1.validate)(remote);
-    const result = (0, model_1.blank)(), conflicts = [];
-    const mergeSet = (kind, b, l, r) => {
+    (0, model_1.validateData)(base);
+    (0, model_1.validateData)(local);
+    (0, model_1.validateData)(remote);
+    const result = (0, model_1.blankData)();
+    const conflicts = [];
+    const mergeEntities = (kind, bMap, lMap, rMap) => {
         const out = {};
-        for (const id of new Set([...Object.keys(b), ...Object.keys(l), ...Object.keys(r)])) {
-            const bv = b[id], lv = l[id], rv = r[id];
+        const allIds = new Set([...Object.keys(bMap), ...Object.keys(lMap), ...Object.keys(rMap)]);
+        for (const id of allIds) {
+            const bv = bMap[id];
+            const lv = lMap[id];
+            const rv = rMap[id];
+            // 新增情况
             if (!bv) {
                 if (lv && rv) {
-                    if (JSON.stringify(lv) !== JSON.stringify(rv))
+                    if (JSON.stringify(lv) !== JSON.stringify(rv)) {
                         conflicts.push(`${kind}:${id}:concurrent-create`);
-                    out[id] = (0, model_1.copy)(JSON.stringify(lv) < JSON.stringify(rv) ? lv : rv);
+                        out[id] = (0, model_1.clone)(JSON.stringify(lv) < JSON.stringify(rv) ? lv : rv);
+                    }
+                    else {
+                        out[id] = (0, model_1.clone)(lv);
+                    }
                 }
-                else if (lv || rv)
-                    out[id] = (0, model_1.copy)((lv || rv));
+                else if (lv || rv) {
+                    out[id] = (0, model_1.clone)((lv || rv));
+                }
                 continue;
             }
+            // 删除 vs 修改情况
             if (!lv || !rv) {
                 if (lv !== rv) {
                     conflicts.push(`${kind}:${id}:delete-vs-edit`);
+                    // 如果是对话，且另一方有实质更新，优先保留对话
                     if (kind === 'conversation') {
                         const surviving = lv || rv;
-                        if (surviving && JSON.stringify(surviving) !== JSON.stringify(bv))
-                            out[id] = (0, model_1.copy)(surviving);
+                        if (surviving && JSON.stringify(surviving) !== JSON.stringify(bv)) {
+                            out[id] = (0, model_1.clone)(surviving);
+                        }
                     }
                 }
                 continue;
             }
-            const v = {};
-            for (const field of new Set([...Object.keys(bv), ...Object.keys(lv), ...Object.keys(rv)])) {
-                const old = bv[field], a = lv[field], z = rv[field];
-                if (JSON.stringify(a) === JSON.stringify(z))
-                    v[field] = a;
-                else if (JSON.stringify(a) === JSON.stringify(old))
-                    v[field] = z;
-                else if (JSON.stringify(z) === JSON.stringify(old))
-                    v[field] = a;
+            // 双方都保留，进行字段级合并
+            const obj = {};
+            const allFields = new Set([
+                ...Object.keys(bv),
+                ...Object.keys(lv),
+                ...Object.keys(rv)
+            ]);
+            for (const field of allFields) {
+                const oldVal = bv[field];
+                const localVal = lv[field];
+                const remoteVal = rv[field];
+                if (JSON.stringify(localVal) === JSON.stringify(remoteVal)) {
+                    obj[field] = localVal;
+                }
+                else if (JSON.stringify(localVal) === JSON.stringify(oldVal)) {
+                    obj[field] = remoteVal;
+                }
+                else if (JSON.stringify(remoteVal) === JSON.stringify(oldVal)) {
+                    obj[field] = localVal;
+                }
                 else {
-                    v[field] = JSON.stringify(a) < JSON.stringify(z) ? a : z;
+                    // 真正的并发冲突，选择字典序较小者，并记录冲突日志
+                    obj[field] = JSON.stringify(localVal) < JSON.stringify(remoteVal) ? localVal : remoteVal;
                     conflicts.push(`${kind}:${id}:${field}`);
                 }
             }
-            out[id] = v;
+            out[id] = obj;
         }
         return out;
     };
-    result.folders = mergeSet('folder', base.folders, local.folders, remote.folders);
-    result.conversations = mergeSet('conversation', base.conversations, local.conversations, remote.conversations);
-    // Concurrent moves may form a cycle; normalize to root deterministically.
-    for (const f of Object.values(result.folders))
+    result.folders = mergeEntities('folder', base.folders, local.folders, remote.folders);
+    result.conversations = mergeEntities('conversation', base.conversations, local.conversations, remote.conversations);
+    // 修复因并发移动可能导致的循环依赖与失效父级
+    for (const f of Object.values(result.folders)) {
         if (f.parentId && !result.folders[f.parentId]) {
             conflicts.push(`folder:${f.id}:missing-parent`);
             f.parentId = null;
         }
+    }
     for (const id of Object.keys(result.folders).sort()) {
-        const f = result.folders[id], visited = new Set([id]);
+        const f = result.folders[id];
+        const visited = new Set([id]);
         let p = f.parentId;
         while (p) {
             if (visited.has(p)) {
@@ -228,1257 +801,1462 @@ function merge(base, local, remote) {
             p = result.folders[p]?.parentId ?? null;
         }
     }
-    // Never silently discard an assignment during delete-vs-move conflicts.
-    // Attach unresolved conversation references to a stable recovery folder.
+    // 绝不静默丢失因文件夹删除而成为孤儿的对话，将其挂载到“冲突恢复”安全文件夹
     const orphans = Object.values(result.conversations).filter(c => !result.folders[c.folderId]);
-    if (orphans.length) {
+    if (orphans.length > 0) {
         const recoveryId = 'cgfm-recovered-conversations';
-        if (!result.folders[recoveryId])
-            result.folders[recoveryId] = { id: recoveryId, parentId: null, name: '冲突恢复的对话', color: '#d97706', collapsed: false, createdAt: 0, updatedAt: 0 };
+        if (!result.folders[recoveryId]) {
+            result.folders[recoveryId] = {
+                id: recoveryId,
+                parentId: null,
+                name: '冲突恢复的对话',
+                color: '#f59e0b',
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+            };
+        }
         for (const c of orphans) {
             conflicts.push(`conversation:${c.id}:orphan:${c.folderId}`);
             c.folderId = recoveryId;
         }
     }
-    (0, model_1.validate)(result);
+    (0, model_1.validateData)(result);
     return { data: result, conflicts };
 }
-function davRequest(config, method, extra = {}, body) {
-    const path = config.url.replace(/\/+$/, '') + '/' + encodeURIComponent(config.file || 'chatgpt-folders-ts-v1.json');
-    if (!/^https:\/\//i.test(path))
-        return Promise.reject(Error('WebDAV 必须使用 HTTPS'));
+function davRequest(config, method, extraHeaders = {}, body) {
+    const file = config.file || 'chatgpt-folders-v2.json';
+    const path = config.url.replace(/\/+$/, '') + '/' + encodeURIComponent(file);
+    if (!/^https:\/\//i.test(path)) {
+        return Promise.reject(new Error('WebDAV 服务必须使用安全的 HTTPS 协议'));
+    }
     return new Promise((resolve, reject) => {
-        const headers = { Authorization: 'Basic ' + btoa(unescape(encodeURIComponent(`${config.username}:${config.password}`))), ...extra };
-        if (body !== undefined)
+        const headers = {
+            Authorization: 'Basic ' + btoa(unescape(encodeURIComponent(`${config.username}:${config.password}`))),
+            ...extraHeaders
+        };
+        if (body !== undefined) {
             headers['Content-Type'] = 'application/json; charset=utf-8';
-        GM_xmlhttpRequest({ method, url: path, headers, data: body, timeout: 20000, onload: (r) => {
+        }
+        GM_xmlhttpRequest({
+            method,
+            url: path,
+            headers,
+            data: body,
+            timeout: 20000,
+            onload: (r) => {
                 const rawEtag = (r.responseHeaders || '').match(/^etag:\s*(.+)$/im)?.[1]?.trim() ?? null;
                 let etag = null;
                 if (rawEtag) {
-                    etag = rawEtag.replace(/^W\//i, '').replace(/-gzip(?="?$)/i, '').replace(/-br(?="?$)/i, '').trim();
+                    etag = rawEtag
+                        .replace(/^W\//i, '')
+                        .replace(/-gzip(?="?$)/i, '')
+                        .replace(/-br(?="?$)/i, '')
+                        .trim();
                     if (!etag.startsWith('"'))
                         etag = `"${etag}"`;
                 }
-                resolve({ status: r.status, text: String(r.responseText || ''), etag });
-            }, onerror: () => reject(Error('WebDAV 网络错误')), ontimeout: () => reject(Error('WebDAV 请求超时')) });
+                resolve({
+                    status: r.status,
+                    text: String(r.responseText || ''),
+                    etag
+                });
+            },
+            onerror: () => reject(new Error('WebDAV 网络请求失败，请检查网络或地址')),
+            ontimeout: () => reject(new Error('WebDAV 请求超时'))
+        });
     });
 }
 function decodeRemote(raw, account) {
-    const e = JSON.parse(raw);
-    if (e.protocol !== 'cgfm-ts' || e.version !== 1 || e.account !== account || !Number.isSafeInteger(e.revision))
-        throw Error('云端文件版本或账号不匹配');
-    (0, model_1.validate)(e.data);
-    return e;
+    const env = JSON.parse(raw);
+    if (env.protocol !== 'cgfm-v2' ||
+        env.version !== 2 ||
+        env.account !== account ||
+        !Number.isSafeInteger(env.revision)) {
+        throw new Error('云端文件版本、协议或绑定的账号不匹配');
+    }
+    (0, model_1.validateData)(env.data);
+    return env;
 }
 function createRemote(account, device, revision, data) {
-    return { protocol: 'cgfm-ts', version: 1, account, revision, writer: device, data: (0, model_1.copy)(data) };
-}
-function addPending(old, newItems) { return [...old, ...newItems].slice(-5000); }
-
-},
-"icons":function(require,module,exports){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.icon = icon;
-// Lucide official SVG path data, from https://github.com/lucide-icons/lucide/tree/main/icons
-// Use original paths without external runtime dependencies.
-const paths = {
-    "folder-plus": "<path d=\"M12 10v6\"/><path d=\"M9 13h6\"/><path d=\"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z\"/>",
-    "refresh-cw": "<path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M8 16H3v5\"/>",
-    "settings": "<path d=\"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>",
-    "pin": "<path d=\"M12 17v5\"/><path d=\"M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z\"/>",
-    "pin-off": "<path d=\"M12 17v5\"/><path d=\"M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89\"/><path d=\"m2 2 20 20\"/><path d=\"M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11\"/>",
-    "folder": "<path d=\"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z\"/>",
-    "message-circle": "<path d=\"M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719\"/>",
-    "chevron-right": "<path d=\"m9 18 6-6-6-6\"/>",
-    "chevron-down": "<path d=\"m6 9 6 6 6-6\"/>",
-    "ellipsis": "<circle cx=\"12\" cy=\"12\" r=\"1\"/><circle cx=\"19\" cy=\"12\" r=\"1\"/><circle cx=\"5\" cy=\"12\" r=\"1\"/>",
-    "eye": "<path d=\"M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>",
-    "eye-off": "<path d=\"M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49\"/><path d=\"M14.084 14.158a3 3 0 0 1-4.242-4.242\"/><path d=\"M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143\"/><path d=\"m2 2 20 20\"/>",
-    "x": "<path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/>",
-    "download": "<path d=\"M12 15V3\"/><path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><path d=\"m7 10 5 5 5-5\"/>",
-    "upload": "<path d=\"M12 3v12\"/><path d=\"m17 8-5-5-5 5\"/><path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/>",
-    "pencil": "<path d=\"M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z\"/><path d=\"m15 5 4 4\"/>",
-    "palette": "<circle cx=\"13.5\" cy=\"6.5\" r=\".5\" fill=\"currentColor\"/><circle cx=\"17.5\" cy=\"10.5\" r=\".5\" fill=\"currentColor\"/><circle cx=\"8.5\" cy=\"7.5\" r=\".5\" fill=\"currentColor\"/><circle cx=\"6.5\" cy=\"12.5\" r=\".5\" fill=\"currentColor\"/><path d=\"M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z\"/>",
-    "trash-2": "<path d=\"M3 6h18\"/><path d=\"M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6\"/><path d=\"M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2\"/><line x1=\"10\" x2=\"10\" y1=\"11\" y2=\"17\"/><line x1=\"14\" x2=\"14\" y1=\"11\" y2=\"17\"/>",
-    "folder-input": "<path d=\"M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1\"/><path d=\"M2 13h10\"/><path d=\"m9 10 3 3-3 3\"/>"
-};
-function icon(name) {
-    const body = paths[name];
-    if (!body)
-        throw Error('Unknown Lucide icon: ' + name);
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+    return {
+        protocol: 'cgfm-v2',
+        version: 2,
+        account,
+        revision,
+        writer: device,
+        data: (0, model_1.clone)(data)
+    };
 }
 
 },
-"runtime":function(require,module,exports){
+"styles":function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FolderApplication = void 0;
-const model_1 = require("./model");
-const sync_1 = require("./sync");
-const icons_1 = require("./icons");
-const style = `
-#cgfm-next-root .cgfm-head button{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;padding:5px;color:var(--cg-text)}#cgfm-next-root .cgfm-head button svg{width:17px;height:17px}#cgfm-next-root .cgfm-head button[data-act="pin"][aria-pressed="true"]{color:#2876db;background:rgba(59,130,246,.15)}#cgfm-next-root .cgfm-head button[data-act="sync"][aria-busy="true"] svg{animation:cgfm-spin 1s linear infinite}@keyframes cgfm-spin{to{transform:rotate(360deg)}}
-#cgfm-next-root .cgfm-head button[data-sync-state="synced"]{color:#16856b}#cgfm-next-root .cgfm-head button[data-sync-state="pending"]{color:#c48b29}#cgfm-next-root .cgfm-head button[data-sync-state="syncing"]{color:#2876db}#cgfm-next-root .cgfm-head button[data-sync-state="error"]{color:#d14b4b}#cgfm-next-root .cgfm-head button[data-sync-state="unconfigured"]{color:var(--cg-muted)}#cgfm-next-root .cgfm-head .cgfm-head-title{font-size:12px;font-weight:600;opacity:.7;padding-left:3px;user-select:none;flex:1}#cgfm-next-root .cgfm-row button svg{width:16px;height:16px}
-#cgfm-next-root .cgfm-pop.cgfm-settings{width:min(420px,calc(100vw - 24px));max-width:calc(100vw - 24px)!important;min-width:0!important;max-height:calc(100dvh - 24px);overflow-y:auto;overscroll-behavior:contain;padding:0;border-radius:12px;box-shadow:0 18px 42px var(--cg-shadow);border:1px solid var(--cg-border)}
-#cgfm-next-root .cgfm-settings-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--cg-border);position:sticky;top:0;background:var(--cg-bg);z-index:1}
-#cgfm-next-root .cgfm-settings-header strong{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--cg-text)}
-#cgfm-next-root .cgfm-settings-close{width:28px;height:28px;padding:0;margin:0;border:0;border-radius:6px;background:transparent;color:var(--cg-muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s ease,color .15s ease}
-#cgfm-next-root .cgfm-settings-close:hover{background:var(--cg-hover);color:var(--cg-text)}
-#cgfm-next-root .cgfm-settings-close svg{width:16px;height:16px}
-#cgfm-next-root .cgfm-settings-body{padding:16px;display:flex;flex-direction:column;gap:16px}
-#cgfm-next-root .cgfm-settings-section{padding:0;margin:0}
-#cgfm-next-root .cgfm-settings-section h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--cg-muted);margin:0 0 10px}
-#cgfm-next-root .cgfm-settings label{display:flex;flex-direction:column;gap:5px;margin:0 0 11px;font-size:12px;color:var(--cg-muted)}
-#cgfm-next-root .cgfm-settings input:not([type=checkbox]):not([type=range]){height:36px;padding:7px 10px;font-size:13px;color:var(--cg-text);min-width:0;border-radius:6px}
-#cgfm-next-root .cgfm-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-#cgfm-next-root .cgfm-settings-grid>*{min-width:0}
-#cgfm-next-root .cgfm-settings-actions{display:flex;gap:8px;flex-wrap:wrap}
-#cgfm-next-root .cgfm-settings-actions button{margin:0;padding:7px 14px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--cg-border);border-radius:7px;background:var(--cg-hover);color:var(--cg-text);font-size:13px;font-weight:500;cursor:pointer;transition:all .15s ease}
-#cgfm-next-root .cgfm-settings-actions button:hover{background:var(--cg-input);border-color:var(--cg-muted)}
-#cgfm-next-root .cgfm-settings-actions button:disabled{opacity:.5;cursor:not-allowed}
-#cgfm-next-root .cgfm-settings-actions button svg{width:15px;height:15px}
-#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions{display:flex;flex-wrap:nowrap;gap:8px}
-#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions button{padding:8px 10px;white-space:nowrap;font-size:13px;font-weight:500;flex:1;justify-content:center;border:1px solid var(--cg-border);border-radius:7px}
-#cgfm-next-root .cgfm-settings-row-between{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-#cgfm-next-root .cgfm-width-val{font-size:13px;font-weight:600;color:var(--cg-text)}
-#cgfm-next-root .cgfm-dav-status{padding:8px 12px;margin-top:10px;border-radius:8px;font-size:12px;border:1px solid var(--cg-border);background:var(--cg-hover);color:var(--cg-text);overflow-wrap:anywhere;display:flex;align-items:center;gap:6px}
-#cgfm-next-root .cgfm-dav-status[data-type="success"]{border-color:#16856b;color:#16856b;background:rgba(22,133,107,.1)}
-#cgfm-next-root .cgfm-dav-status[data-type="error"]{border-color:#d14b4b;color:#d14b4b;background:rgba(209,75,75,.1)}
-#cgfm-next-root .cgfm-dav-status[data-type="loading"]{border-color:#2876db;color:#2876db;background:rgba(40,118,219,.1)}
-#cgfm-next-root .cgfm-dav-status svg{width:15px;height:15px;animation:cgfm-spin 1s linear infinite}
-#cgfm-next-root .cgfm-settings-footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:12px 16px;position:sticky;bottom:0;background:var(--cg-bg);z-index:1;border-top:1px solid var(--cg-border)}
-#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel{margin:0;padding:8px 15px;border:1px solid var(--cg-border);border-radius:7px;background:transparent;color:var(--cg-text);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s ease}
-#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel:hover{background:var(--cg-hover)}
-#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save{margin:0;padding:8px 18px;border:1px solid #2876db;border-radius:7px;background:#2876db;color:#fff;font-size:13px;font-weight:500;cursor:pointer;transition:opacity .15s ease}
-#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save:hover{opacity:.9}
-#cgfm-next-root .cgfm-settings .cgfm-danger{color:#b45309}
-#cgfm-next-root .cgfm-settings-result{padding:9px 12px;margin:0 16px 10px;border:1px solid var(--cg-border);border-radius:8px;color:var(--cg-text);background:var(--cg-hover);font-size:12px;overflow-wrap:anywhere}
-#cgfm-next-root .cgfm-password-wrap{position:relative;display:flex;align-items:center;min-width:0}
-#cgfm-next-root .cgfm-password-wrap input{padding-right:42px!important;min-width:0}
-#cgfm-next-root .cgfm-password-wrap button{position:absolute;right:4px;top:50%;transform:translateY(-50%);margin:0;width:30px;height:30px;display:grid;place-items:center;border:0;background:transparent}
-#cgfm-next-root .cgfm-password-wrap button svg{width:17px;height:17px}
-#cgfm-next-root .cgfm-settings input{min-width:0}
-#cgfm-next-root .cgfm-settings input[type=range]{width:100%;height:18px;padding:0;accent-color:#2876db;cursor:pointer}
-#cgfm-next-root .cgfm-settings .cgfm-slider-line{display:flex;justify-content:space-between;color:var(--cg-muted);font-size:11px}
-#cgfm-next-root .cgfm-pop.cgfm-menu-box{min-width:160px;max-width:240px;padding:4px;border-radius:10px;box-shadow:0 12px 32px var(--cg-shadow);border:1px solid var(--cg-border);background:var(--cg-bg);display:flex;flex-direction:column;gap:1px}
-#cgfm-next-root .cgfm-menu-item{display:flex;align-items:center;gap:8px;width:100%;padding:6px 10px;border:0!important;border-radius:6px;background:transparent;color:var(--cg-text);font-size:13px;cursor:pointer;text-align:left;transition:background .12s ease,color .12s ease;user-select:none;margin:0!important}
-#cgfm-next-root .cgfm-menu-item:hover{background:var(--cg-hover)}
-#cgfm-next-root .cgfm-menu-item.cgfm-menu-danger{color:#ef4444}
-#cgfm-next-root .cgfm-menu-item.cgfm-menu-danger:hover{background:rgba(239,68,68,.12);color:#dc2626}
-#cgfm-next-root .cgfm-menu-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:inherit;opacity:.85}
-#cgfm-next-root .cgfm-menu-icon svg{width:15px;height:15px}
-#cgfm-next-root .cgfm-menu-divider{height:1px;margin:4px 0;background:var(--cg-border)}
-#cgfm-next-root .cgfm-menu-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#cgfm-next-root .cgfm-menu-arrow{display:inline-flex;align-items:center;opacity:.5;margin-left:auto}
-#cgfm-next-root .cgfm-menu-arrow svg{width:14px;height:14px}
-#cgfm-next-root .cgfm-pop.cgfm-submenu{position:fixed;z-index:2147483002;padding:6px;min-width:auto;border-radius:10px;box-shadow:0 12px 32px var(--cg-shadow);border:1px solid var(--cg-border);background:var(--cg-bg)}
-#cgfm-next-root .cgfm-color-grid{display:grid;grid-template-columns:repeat(5,22px);gap:6px;padding:2px}
-#cgfm-next-root .cgfm-color-dot{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;outline:none;transition:transform .12s ease,border-color .12s ease}
-#cgfm-next-root .cgfm-color-dot:hover{transform:scale(1.18);border-color:var(--cg-text)}
-#cgfm-next-root .cgfm-color-dot.cgfm-color-active{border-color:var(--cg-text);box-shadow:0 0 0 1.5px var(--cg-bg)}
-#cgfm-next-root .cgfm-confirm-title{font-size:13px;font-weight:600;margin-bottom:6px;color:var(--cg-text)}
-#cgfm-next-root .cgfm-confirm-desc{font-size:12px;color:var(--cg-muted);line-height:1.45;margin-bottom:12px}
-#cgfm-next-root .cgfm-confirm-actions{display:flex;justify-content:flex-end;gap:8px}
-#cgfm-next-root .cgfm-confirm-actions button{margin:0;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s}
-#cgfm-next-root .cgfm-confirm-actions .cgfm-btn-danger{border:1px solid #ef4444;background:#ef4444;color:#fff}
-#cgfm-next-root .cgfm-confirm-actions .cgfm-btn-danger:hover{opacity:.9}
-#cgfm-next-root .cgfm-confirm-actions .cgfm-btn-save{border:1px solid #2876db;background:#2876db;color:#fff}
-#cgfm-next-root .cgfm-confirm-actions .cgfm-btn-save:hover{opacity:.9}
-#cgfm-next-root .cgfm-confirm-actions .cgfm-btn-cancel{border:1px solid var(--cg-border);background:transparent;color:var(--cg-text)}
-#cgfm-next-root .cgfm-confirm-actions .cgfm-btn-cancel:hover{background:var(--cg-hover)}
+exports.STYLES = void 0;
+exports.STYLES = `
+:root {
+  --cg-bg: #ffffff;
+  --cg-panel-bg: #ffffff;
+  --cg-text: #0d0d0d;
+  --cg-border: #e5e7eb;
+  --cg-hover: #f3f4f6;
+  --cg-input: #f9fafb;
+  --cg-muted: #6b7280;
+  --cg-shadow: rgba(0, 0, 0, 0.12);
+  --cg-accent: #10a37f;
+  --cg-sidebar-width: 312px;
+}
 
-#cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--cg-text);--cg-bg:#f4f4f2;--cg-text:#0d0d0d;--cg-muted:#656565;--cg-border:#d4d4d2;--cg-hover:#e8e8e6;--cg-input:#fff;--cg-shadow:#0002}
-html[data-cgfm-theme="dark"] #cgfm-next-root{--cg-bg:#212121;--cg-text:#ececec;--cg-muted:#b4b4b4;--cg-border:#424242;--cg-hover:#343434;--cg-input:#2b2b2b;--cg-shadow:#0007}
-#cgfm-next-root *{box-sizing:border-box}#cgfm-next-rail-entry{display:flex;align-items:center;justify-content:center;width:100%;flex:none}#cgfm-next-rail{display:flex;align-items:center;justify-content:center;width:36px;height:36px;padding:8px;border:0;border-radius:10px;background:transparent;color:var(--text-secondary,var(--token-text-tertiary,currentColor));cursor:pointer}#cgfm-next-rail:hover,#cgfm-next-rail[data-cgfm-open="true"]{background:var(--sidebar-surface-secondary,rgba(128,128,128,.14));color:var(--text-primary,currentColor)}#cgfm-next-rail svg{width:20px;height:20px;fill:none;stroke:#3A83F7;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}#cgfm-next-launch{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:12px;padding:10px;cursor:pointer}
-#cgfm-next-panel{position:absolute;top:0;left:45px;width:330px;max-height:100dvh;display:none;flex-direction:column;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:14px;box-shadow:0 8px 36px var(--cg-shadow);overflow:hidden}
-#cgfm-next-root[data-open="yes"] #cgfm-next-panel{display:flex}.cgfm-head{display:flex;align-items:center;gap:3px;padding:6px 9px 4px}
-.cgfm-scroll{overflow:auto;flex:1;min-height:70px;padding:7px}.cgfm-row{min-height:32px;display:flex;align-items:center;gap:5px;border-radius:7px;padding:2px 5px;cursor:pointer;user-select:none}.cgfm-row:hover,.cgfm-row.cgfm-selected{background:var(--cg-hover)}.cgfm-row.cgfm-drop{outline:2px solid #70a6f0}
-.cgfm-item-icon{display:flex;align-items:center;justify-content:center;width:20px;min-width:20px;height:20px}.cgfm-item-icon svg{width:20px;height:20px;stroke-width:2}.cgfm-row span.cgfm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.cgfm-row button,.cgfm-head button{border:0;color:inherit;background:transparent;cursor:pointer;border-radius:6px;padding:4px 6px}.cgfm-row button:hover,.cgfm-head button:hover{background:#8884}
-.cgfm-group{padding:9px 7px 4px;font-size:12px;opacity:.65}.cgfm-pop{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:10px;padding:12px;box-shadow:0 8px 30px var(--cg-shadow);color:var(--cg-text)}.cgfm-pop input,.cgfm-pop select{color:var(--cg-text);background:var(--cg-input);border:1px solid var(--cg-border);padding:6px;border-radius:6px;width:100%}.cgfm-pop input[type=checkbox]{width:auto}.cgfm-pop label{display:block;margin:7px 0}.cgfm-pop:not(.cgfm-menu-box):not(.cgfm-settings) button{margin:3px;border:1px solid var(--cg-border);border-radius:6px;padding:6px;background:transparent;color:inherit;cursor:pointer}.cgfm-muted{color:var(--cg-muted);font-size:11px}.cgfm-foot{padding:7px 11px;border-top:1px solid var(--cg-border);font-size:11px;cursor:pointer}
+:root[class*="dark"], .dark, html[data-theme="dark"] {
+  --cg-bg: #171717;
+  --cg-panel-bg: #1e1e1e;
+  --cg-text: #ececec;
+  --cg-border: #303030;
+  --cg-hover: #262626;
+  --cg-input: #202020;
+  --cg-muted: #8e8ea0;
+  --cg-shadow: rgba(0, 0, 0, 0.45);
+  --cg-accent: #10a37f;
+}
+
+/* 官方导航 Rail 挂载按钮 */
+.cgfm-rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--cg-text);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  position: relative;
+}
+.cgfm-rail-btn:hover, .cgfm-rail-btn.active {
+  background: var(--cg-hover);
+}
+.cgfm-rail-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 独立根面板 */
+#cgfm-root {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 60px;
+  width: var(--cg-sidebar-width);
+  background: var(--cg-panel-bg);
+  color: var(--cg-text);
+  border-right: 1px solid var(--cg-border);
+  box-shadow: 4px 0 24px var(--cg-shadow);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+  font-family: inherit;
+  font-size: 13px;
+  user-select: none;
+}
+
+#cgfm-root.cgfm-open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 头部操作栏 */
+.cgfm-header {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--cg-border);
+  flex-shrink: 0;
+}
+.cgfm-header-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cgfm-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cgfm-tool-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--cg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.cgfm-tool-btn:hover {
+  background: var(--cg-hover);
+  color: var(--cg-text);
+}
+.cgfm-tool-btn.active {
+  background: rgba(16, 163, 127, 0.15);
+  color: var(--cg-accent);
+}
+.cgfm-tool-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.cgfm-tool-btn[data-sync-state="synced"] { color: #10b981; }
+.cgfm-tool-btn[data-sync-state="pending"] { color: #f59e0b; }
+.cgfm-tool-btn[data-sync-state="syncing"] svg { animation: cgfm-spin 1s linear infinite; }
+.cgfm-tool-btn[data-sync-state="error"] { color: #ef4444; }
+
+@keyframes cgfm-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 滚动区 */
+.cgfm-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 6px;
+  scrollbar-width: thin;
+}
+
+/* 区域小标题 */
+.cgfm-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--cg-muted);
+  letter-spacing: 0.04em;
+  padding: 8px 10px 4px;
+  margin-top: 6px;
+}
+
+/* 文件夹与对话行 */
+.cgfm-row {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin: 1px 0;
+  transition: background 0.12s ease;
+  position: relative;
+  gap: 6px;
+}
+.cgfm-row:hover {
+  background: var(--cg-hover);
+}
+.cgfm-row.cgfm-drag-over {
+  background: rgba(16, 163, 127, 0.2) !important;
+  outline: 1px dashed var(--cg-accent);
+}
+
+.cgfm-chevron {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cg-muted);
+  flex-shrink: 0;
+}
+.cgfm-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.cgfm-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cgfm-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--cg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.cgfm-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.cgfm-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--cg-text);
+  line-height: 1.2;
+}
+
+.cgfm-row-actions {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.cgfm-row:hover .cgfm-row-actions,
+.cgfm-row-actions.active {
+  display: flex;
+}
+
+.cgfm-mini-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  color: var(--cg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.cgfm-mini-btn:hover {
+  background: var(--cg-input);
+  color: var(--cg-text);
+}
+.cgfm-mini-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* 行内编辑框 */
+.cgfm-inline-edit {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 4px;
+}
+.cgfm-inline-input {
+  flex: 1;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--cg-accent);
+  background: var(--cg-input);
+  color: var(--cg-text);
+  font-size: 12px;
+  outline: none;
+}
+
+/* 上下文下拉菜单 Dropdown */
+.cgfm-menu {
+  position: fixed;
+  background: var(--cg-panel-bg);
+  border: 1px solid var(--cg-border);
+  border-radius: 8px;
+  box-shadow: 0 10px 25px var(--cg-shadow);
+  padding: 4px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  min-width: 140px;
+}
+.cgfm-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  background: transparent;
+  border: none;
+  color: var(--cg-text);
+  font-size: 12px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s ease;
+  position: relative;
+}
+.cgfm-menu-item:hover {
+  background: var(--cg-hover);
+}
+.cgfm-menu-item.danger {
+  color: #ef4444;
+}
+.cgfm-menu-item svg {
+  width: 14px;
+  height: 14px;
+  color: var(--cg-muted);
+}
+.cgfm-menu-item.danger svg {
+  color: #ef4444;
+}
+
+/* 调色板二级色块菜单 (Palette Grid) */
+.cgfm-palette-wrap {
+  position: relative;
+}
+.cgfm-palette-grid {
+  position: absolute;
+  left: 100%;
+  top: -4px;
+  padding: 6px;
+  display: grid;
+  grid-template-columns: repeat(5, 20px);
+  gap: 6px;
+  background: var(--cg-panel-bg);
+  border: 1px solid var(--cg-border);
+  border-radius: 8px;
+  box-shadow: 0 10px 25px var(--cg-shadow);
+  display: none;
+  z-index: 2100;
+}
+.cgfm-palette-wrap:hover .cgfm-palette-grid,
+.cgfm-palette-grid:hover {
+  display: grid;
+}
+.cgfm-color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+.cgfm-color-swatch:hover {
+  transform: scale(1.18);
+}
+
+/* 自绘原位删除确认框 */
+.cgfm-confirm-card {
+  position: fixed;
+  background: var(--cg-panel-bg);
+  border: 1px solid var(--cg-border);
+  border-radius: 8px;
+  box-shadow: 0 12px 28px var(--cg-shadow);
+  padding: 12px;
+  z-index: 2200;
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cgfm-confirm-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cg-text);
+  line-height: 1.4;
+}
+.cgfm-confirm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.cgfm-btn-cancel, .cgfm-btn-danger {
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--cg-border);
+}
+.cgfm-btn-cancel {
+  background: transparent;
+  color: var(--cg-text);
+}
+.cgfm-btn-cancel:hover {
+  background: var(--cg-hover);
+}
+.cgfm-btn-danger {
+  background: #ef4444;
+  color: #ffffff;
+  border-color: #ef4444;
+}
+.cgfm-btn-danger:hover {
+  background: #dc2626;
+}
+
+/* 紧凑设置弹窗 */
+.cgfm-settings-panel {
+  position: fixed;
+  top: 0;
+  left: calc(60px + var(--cg-sidebar-width));
+  width: 360px;
+  max-height: 100vh;
+  overflow-y: auto;
+  background: var(--cg-panel-bg);
+  border-right: 1px solid var(--cg-border);
+  box-shadow: 6px 0 24px var(--cg-shadow);
+  z-index: 1050;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.cgfm-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cgfm-settings-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.cgfm-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cgfm-settings-field label {
+  font-size: 12px;
+  color: var(--cg-muted);
+}
+.cgfm-settings-field input[type="text"],
+.cgfm-settings-field input[type="password"] {
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--cg-border);
+  background: var(--cg-input);
+  color: var(--cg-text);
+  font-size: 13px;
+  outline: none;
+}
+.cgfm-settings-field input[type="text"]:focus,
+.cgfm-settings-field input[type="password"]:focus {
+  border-color: var(--cg-accent);
+}
+.cgfm-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cgfm-action-group {
+  display: flex;
+  gap: 8px;
+}
+.cgfm-primary-btn {
+  flex: 1;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--cg-accent);
+  color: #ffffff;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.cgfm-primary-btn:hover {
+  background: #0d8a6a;
+}
+.cgfm-secondary-btn {
+  flex: 1;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--cg-hover);
+  color: var(--cg-text);
+  border: 1px solid var(--cg-border);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.cgfm-secondary-btn:hover {
+  background: var(--cg-input);
+}
+.cgfm-status-box {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--cg-hover);
+  border: 1px solid var(--cg-border);
+  color: var(--cg-muted);
+}
+.cgfm-status-box.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+.cgfm-status-box.success {
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+/* 拖拽浮动预览 */
+.cgfm-drag-preview {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  background: var(--cg-panel-bg);
+  border: 1px solid var(--cg-accent);
+  box-shadow: 0 8px 20px var(--cg-shadow);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--cg-text);
+  opacity: 0.95;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 `;
-class FolderApplication {
-    account = '';
-    profile = (0, model_1.defaultLocal)();
-    device = '';
-    railButton = null;
-    railEntry = null;
-    closeTimer = 0;
-    root;
-    panel;
-    list;
-    status;
-    launch;
-    readOnly = false;
-    pinned = false;
-    hovered = false;
-    selected = null;
-    editId = null;
-    busy = false;
-    dirty = false;
-    recent = [];
-    apiAt = 0;
-    lastRefresh = 0;
+
+},
+"ui":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.FolderUiController = void 0;
+const constants_1 = require("./constants");
+const model_1 = require("./model");
+const storage_1 = require("./storage");
+const api_1 = require("./api");
+const dnd_1 = require("./dnd");
+const sync_1 = require("./sync");
+const styles_1 = require("./styles");
+class FolderUiController {
+    storage;
+    api;
+    dragManager;
+    profile;
+    collapsedFolders;
+    rootEl;
+    railBtn = null;
+    settingsEl = null;
+    activeMenu = null;
+    activeConfirmCard = null;
+    isOpen = false;
+    isPinned = false;
+    isEditing = false;
+    isDragging = false;
+    closeTimer = null;
+    syncState = 'unconfigured';
+    isSyncing = false;
+    syncRetryTimer = null;
     syncFailures = 0;
-    syncRetryAt = 0;
-    authFailure = false;
-    timer = 0;
-    observer = null;
-    listener = 0;
-    generation = 0;
-    drag = null;
-    popup = null;
-    suppressClickUntil = 0;
-    ghost = null;
-    authHeaders = {};
-    authInstalled = false;
-    themeObserver = null;
-    recoveryQueued = false;
-    recovering = false;
-    collapsedLocal = {};
-    start() { this.device = GM_getValue('cgfm.next.device', '') || (0, model_1.uid)(); GM_setValue('cgfm.next.device', this.device); this.account = this.detectAccount(); this.load(); this.loadCollapsed(); this.loadTitleGuards(); this.loadRecents(); this.restoreAuth(); this.build(); this.updateTheme(); this.installAuthCapture(); this.bindGlobal(); this.scanRecents(); this.render(); this.timer = window.setInterval(() => { this.checkAccount(); if (Date.now() - this.lastRefresh > 30000) {
-        this.lastRefresh = Date.now();
-        if (this.isOpen())
-            this.scanRecents();
-    } if (this.profile.dav.url && document.visibilityState === 'visible')
-        void this.sync(false); }, 30000); window.setTimeout(() => { this.checkAccount(); this.mountRail(); }, 1500); }
-    updateTheme() { const html = document.documentElement; const scheme = getComputedStyle(html).colorScheme; const dark = html.classList.contains('dark') || html.getAttribute('data-theme') === 'dark' || (scheme === 'dark' && !html.classList.contains('light')); html.dataset.cgfmTheme = dark ? 'dark' : 'light'; }
-    key() { return `cgfm.next.account.${this.account}`; }
-    detectAccount() {
-        try {
-            const boot = document.getElementById('client-bootstrap')?.textContent;
-            if (boot) {
-                const value = JSON.parse(boot);
-                const user = value.session?.user || value.user, account = value.session?.account || value.account;
-                const id = account?.id || user?.email || user?.id;
-                if (id) {
-                    const key = `acct:${id}`;
-                    GM_setValue('cgfm.next.lastAccount', key);
-                    return key;
+    constructor() {
+        this.storage = new storage_1.StorageManager((newProfile) => {
+            this.profile = newProfile;
+            this.render();
+        });
+        this.api = new api_1.ChatApiManager();
+        this.profile = this.storage.loadProfile();
+        this.collapsedFolders = this.storage.loadCollapsedFolders();
+        this.isPinned = this.profile.preferences.customWidth; // 复用持久化状态或偏好
+    }
+    init() {
+        this.injectStyles();
+        this.createRootPanel();
+        this.setupRailWatcher();
+        this.setupAccountWatcher();
+        this.setupVisibilityWatcher();
+        this.dragManager = new dnd_1.PointerDragManager({
+            container: this.rootEl,
+            getData: () => this.profile.data,
+            onDragStart: () => {
+                this.isDragging = true;
+            },
+            onDragEnd: () => {
+                this.isDragging = false;
+            },
+            onDrop: (payload) => {
+                this.handleDrop(payload);
+            }
+        });
+        this.updateSyncState();
+        this.render();
+    }
+    injectStyles() {
+        if (document.getElementById('cgfm-styles'))
+            return;
+        const style = document.createElement('style');
+        style.id = 'cgfm-styles';
+        style.textContent = styles_1.STYLES;
+        document.head.appendChild(style);
+    }
+    createRootPanel() {
+        if (document.getElementById('cgfm-root'))
+            return;
+        this.rootEl = document.createElement('div');
+        this.rootEl.id = 'cgfm-root';
+        this.updatePanelWidth(this.profile.preferences.sidebarWidth || 312);
+        this.rootEl.addEventListener('pointerenter', () => {
+            this.clearCloseTimer();
+        });
+        this.rootEl.addEventListener('pointerleave', () => {
+            if (!this.isPinned && !this.isEditing && !this.isDragging && !this.settingsEl && !this.activeMenu && !this.activeConfirmCard) {
+                this.scheduleClose();
+            }
+        });
+        document.body.appendChild(this.rootEl);
+        // 全局点击关闭菜单
+        window.addEventListener('click', (e) => {
+            const target = e.target;
+            if (this.activeMenu && !this.activeMenu.contains(target) && !target.closest('.cgfm-mini-btn')) {
+                this.closeActiveMenu();
+            }
+            if (this.activeConfirmCard && !this.activeConfirmCard.contains(target)) {
+                this.closeActiveConfirm();
+            }
+        });
+    }
+    updatePanelWidth(width) {
+        const val = Math.max(260, Math.min(500, width));
+        this.profile.preferences.sidebarWidth = val;
+        this.rootEl.style.setProperty('--cg-sidebar-width', `${val}px`);
+    }
+    setupRailWatcher() {
+        const tryMount = () => {
+            if (this.railBtn && document.body.contains(this.railBtn))
+                return;
+            // 匹配 ChatGPT 左侧官方导航 rail
+            const rail = document.querySelector('nav[aria-label="Chat history"], nav, #app-shell-sidebar');
+            if (!rail)
+                return;
+            const container = rail.querySelector('div') || rail;
+            const btn = document.createElement('button');
+            btn.className = 'cgfm-rail-btn';
+            btn.type = 'button';
+            btn.title = 'ChatGPT 文件夹';
+            btn.innerHTML = constants_1.ICONS.rail;
+            btn.addEventListener('pointerenter', () => {
+                this.clearCloseTimer();
+                this.openPanel();
+            });
+            btn.addEventListener('pointerleave', () => {
+                if (!this.isPinned && !this.isEditing && !this.isDragging) {
+                    this.scheduleClose();
+                }
+            });
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.togglePin();
+            });
+            container.insertBefore(btn, container.firstChild);
+            this.railBtn = btn;
+        };
+        tryMount();
+        const obs = new MutationObserver(() => tryMount());
+        obs.observe(document.body, { childList: true, subtree: true });
+    }
+    setupAccountWatcher() {
+        const checkAccount = () => {
+            // 尝试从页面或全局状态获取 ChatGPT accountId
+            let detectedAccount = 'local';
+            try {
+                const match = document.cookie.match(/_account=([^;]+)/);
+                if (match)
+                    detectedAccount = match[1];
+            }
+            catch {
+                // 忽略
+            }
+            if (detectedAccount !== this.storage.getAccount()) {
+                this.storage.setAccount(detectedAccount);
+                this.api.setAccountId(detectedAccount);
+                this.profile = this.storage.loadProfile();
+                this.collapsedFolders = this.storage.loadCollapsedFolders();
+                this.render();
+            }
+        };
+        checkAccount();
+        setInterval(checkAccount, 3000);
+    }
+    setupVisibilityWatcher() {
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                if (this.profile.pending.length > 0) {
+                    this.sync(false);
                 }
             }
-        }
-        catch { }
-        const html = document.documentElement;
-        const themed = html?.getAttribute('data-theme-account-id') || html?.getAttribute('data-theme-user-id');
-        if (themed) {
-            const key = `acct:${themed}`;
-            GM_setValue('cgfm.next.lastAccount', key);
-            return key;
-        }
-        const w = unsafeWindow;
-        const id = w.__NEXT_DATA__?.props?.pageProps?.user?.id || document.querySelector('[data-account-id]')?.dataset.accountId;
-        if (id) {
-            const key = `acct:${id}`;
-            GM_setValue('cgfm.next.lastAccount', key);
-            return key;
-        }
-        return 'local';
+        });
     }
-    checkAccount() { const next = this.detectAccount(); if (next === this.account)
-        return; this.generation++; this.account = next; this.busy = false; this.recent = []; this.selected = null; this.dismissPopup(); this.load(); this.loadCollapsed(); this.loadTitleGuards(); this.loadRecents(); this.restoreAuth(); this.render(); }
-    load() {
-        this.readOnly = false;
-        if (this.listener)
-            GM_removeValueChangeListener(this.listener);
-        const raw = GM_getValue(this.key(), null);
-        const fresh = (0, model_1.defaultLocal)();
-        if (raw && typeof raw === 'object') {
-            const v = raw;
-            try {
-                if (v.data)
-                    (0, model_1.validate)(v.data);
-                if (v.base)
-                    (0, model_1.validate)(v.base);
-                this.profile = { ...fresh, ...v, preferences: { ...fresh.preferences, ...v.preferences }, dav: { ...fresh.dav, ...v.dav } };
-            }
-            catch (e) {
-                console.error('[CGFM] local validation failed', e);
-                this.profile = fresh;
-                this.notice('本地数据损坏：已暂停本地写入，请先备份并修复存储');
-                this.readOnly = true;
-            }
-        }
-        else
-            this.profile = fresh;
-        if (this.profile.dav.file === 'chatgpt-folders-ts-v1.json') {
-            let h = 2166136261;
-            for (const char of this.account) {
-                h ^= char.charCodeAt(0);
-                h = Math.imul(h, 16777619);
-            }
-            this.profile.dav.file = `chatgpt-folders-ts-${(h >>> 0).toString(16)}.json`;
-        }
-        this.dirty = this.profile.pending.length > 0;
-        this.listener = GM_addValueChangeListener(this.key(), (_k, _a, value, remote) => { if (!remote || !value)
-            return; try {
-            const other = value;
-            (0, model_1.validate)(other.data);
-            const m = (0, sync_1.merge)(this.profile.base, this.profile.data, other.data);
-            const pending = [...(other.pending || []), ...this.profile.pending].filter((x, i, a) => a.findIndex(y => y.id === x.id) === i);
-            const differs = JSON.stringify(other.data) !== JSON.stringify(m.data);
-            this.profile = { ...other, data: m.data, pending, conflicts: [...new Set([...(other.conflicts || []), ...m.conflicts])] };
-            if (differs) {
-                this.profile.pending.push(...(0, model_1.diff)(other.data, m.data, this.device, this.profile.pending.length));
-                this.persist();
-                this.scheduleSync();
-            }
-            this.render();
-        }
-        catch (e) {
-            console.error('[CGFM] cross tab merge', e);
-        } });
+    openPanel() {
+        this.isOpen = true;
+        this.rootEl.classList.add('cgfm-open');
+        if (this.railBtn)
+            this.railBtn.classList.add('active');
     }
-    loadCollapsed() { const value = GM_getValue('cgfm.next.collapsed.' + this.account, {}); this.collapsedLocal = value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
-    toggleCollapsed(id) { const folder = this.profile.data.folders[id]; if (!folder)
-        return; this.collapsedLocal[id] = !(this.collapsedLocal[id] ?? folder.collapsed); GM_setValue('cgfm.next.collapsed.' + this.account, this.collapsedLocal); this.render(); }
-    isCollapsed(folder) { return this.collapsedLocal[folder.id] ?? folder.collapsed; }
-    persist() { if (this.readOnly)
-        throw Error('本地数据损坏，写入被保护'); GM_setValue(this.key(), this.profile); this.dirty = this.profile.pending.length > 0; this.renderStatus(); }
-    apply(c) { try {
-        if (this.readOnly)
-            throw Error('本地数据损坏，写入被保护');
-        const before = this.profile.data;
-        const next = (0, model_1.command)(before, c);
-        this.profile.data = next;
-        this.profile.pending.push(...(0, model_1.diff)(before, next, this.device, this.profile.pending.length));
-        this.persist();
+    closePanel() {
+        if (this.isPinned || this.isEditing || this.isDragging || this.settingsEl || this.activeMenu || this.activeConfirmCard)
+            return;
+        this.isOpen = false;
+        this.rootEl.classList.remove('cgfm-open');
+        if (this.railBtn)
+            this.railBtn.classList.remove('active');
+        this.closeActiveMenu();
+        this.closeActiveConfirm();
+    }
+    togglePin() {
+        this.isPinned = !this.isPinned;
+        this.profile.preferences.customWidth = this.isPinned;
+        this.storage.saveProfile(this.profile);
+        if (this.isPinned) {
+            this.openPanel();
+        }
         this.render();
-        this.scheduleSync();
     }
-    catch (e) {
-        this.notice(String(e));
-    } }
-    scheduleSync() { if (!this.profile.dav.url)
-        return; window.clearTimeout(this.syncDelay); this.syncDelay = window.setTimeout(() => void this.sync(false), 12000); }
-    syncDelay = 0;
-    build() {
-        const s = document.createElement('style');
-        s.textContent = style;
-        s.dataset.cgfmStyle = '1';
-        (document.head || document.documentElement).append(s);
-        this.root = document.createElement('div');
-        this.root.id = 'cgfm-next-root';
-        this.root.dataset.cgfmNextRoot = '1';
-        this.root.innerHTML = `<button id="cgfm-next-launch" title="ChatGPT 文件夹">${(0, icons_1.icon)('folder')}</button><section id="cgfm-next-panel"><div class="cgfm-head"><span class="cgfm-head-title">文件夹</span><button data-act="create" title="新建文件夹" aria-label="新建文件夹">${(0, icons_1.icon)('folder-plus')}</button><button data-act="sync" title="立即同步" aria-label="立即同步">${(0, icons_1.icon)('refresh-cw')}</button><button data-act="settings" title="设置" aria-label="设置">${(0, icons_1.icon)('settings')}</button><button data-act="pin" title="固定面板" aria-label="固定面板" aria-pressed="false">${(0, icons_1.icon)('pin-off')}</button></div><div class="cgfm-scroll"></div><div class="cgfm-foot"></div></section>`;
-        document.body.append(this.root);
-        this.panel = this.root.querySelector('#cgfm-next-panel');
-        this.list = this.root.querySelector('.cgfm-scroll');
-        this.status = this.root.querySelector('.cgfm-foot');
-        this.launch = this.root.querySelector('#cgfm-next-launch');
-        this.panel.style.width = (this.profile.preferences.sidebarWidth || 330) + 'px';
-        this.launch.addEventListener('click', () => { this.ensureMounted(); this.pinned = !this.pinned; this.updateOpen(); });
-        this.launch.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
-        this.launch.addEventListener('mouseleave', () => { this.hovered = false; window.setTimeout(() => this.updateOpen(), 280); });
-        this.panel.addEventListener('pointerenter', () => { window.clearTimeout(this.closeTimer); this.hovered = true; this.updateOpen(); });
-        this.panel.addEventListener('pointerleave', () => this.scheduleClose());
-        this.panel.addEventListener('click', e => this.click(e));
-        this.panel.addEventListener('contextmenu', e => this.context(e));
-        this.panel.addEventListener('pointerdown', e => this.dragStart(e));
-        this.panel.addEventListener('pointermove', e => this.dragMove(e));
-        this.panel.addEventListener('pointerup', e => this.dragEnd(e));
-        this.panel.addEventListener('pointercancel', () => this.cancelDrag());
-        this.mountRail();
+    scheduleClose() {
+        this.clearCloseTimer();
+        this.closeTimer = window.setTimeout(() => {
+            this.closePanel();
+        }, 220);
     }
-    scheduleClose() { window.clearTimeout(this.closeTimer); this.closeTimer = window.setTimeout(() => { const buttonHover = !!this.railButton?.matches(':hover'); const panelHover = !!this.panel?.matches(':hover'); this.hovered = buttonHover || panelHover || !!this.launch?.matches(':hover'); this.updateOpen(); }, 230); }
-    // Reattach existing elements instead of rebuilding them and losing listeners or editor state.
-    ensureMounted() {
-        if (this.recovering || !document.body)
-            return;
-        this.recovering = true;
-        try {
-            if (!this.root.isConnected) {
-                document.body.append(this.root);
-                console.info('[CGFM] Restored detached panel root');
-            }
-            if (this.panel.parentElement !== this.root)
-                this.root.append(this.panel);
-            if (this.launch.parentElement !== this.root)
-                this.root.prepend(this.launch);
-            if (this.list.parentElement !== this.panel)
-                this.panel.append(this.list);
-            if (this.status.parentElement !== this.panel)
-                this.panel.append(this.status);
-        }
-        finally {
-            this.recovering = false;
+    clearCloseTimer() {
+        if (this.closeTimer !== null) {
+            clearTimeout(this.closeTimer);
+            this.closeTimer = null;
         }
     }
-    queueRecovery() {
-        if (this.recoveryQueued)
+    render() {
+        if (!this.rootEl)
             return;
-        this.recoveryQueued = true;
-        queueMicrotask(() => {
-            this.recoveryQueued = false;
-            if (!document.body)
+        this.rootEl.innerHTML = `
+      <div class="cgfm-header">
+        <div class="cgfm-header-title">
+          ${constants_1.ICONS.folder}
+          <span>文件夹</span>
+        </div>
+        <div class="cgfm-header-actions">
+          <button class="cgfm-tool-btn" data-act="create-root" title="新建文件夹">${constants_1.ICONS.plus}</button>
+          <button class="cgfm-tool-btn" data-act="sync" data-sync-state="${this.syncState}" title="立即同步">${constants_1.ICONS.sync}</button>
+          <button class="cgfm-tool-btn" data-act="settings" title="设置">${constants_1.ICONS.settings}</button>
+          <button class="cgfm-tool-btn ${this.isPinned ? 'active' : ''}" data-act="pin" title="${this.isPinned ? '取消固定' : '固定面板'}">${constants_1.ICONS.pin}</button>
+        </div>
+      </div>
+      <div class="cgfm-scroll-area">
+        <div class="cgfm-folder-tree"></div>
+        <div class="cgfm-section-label">最近对话</div>
+        <div class="cgfm-recent-list"></div>
+      </div>
+    `;
+        // 绑定头部操作事件
+        const header = this.rootEl.querySelector('.cgfm-header');
+        header.addEventListener('click', (e) => {
+            const btn = e.target.closest('.cgfm-tool-btn');
+            if (!btn)
                 return;
-            const missing = !this.root.isConnected || !this.panel.isConnected || !this.launch.isConnected;
-            if (missing)
-                this.ensureMounted();
-            if (!this.railEntry?.isConnected || missing)
-                this.mountRail();
+            const act = btn.dataset.act;
+            if (act === 'create-root') {
+                this.handleCreateFolder(null);
+            }
+            else if (act === 'sync') {
+                this.sync(true);
+            }
+            else if (act === 'settings') {
+                this.toggleSettings();
+            }
+            else if (act === 'pin') {
+                this.togglePin();
+            }
         });
+        // 渲染文件夹树
+        const treeEl = this.rootEl.querySelector('.cgfm-folder-tree');
+        this.renderFolderTree(treeEl);
+        // 渲染最近对话
+        const recentEl = this.rootEl.querySelector('.cgfm-recent-list');
+        this.renderRecentChats(recentEl);
     }
-    mountRail() {
-        this.ensureMounted();
-        // Preserve the original rail mount: the plain navigation group below the three-dot item.
-        // Never append to arbitrary <nav> elements (which may contain the account footer).
-        const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
-        const host = rail?.querySelector('[data-appearance="plain"]');
-        if (!host || !rail?.getBoundingClientRect().width) {
-            this.railEntry?.remove();
-            this.launch.style.display = '';
-            this.root.style.left = '52px';
-            this.root.style.top = '72px';
-            this.panel.style.left = '0';
-            return;
+    renderFolderTree(container) {
+        const { folders, conversations } = this.profile.data;
+        // 构建层级树
+        const childrenMap = {};
+        for (const f of Object.values(folders)) {
+            const p = f.parentId || '__root__';
+            if (!childrenMap[p])
+                childrenMap[p] = [];
+            childrenMap[p].push(f);
         }
-        if (!this.railButton) {
-            const entry = document.createElement('div');
-            entry.id = 'cgfm-next-rail-entry';
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.id = 'cgfm-next-rail';
-            btn.title = '文件夹（悬停打开，点击固定）';
-            btn.setAttribute('aria-label', '文件夹');
-            btn.innerHTML = (0, icons_1.icon)('folder');
-            btn.addEventListener('pointerenter', () => { this.ensureMounted(); window.clearTimeout(this.closeTimer); this.hovered = true; this.updateOpen(); });
-            btn.addEventListener('pointerleave', () => this.scheduleClose());
-            btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); this.ensureMounted(); window.clearTimeout(this.closeTimer); this.pinned = !this.pinned; this.updateOpen(); if (!this.pinned)
-                this.scheduleClose(); });
-            entry.append(btn);
-            this.railButton = btn;
-            this.railEntry = entry;
+        // 排序
+        for (const list of Object.values(childrenMap)) {
+            list.sort((a, b) => model_1.naturalSort.compare(a.name, b.name));
         }
-        if (this.railEntry?.parentElement !== host)
-            host.append(this.railEntry);
-        this.launch.style.display = 'none';
-        const r = rail.getBoundingClientRect();
-        this.root.style.left = `${Math.max(0, Math.round(r.right))}px`;
-        this.root.style.top = '0px';
-        this.panel.style.top = '0px';
-        this.panel.style.left = '0px';
-        this.panel.style.height = '100dvh';
-        this.panel.style.maxHeight = '100dvh';
-        this.railButton.setAttribute('aria-expanded', this.isOpen() ? 'true' : 'false');
-    }
-    bindGlobal() { document.addEventListener('keydown', e => { if (e.key === 'Escape') {
-        this.cancelDrag();
-        this.dismissPopup();
-        if (!this.editId) {
-            this.pinned = false;
-            this.updateOpen();
-        }
-    } }); document.addEventListener('click', e => { if (this.popup && !this.popup.contains(e.target) && !e.target.closest('#cgfm-next-panel'))
-        this.dismissPopup(); }); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') {
-        this.checkAccount();
-        this.ensureMounted();
-        this.mountRail();
-        this.scanRecents();
-    } }); window.addEventListener('popstate', () => { this.checkAccount(); this.scanRecents(); }); window.addEventListener('online', () => this.scheduleSync()); this.observer = new MutationObserver(() => this.queueRecovery()); this.observer.observe(document.documentElement, { childList: true, subtree: true }); this.themeObserver = new MutationObserver(() => this.updateTheme()); this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }); window.setInterval(() => { this.ensureMounted(); this.mountRail(); this.width(); }, 10000); this.width(); }
-    updateOpen() { this.ensureMounted(); const pinButton = this.panel.querySelector('[data-act="pin"]'); if (pinButton) {
-        pinButton.innerHTML = (0, icons_1.icon)(this.pinned ? 'pin' : 'pin-off');
-        pinButton.setAttribute('aria-pressed', String(this.pinned));
-        pinButton.title = this.pinned ? '取消固定' : '固定面板';
-        pinButton.setAttribute('aria-label', pinButton.title);
-    } const syncButton = this.panel.querySelector('[data-act="sync"]'); if (syncButton)
-        syncButton.setAttribute('aria-busy', String(this.busy)); this.root.dataset.open = this.pinned || this.hovered || !!this.editId || !!this.popup || !!this.drag ? 'yes' : 'no'; if (this.railButton) {
-        this.railButton.dataset.cgfmOpen = String(this.isOpen());
-        this.railButton.setAttribute('aria-expanded', String(this.isOpen()));
-    } }
-    isOpen() { return this.root.dataset.open === 'yes'; }
-    renderStatus() { const state = !this.profile.dav.url ? 'unconfigured' : this.busy ? 'syncing' : (this.authFailure || (this.syncFailures > 0 && this.syncRetryAt > Date.now())) ? 'error' : this.profile.pending.length ? 'pending' : 'synced'; const btn = this.panel?.querySelector('[data-act="sync"]'); if (btn) {
-        btn.dataset.syncState = state;
-        btn.title = { unconfigured: '未配置 WebDAV', syncing: '同步中', error: '同步失败或存在冲突', pending: '有待同步的本地修改', synced: '已同步' }[state];
-    } this.status.textContent = `${this.busy ? '正在同步' : this.dirty ? '待同步' : '已保存'} · ${this.profile.pending.length} 条待同步 · ${this.profile.conflicts.length} 条冲突`; this.status.title = this.profile.conflicts.slice(-8).join('\n'); }
-    render() { if (!this.list || this.editId || this.drag?.started)
-        return; this.list.replaceChildren(); const add = (text, cls = 'cgfm-group') => { const x = document.createElement('div'); x.className = cls; x.textContent = text; this.list.append(x); }; const folders = Object.values(this.profile.data.folders); const walk = (parent, depth) => { if (depth > 100)
-        return; for (const f of folders.filter(x => x.parentId === parent).sort((a, b) => model_1.natural.compare(a.name, b.name))) {
-        const row = this.row('folder', f.id, f.name, depth, f.color);
-        const toggle = document.createElement('button');
-        toggle.innerHTML = (0, icons_1.icon)(this.isCollapsed(f) ? 'chevron-right' : 'chevron-down');
-        toggle.title = '折叠 / 展开';
-        toggle.dataset.act = 'collapse';
-        row.prepend(toggle);
-        this.list.append(row);
-        if (!this.isCollapsed(f)) {
-            for (const c of Object.values(this.profile.data.conversations).filter(x => x.folderId === f.id).sort((a, b) => b.addedAt - a.addedAt))
-                this.list.append(this.row('chat', c.id, c.title, depth + 1));
-            walk(f.id, depth + 1);
-        }
-    } }; walk(null, 0); add('最近对话'); for (const c of this.recent.slice(0, 100))
-        this.list.append(this.row('recent', c.id, c.title, 0)); this.renderStatus(); }
-    row(type, id, name, depth, color) { const el = document.createElement('div'); el.className = 'cgfm-row' + (type === 'folder' && id === this.selected ? ' cgfm-selected' : ''); el.dataset.type = type; el.dataset.id = id; el.style.paddingLeft = `${Math.min(depth, 20) * 14 + 5}px`; const ico = document.createElement('span'); ico.className = 'cgfm-item-icon'; ico.innerHTML = (0, icons_1.icon)(type === 'folder' ? 'folder' : 'message-circle'); if (color && color.toLowerCase() !== '#6b7280')
-        ico.style.color = color;
-    else
-        ico.style.color = ''; const span = document.createElement('span'); span.className = 'cgfm-name'; span.textContent = name; el.append(ico, span); if (type === 'folder') {
-        const btn = document.createElement('button');
-        btn.dataset.act = 'menu';
-        btn.innerHTML = (0, icons_1.icon)('ellipsis');
-        btn.title = '文件夹菜单';
-        el.append(btn);
-    } return el; }
-    click(e) {
-        if (Date.now() < this.suppressClickUntil) {
-            e.preventDefault();
-            return;
-        }
-        const target = e.target;
-        const row = target.closest('.cgfm-row');
-        const act = target.closest('[data-act]')?.dataset.act;
-        if (act) {
-            if (act === 'create')
-                this.editFolder(null);
-            if (act === 'sync')
-                void this.sync(true);
-            if (act === 'settings')
-                this.settings();
-            if (act === 'pin') {
-                this.pinned = !this.pinned;
-                this.updateOpen();
-            }
-            if (act === 'collapse' && row)
-                this.toggleCollapsed(row.dataset.id);
-            if (act === 'menu' && row)
-                this.folderMenu(row.dataset.id, target);
-            return;
-        }
-        if (!row || this.drag?.started)
-            return;
-        const type = row.dataset.type, id = row.dataset.id;
-        if (type === 'folder') {
-            this.selected = this.selected === id ? null : id;
-            this.render();
-        }
-        else
-            this.navigate(id);
-    }
-    context(e) { const row = e.target.closest('.cgfm-row'); if (!row)
-        return; e.preventDefault(); if (row.dataset.type === 'folder')
-        this.folderMenu(row.dataset.id, e.target);
-    else
-        this.chatMenu(row.dataset.id, row.dataset.type === 'recent', e.target); }
-    navigate(id) { location.assign('/c/' + encodeURIComponent(id)); }
-    dismissPopup() { this.root.querySelectorAll('.cgfm-submenu').forEach(e => e.remove()); this.popup?.remove(); this.popup = null; this.width(); this.updateOpen(); }
-    showPopup(el, anchor) {
-        this.root.querySelectorAll('.cgfm-submenu').forEach(e => e.remove());
-        const anchorRect = anchor?.getBoundingClientRect();
-        this.popup?.remove();
-        this.popup = el;
-        el.classList.add('cgfm-pop');
-        const isSettings = el.classList.contains('cgfm-settings');
-        el.style.cssText = 'position:fixed;z-index:2147483001;' + (isSettings ? '' : 'min-width:160px;max-width:240px;');
-        this.root.append(el);
-        const r = anchorRect;
-        const w = el.getBoundingClientRect().width;
-        const h = el.getBoundingClientRect().height;
-        if (isSettings) {
-            const pr = this.panel.getBoundingClientRect();
-            el.style.left = Math.min(innerWidth - w - 8, Math.max(8, pr.right + 6)) + 'px';
-            el.style.top = Math.max(0, pr.top) + 'px';
-            el.style.maxHeight = 'calc(100dvh - 16px)';
-        }
-        else if (r) {
-            let left = r.right + 4;
-            if (left + w > innerWidth - 8)
-                left = Math.max(8, r.left - w - 4);
-            let top = r.top;
-            if (top + h > innerHeight - 8)
-                top = Math.max(8, innerHeight - h - 8);
-            el.style.left = left + 'px';
-            el.style.top = top + 'px';
-        }
-        else {
-            el.style.left = Math.max(12, (innerWidth - w) / 2) + 'px';
-            el.style.top = Math.max(12, (innerHeight - h) / 2) + 'px';
-        }
-        this.updateOpen();
-    }
-    menuItem(box, label, iconName, fn, danger = false) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'cgfm-menu-item' + (danger ? ' cgfm-menu-danger' : '');
-        b.innerHTML = `<span class="cgfm-menu-icon">${(0, icons_1.icon)(iconName)}</span><span class="cgfm-menu-label">${label}</span>`;
-        b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); this.dismissPopup(); fn(); });
-        box.append(b);
-    }
-    menuDivider(box) {
-        const d = document.createElement('div');
-        d.className = 'cgfm-menu-divider';
-        box.append(d);
-    }
-    menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); this.dismissPopup(); fn(); }); box.append(b); }
-    colorMenuItem(box, id) {
-        const item = document.createElement('div');
-        item.className = 'cgfm-menu-item cgfm-menu-has-sub';
-        item.innerHTML = `<span class="cgfm-menu-icon">${(0, icons_1.icon)('palette')}</span><span class="cgfm-menu-label">设置颜色</span><span class="cgfm-menu-arrow">${(0, icons_1.icon)('chevron-right')}</span>`;
-        let sub = null;
-        const colors = ['#6b7280', '#ef4444', '#f97316', '#f59e0b', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#ec4899'];
-        const openSub = () => {
-            if (sub)
-                return;
-            sub = document.createElement('div');
-            sub.className = 'cgfm-pop cgfm-submenu';
-            const grid = document.createElement('div');
-            grid.className = 'cgfm-color-grid';
-            const curColor = (this.profile.data.folders[id]?.color || '#6b7280').toLowerCase();
-            for (const c of colors) {
-                const dot = document.createElement('button');
-                dot.type = 'button';
-                dot.className = 'cgfm-color-dot' + (curColor === c.toLowerCase() ? ' cgfm-color-active' : '');
-                dot.style.backgroundColor = c;
-                dot.title = c;
-                dot.addEventListener('click', e => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.apply({ type: 'folder.color', id, color: c });
-                    this.dismissPopup();
+        const renderLevel = (parentId, depth) => {
+            const list = childrenMap[parentId || '__root__'] || [];
+            for (const f of list) {
+                const isCollapsed = !!this.collapsedFolders[f.id];
+                const row = document.createElement('div');
+                row.className = 'cgfm-row';
+                row.dataset.folderId = f.id;
+                row.style.paddingLeft = `${depth * 14 + 8}px`;
+                row.innerHTML = `
+          <span class="cgfm-chevron" data-act="toggle">${isCollapsed ? constants_1.ICONS.chevronRight : constants_1.ICONS.chevronDown}</span>
+          <span class="cgfm-dot" style="background-color: ${f.color || '#6b7280'}"></span>
+          <span class="cgfm-title">${f.name}</span>
+          <div class="cgfm-row-actions">
+            <button class="cgfm-mini-btn" data-act="menu" title="文件夹操作">${constants_1.ICONS.dots}</button>
+          </div>
+        `;
+                row.addEventListener('click', (e) => {
+                    const target = e.target;
+                    const miniBtn = target.closest('.cgfm-mini-btn');
+                    if (miniBtn?.dataset.act === 'menu') {
+                        e.stopPropagation();
+                        this.showFolderContextMenu(f, miniBtn);
+                        return;
+                    }
+                    if (target.closest('.cgfm-chevron') || target === row || target.classList.contains('cgfm-title')) {
+                        this.toggleFolderCollapse(f.id);
+                    }
                 });
-                grid.append(dot);
+                container.appendChild(row);
+                // 如果未折叠，渲染包含的对话和子文件夹
+                if (!isCollapsed) {
+                    // 渲染该文件夹下的对话
+                    const chats = Object.values(conversations).filter((c) => c.folderId === f.id);
+                    chats.sort((a, b) => model_1.naturalSort.compare(a.title, b.title));
+                    for (const c of chats) {
+                        const chatRow = document.createElement('div');
+                        chatRow.className = 'cgfm-row';
+                        chatRow.dataset.chatId = c.id;
+                        chatRow.style.paddingLeft = `${(depth + 1) * 14 + 8}px`;
+                        chatRow.innerHTML = `
+              <span class="cgfm-icon">${constants_1.ICONS.chat}</span>
+              <span class="cgfm-title" title="${c.title}">${c.title}</span>
+              <div class="cgfm-row-actions">
+                <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.edit}</button>
+                <button class="cgfm-mini-btn" data-act="remove" title="从文件夹移出">${constants_1.ICONS.trash}</button>
+              </div>
+            `;
+                        chatRow.addEventListener('click', (e) => {
+                            const target = e.target;
+                            const btn = target.closest('.cgfm-mini-btn');
+                            if (btn) {
+                                e.stopPropagation();
+                                if (btn.dataset.act === 'edit') {
+                                    this.startInlineRename(chatRow, c.id, c.title);
+                                }
+                                else if (btn.dataset.act === 'remove') {
+                                    this.handleRemoveChat(c.id);
+                                }
+                                return;
+                            }
+                            // 普通点击导航到对应对话
+                            window.location.href = `https://chatgpt.com/c/${c.id}`;
+                        });
+                        container.appendChild(chatRow);
+                    }
+                    // 递归子级文件夹
+                    renderLevel(f.id, depth + 1);
+                }
             }
-            sub.append(grid);
-            this.root.append(sub);
-            const r = item.getBoundingClientRect();
-            const sw = sub.getBoundingClientRect().width || 150;
-            let left = r.right;
-            if (left + sw > innerWidth - 8)
-                left = Math.max(8, r.left - sw);
-            let top = r.top - 4;
-            const sh = sub.getBoundingClientRect().height || 70;
-            if (top + sh > innerHeight - 8)
-                top = Math.max(8, innerHeight - sh - 8);
-            sub.style.left = left + 'px';
-            sub.style.top = top + 'px';
-            sub.addEventListener('pointerleave', e => {
-                const rel = e.relatedTarget;
-                if (sub && (!rel || (!sub.contains(rel) && !box.contains(rel))))
-                    closeSub();
-            });
         };
-        const closeSub = () => { sub?.remove(); sub = null; };
-        item.addEventListener('pointerenter', openSub);
-        item.addEventListener('click', e => { e.stopPropagation(); if (sub)
-            closeSub();
-        else
-            openSub(); });
-        box.addEventListener('pointerleave', e => {
-            const rel = e.relatedTarget;
-            if (sub && (!rel || (!sub.contains(rel) && !box.contains(rel))))
-                closeSub();
-        });
-        box.append(item);
+        renderLevel(null, 0);
     }
-    folderMenu(id, anchor) {
-        const f = this.profile.data.folders[id];
-        if (!f)
-            return;
-        const box = document.createElement('div');
-        box.className = 'cgfm-menu-box';
-        this.menuItem(box, '创建子文件夹', 'folder-plus', () => this.editFolder(id));
-        this.menuItem(box, '重命名', 'pencil', () => this.editFolder(f.parentId, id));
-        this.colorMenuItem(box, id);
-        this.menuDivider(box);
-        this.menuItem(box, '删除文件夹', 'trash-2', () => this.confirmDeleteFolder(id, box.getBoundingClientRect()), true);
-        this.showPopup(box, anchor);
-    }
-    confirmDeleteFolder(id, menuRect) {
-        const f = this.profile.data.folders[id];
-        if (!f)
-            return;
-        this.dismissPopup();
-        const box = document.createElement('div');
-        box.className = 'cgfm-pop cgfm-confirm-pop';
-        box.innerHTML = `<div class="cgfm-confirm-title">确认删除文件夹？</div><div class="cgfm-confirm-desc">「${f.name}」及其分类将被移除，ChatGPT 官方对话不会被删除。</div><div class="cgfm-confirm-actions"><button type="button" class="cgfm-btn-cancel">取消</button><button type="button" class="cgfm-btn-danger">删除</button></div>`;
-        box.querySelector('.cgfm-btn-cancel')?.addEventListener('click', e => { e.stopPropagation(); this.dismissPopup(); });
-        box.querySelector('.cgfm-btn-danger')?.addEventListener('click', e => {
-            e.stopPropagation();
-            this.apply({ type: 'folder.delete', id });
-            this.dismissPopup();
-        });
-        box.style.cssText = `position:fixed;z-index:2147483002;left:${menuRect.left}px;top:${menuRect.top}px;min-width:210px;max-width:260px;padding:12px;border-radius:10px;box-shadow:0 12px 32px var(--cg-shadow);border:1px solid var(--cg-border);background:var(--cg-bg);`;
-        this.popup = box;
-        this.root.append(box);
-        this.updateOpen();
-    }
-    chatMenu(id, recent, anchor) {
-        const box = document.createElement('div');
-        box.className = 'cgfm-menu-box';
-        this.menuItem(box, recent ? '加入文件夹' : '移动至文件夹', 'folder-input', () => this.folderPicker('chat', id));
-        this.menuItem(box, '重命名对话', 'pencil', () => this.renameChat(id));
-        if (!recent) {
-            this.menuDivider(box);
-            this.menuItem(box, '从文件夹移除', 'trash-2', () => this.apply({ type: 'conversation.remove', id }), true);
+    renderRecentChats(container) {
+        // 从官方侧栏 DOM 提取最近对话
+        const nativeLinks = document.querySelectorAll('nav a[href*="/c/"]');
+        const seenIds = new Set();
+        for (const link of nativeLinks) {
+            const href = link.getAttribute('href') || '';
+            const match = href.match(/\/c\/([a-z0-9-]+)/i);
+            if (!match)
+                continue;
+            const id = match[1];
+            if (seenIds.has(id))
+                continue;
+            seenIds.add(id);
+            // 如果已经在某个文件夹中了，不重复展示在“最近对话”中
+            if (this.profile.data.conversations[id])
+                continue;
+            let title = link.textContent?.trim() || '未命名对话';
+            const guarded = this.api.getGuardedTitle(id);
+            if (guarded)
+                title = guarded;
+            const row = document.createElement('div');
+            row.className = 'cgfm-row';
+            row.dataset.chatId = id;
+            row.innerHTML = `
+        <span class="cgfm-icon">${constants_1.ICONS.chat}</span>
+        <span class="cgfm-title" title="${title}">${title}</span>
+        <div class="cgfm-row-actions">
+          <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.edit}</button>
+        </div>
+      `;
+            row.addEventListener('click', (e) => {
+                const target = e.target;
+                const btn = target.closest('.cgfm-mini-btn');
+                if (btn?.dataset.act === 'edit') {
+                    e.stopPropagation();
+                    this.startInlineRename(row, id, title);
+                    return;
+                }
+                window.location.href = `https://chatgpt.com/c/${id}`;
+            });
+            container.appendChild(row);
         }
-        this.showPopup(box, anchor);
     }
-    promptInput(title, value, onSave) {
-        this.dismissPopup();
-        const box = document.createElement('div');
-        box.className = 'cgfm-pop cgfm-prompt-pop';
-        box.innerHTML = `<div class="cgfm-confirm-title">${title}</div><input type="text" class="cgfm-prompt-input" value="${value}" style="width:100%;margin:8px 0;padding:6px 8px;border:1px solid var(--cg-border);border-radius:6px;background:var(--cg-input);color:var(--cg-text)"><div class="cgfm-confirm-actions"><button type="button" class="cgfm-btn-cancel">取消</button><button type="button" class="cgfm-btn-save">确定</button></div>`;
-        const input = box.querySelector('input');
-        const save = box.querySelector('.cgfm-btn-save');
-        const cancel = box.querySelector('.cgfm-btn-cancel');
-        const close = () => { this.editId = null; this.dismissPopup(); this.render(); };
-        cancel.addEventListener('click', e => { e.stopPropagation(); close(); });
-        save.addEventListener('click', e => {
-            e.stopPropagation();
-            const v = input.value.trim();
-            if (v) {
-                close();
-                onSave(v);
+    toggleFolderCollapse(folderId) {
+        this.collapsedFolders[folderId] = !this.collapsedFolders[folderId];
+        this.storage.saveCollapsedFolders(this.collapsedFolders);
+        this.render();
+    }
+    startInlineRename(row, chatId, currentTitle) {
+        this.isEditing = true;
+        const titleEl = row.querySelector('.cgfm-title');
+        const actionsEl = row.querySelector('.cgfm-row-actions');
+        if (!titleEl || !actionsEl)
+            return;
+        titleEl.style.display = 'none';
+        actionsEl.style.display = 'none';
+        const editWrap = document.createElement('div');
+        editWrap.className = 'cgfm-inline-edit';
+        editWrap.innerHTML = `
+      <input type="text" class="cgfm-inline-input" value="${currentTitle.replace(/"/g, '&quot;')}" />
+      <button class="cgfm-mini-btn" data-act="save" title="保存">${constants_1.ICONS.check}</button>
+      <button class="cgfm-mini-btn" data-act="cancel" title="取消">${constants_1.ICONS.close}</button>
+    `;
+        const input = editWrap.querySelector('input');
+        let isComposing = false;
+        input.addEventListener('compositionstart', () => (isComposing = true));
+        input.addEventListener('compositionend', () => (isComposing = false));
+        const finish = (saved) => {
+            this.isEditing = false;
+            editWrap.remove();
+            titleEl.style.display = '';
+            actionsEl.style.display = '';
+            if (saved) {
+                const newTitle = input.value.trim();
+                if (newTitle && newTitle !== currentTitle) {
+                    titleEl.textContent = newTitle;
+                    titleEl.title = newTitle;
+                    this.api.renameConversation(chatId, newTitle).then((ok) => {
+                        if (ok) {
+                            if (this.profile.data.conversations[chatId]) {
+                                this.executeChange({ type: 'conversation.title', id: chatId, title: newTitle });
+                            }
+                        }
+                    });
+                }
             }
-        });
-        input.addEventListener('keydown', e => {
-            e.stopPropagation();
+        };
+        input.addEventListener('keydown', (e) => {
+            if (isComposing)
+                return;
             if (e.key === 'Enter')
-                save.click();
+                finish(true);
             if (e.key === 'Escape')
-                close();
+                finish(false);
         });
-        this.editId = 'editor';
-        this.showPopup(box);
-        setTimeout(() => { input.focus(); input.select(); }, 50);
-    }
-    inlineEdit(row, initial, onSave) {
-        if (this.editId)
-            return;
-        const span = row.querySelector('.cgfm-name');
-        if (!span)
-            return;
-        const input = document.createElement('input');
-        input.value = initial;
-        input.style.cssText = 'flex:1;min-width:0;background:transparent;color:inherit;border:1px solid #888;border-radius:5px;padding:3px';
-        span.replaceWith(input);
-        this.editId = row.dataset.id || 'editor';
+        editWrap.addEventListener('click', (e) => {
+            const btn = e.target.closest('.cgfm-mini-btn');
+            if (!btn)
+                return;
+            e.stopPropagation();
+            if (btn.dataset.act === 'save')
+                finish(true);
+            if (btn.dataset.act === 'cancel')
+                finish(false);
+        });
+        row.insertBefore(editWrap, actionsEl);
         input.focus();
         input.select();
-        let done = false;
-        const finish = (save) => { if (done)
-            return; done = true; const v = input.value.trim(); input.replaceWith(span); this.editId = null; if (save && v && v !== initial)
-            onSave(v); this.render(); this.updateOpen(); };
-        input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter')
-            finish(true); if (e.key === 'Escape')
-            finish(false); });
-        input.addEventListener('blur', () => finish(true));
     }
-    editFolder(parent, id) {
-        const f = id ? this.profile.data.folders[id] : null;
-        if (f) {
-            const row = [...this.list.querySelectorAll('.cgfm-row[data-type="folder"]')].find(x => x.dataset.id === id);
-            if (row) {
-                this.inlineEdit(row, f.name, name => this.apply({ type: 'folder.rename', id, name }));
+    showFolderContextMenu(folder, anchorBtn) {
+        this.closeActiveMenu();
+        this.closeActiveConfirm();
+        const rect = anchorBtn.getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.className = 'cgfm-menu';
+        menu.style.top = `${rect.bottom + 4}px`;
+        menu.style.left = `${Math.min(rect.left, window.innerWidth - 160)}px`;
+        const paletteHtml = constants_1.PALETTE_COLORS.map((c) => `<div class="cgfm-color-swatch" style="background-color: ${c}" data-color="${c}"></div>`).join('');
+        menu.innerHTML = `
+      <button class="cgfm-menu-item" data-act="add-sub">${constants_1.ICONS.plus}<span>创建子文件夹</span></button>
+      <div class="cgfm-palette-wrap">
+        <button class="cgfm-menu-item" data-act="color">${constants_1.ICONS.palette}<span>修改颜色</span></button>
+        <div class="cgfm-palette-grid">${paletteHtml}</div>
+      </div>
+      <button class="cgfm-menu-item" data-act="rename">${constants_1.ICONS.edit}<span>重命名</span></button>
+      <button class="cgfm-menu-item danger" data-act="delete">${constants_1.ICONS.trash}<span>删除文件夹</span></button>
+    `;
+        menu.addEventListener('click', (e) => {
+            const target = e.target;
+            const swatch = target.closest('.cgfm-color-swatch');
+            if (swatch) {
+                const color = swatch.dataset.color;
+                this.executeChange({ type: 'folder.color', id: folder.id, color });
+                this.closeActiveMenu();
                 return;
             }
-        }
-        this.promptInput(parent ? '新建子文件夹' : '新建文件夹', '', name => this.apply({ type: 'folder.create', parentId: parent, name }));
-    }
-    colorDialog(id) { const box = document.createElement('div'); const input = document.createElement('input'); input.type = 'color'; input.value = this.profile.data.folders[id]?.color || '#6b7280'; box.append(input); this.menuButton(box, '确定', () => this.apply({ type: 'folder.color', id, color: input.value })); this.showPopup(box); }
-    folderPicker(type, id) { const box = document.createElement('div'); const title = document.createElement('div'); title.textContent = '选择目标文件夹'; box.append(title); const select = document.createElement('select'); if (type === 'folder') {
-        const o = document.createElement('option');
-        o.value = '';
-        o.textContent = '根目录';
-        select.append(o);
-    } for (const f of Object.values(this.profile.data.folders).sort((a, b) => model_1.natural.compare(a.name, b.name))) {
-        const o = document.createElement('option');
-        o.value = f.id;
-        o.textContent = f.name;
-        select.append(o);
-    } box.append(select); this.menuButton(box, '确定', () => this.apply(type === 'folder' ? { type: 'folder.move', id, parentId: select.value || null } : { type: 'conversation.assign', id, folderId: select.value, title: this.title(id) })); this.showPopup(box); }
-    title(id) { return this.recent.find(c => c.id === id)?.title || this.profile.data.conversations[id]?.title || '未命名对话'; }
-    async renameChat(id) { const row = [...this.list.querySelectorAll('.cgfm-row')].find(x => x.dataset.id === id); if (row)
-        this.inlineEdit(row, this.title(id), name => void this.saveChatTitle(id, name));
-    else
-        this.promptInput('修改 ChatGPT 对话标题', this.title(id), name => void this.saveChatTitle(id, name)); }
-    async saveChatTitle(id, name) { const generation = this.generation; try {
-        const headers = { ...this.authHeaders, 'Content-Type': 'application/json' };
-        const r = await fetch(`/backend-api/conversation/id/${encodeURIComponent(id)}/rename`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ title: name }) });
-        if (!r.ok)
-            throw Error(`HTTP ${r.status}`);
-        if (generation !== this.generation)
-            return;
-        const item = this.recent.find(c => c.id === id);
-        if (item)
-            item.title = name;
-        this.apply({ type: 'conversation.title', id, title: name });
-        this.titleGuards.set(id, { title: name, time: Date.now() });
-        this.persistTitleGuards();
-        this.render();
-    }
-    catch (e) {
-        this.notice('重命名失败：' + String(e));
-    } }
-    titleGuards = new Map();
-    loadTitleGuards() { const val = GM_getValue(`cgfm.next.titles.${this.account}`, {}); this.titleGuards = new Map(Object.entries(val).filter(([, v]) => v && Date.now() - v.time < 30 * 24 * 3600000)); }
-    persistTitleGuards() { GM_setValue(`cgfm.next.titles.${this.account}`, Object.fromEntries(this.titleGuards)); }
-    loadRecents() { const val = GM_getValue(`cgfm.next.recent.${this.account}`, []); if (Array.isArray(val) && val.length)
-        this.recent = val; }
-    persistRecents() { if (this.account === 'local')
-        return; GM_setValue(`cgfm.next.recent.${this.account}`, this.recent); }
-    scanRecents() {
-        const rows = new Map();
-        for (const a of document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"],a[href^="/c/"]')) {
-            const key = a.getAttribute('data-sidebar-chatgpt-conversation-key');
-            const id = key?.replace('chatgpt:conversation:', '') || a.getAttribute('href')?.match(/\/c\/([^/?#]+)/)?.[1];
-            const title = (a.innerText || a.getAttribute('title') || a.getAttribute('aria-label') || '').trim();
-            if (id && title) {
-                const guard = this.titleGuards.get(id);
-                rows.set(id, { id, title: guard && Date.now() - guard.time < 60 * 60 * 1000 ? guard.title : title });
-            }
-        }
-        if (rows.size) {
-            const next = [...rows.values()].slice(0, 100);
-            const changed = next.length !== this.recent.length || next.some((c, i) => c.id !== this.recent[i]?.id || c.title !== this.recent[i]?.title);
-            if (changed) {
-                this.recent = next;
-                this.persistRecents();
-                if (this.isOpen())
-                    this.render();
-            }
-        }
-    }
-    async refreshApi() {
-        this.apiAt = Date.now();
-        const generation = this.generation;
-        try {
-            const r = await fetch('/backend-api/conversations?offset=0&limit=20', { credentials: 'include', headers: this.authHeaders });
-            if (!r.ok)
-                throw Error(`HTTP ${r.status}`);
-            const json = await r.json();
-            if (generation !== this.generation)
+            const item = target.closest('.cgfm-menu-item');
+            if (!item)
                 return;
-            const merged = new Map(this.recent.map(x => [x.id, x]));
-            for (const x of json.items || [])
-                if (x.id) {
-                    const guard = this.titleGuards.get(x.id);
-                    merged.set(x.id, { id: x.id, title: guard && Date.now() - guard.time < 3600000 ? guard.title : x.title || '未命名对话' });
-                }
-            this.recent = [...merged.values()].slice(0, 100);
-            const before = this.profile.data;
-            let latest = before;
-            for (const item of this.recent) {
-                const c = latest.conversations[item.id];
-                const guard = this.titleGuards.get(item.id);
-                if (c && item.title && c.title !== item.title && !(guard && Date.now() - guard.time < 3600000)) {
-                    latest = (0, model_1.command)(latest, { type: 'conversation.title', id: item.id, title: item.title });
+            const act = item.dataset.act;
+            if (act === 'add-sub') {
+                this.closeActiveMenu();
+                this.handleCreateFolder(folder.id);
+            }
+            else if (act === 'rename') {
+                this.closeActiveMenu();
+                const newName = prompt('重命名文件夹', folder.name);
+                if (newName && newName.trim()) {
+                    this.executeChange({ type: 'folder.rename', id: folder.id, name: newName.trim() });
                 }
             }
-            if (latest !== before) {
-                this.profile.data = latest;
-                this.profile.pending.push(...(0, model_1.diff)(before, latest, this.device, this.profile.pending.length));
-                this.persist();
-                this.scheduleSync();
-            }
-            this.render();
-        }
-        catch {
-            this.apiAt = Date.now() - 20 * 60 * 1000;
-        }
-    }
-    restoreAuth() {
-        this.authHeaders = {};
-        const cached = GM_getValue(`cgfm.next.auth.${this.account}`, { headers: {}, savedAt: 0 });
-        if (cached && Date.now() - cached.savedAt < 24 * 3600000 && cached.headers && typeof cached.headers === 'object') {
-            for (const key of ['authorization', 'chatgpt-account-id'])
-                if (typeof cached.headers[key] === 'string')
-                    this.authHeaders[key] = cached.headers[key];
-        }
-    }
-    saveAuth() { if (this.account === 'local')
-        return; GM_setValue(`cgfm.next.auth.${this.account}`, { headers: this.authHeaders, savedAt: Date.now() }); }
-    installAuthCapture() { if (this.authInstalled)
-        return; this.authInstalled = true; const w = unsafeWindow; const original = w.fetch; const self = this; w.fetch = function (input, init) { try {
-        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-        if (url.includes('/backend-api/')) {
-            const h = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
-            for (const key of ['authorization', 'chatgpt-account-id']) {
-                const v = h.get(key);
-                if (v && self.authHeaders[key] !== v) {
-                    self.authHeaders[key] = v;
-                    self.saveAuth();
-                }
-            }
-        }
-    }
-    catch { } return original.call(this, input, init); }; }
-    removeGhost() { this.ghost?.remove(); this.ghost = null; }
-    cancelDrag() { this.drag = null; this.removeGhost(); this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); this.updateOpen(); }
-    dragStart(e) { if (e.button !== 0 || e.target.closest('button,input,select'))
-        return; const row = e.target.closest('.cgfm-row'); if (!row)
-        return; this.drag = { type: row.dataset.type === 'folder' ? 'folder' : 'chat', id: row.dataset.id, startX: e.clientX, startY: e.clientY, started: false }; try {
-        this.panel.setPointerCapture(e.pointerId);
-    }
-    catch { } }
-    dragMove(e) { if (!this.drag)
-        return; if (!this.drag.started && Math.hypot(e.clientX - this.drag.startX, e.clientY - this.drag.startY) < 5)
-        return; this.drag.started = true; if (!this.ghost) {
-        this.ghost = document.createElement('div');
-        this.ghost.textContent = this.drag.type === 'folder' ? '📁 移动文件夹' : '▤ 移动对话';
-        this.ghost.style.cssText = 'position:fixed;z-index:2147483003;pointer-events:none;background:var(--cg-bg);color:var(--cg-text);border:1px solid var(--cg-border);border-radius:8px;padding:7px 12px;box-shadow:0 5px 20px var(--cg-shadow)';
-        this.root.append(this.ghost);
-    } this.ghost.style.left = e.clientX + 12 + 'px'; this.ghost.style.top = e.clientY + 12 + 'px'; this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cgfm-row[data-type="folder"]'); target?.classList.add('cgfm-drop'); }
-    dragEnd(e) { const d = this.drag; this.drag = null; try {
-        if (this.panel.hasPointerCapture(e.pointerId))
-            this.panel.releasePointerCapture(e.pointerId);
-    }
-    catch { } this.removeGhost(); this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); if (!d?.started)
-        return; this.suppressClickUntil = Date.now() + 300; const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cgfm-row[data-type="folder"]'); if (target?.dataset.id) {
-        this.apply(d.type === 'folder' ? { type: 'folder.move', id: d.id, parentId: target.dataset.id } : { type: 'conversation.assign', id: d.id, folderId: target.dataset.id, title: this.title(d.id) });
-    } this.updateOpen(); }
-    settings() {
-        const box = document.createElement('div');
-        box.className = 'cgfm-settings';
-        const header = document.createElement('div');
-        header.className = 'cgfm-settings-header';
-        header.innerHTML = `<strong>文件夹设置</strong>`;
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'cgfm-settings-close';
-        close.title = '关闭';
-        close.setAttribute('aria-label', '关闭设置');
-        close.innerHTML = (0, icons_1.icon)('x');
-        close.addEventListener('click', () => this.dismissPopup());
-        header.append(close);
-        box.append(header);
-        const body = document.createElement('div');
-        body.className = 'cgfm-settings-body';
-        box.append(body);
-        const section = (title) => { const node = document.createElement('section'); node.className = 'cgfm-settings-section'; const h = document.createElement('h3'); h.textContent = title; node.append(h); body.append(node); return node; };
-        const field = (parent, title, value, type = 'text') => { const label = document.createElement('label'); label.textContent = title; const input = document.createElement('input'); input.type = type; input.value = value; label.append(input); parent.append(label); return input; };
-        const action = (parent, title, fn, svg) => { const b = document.createElement('button'); b.type = 'button'; b.innerHTML = (svg ? (0, icons_1.icon)(svg) : '') + `<span></span>`; b.lastElementChild.textContent = title; b.addEventListener('click', fn); parent.append(b); return b; };
-        const webdav = section('WebDAV 同步');
-        const url = field(webdav, '服务器 HTTPS 目录', this.profile.dav.url, 'url');
-        const credentials = document.createElement('div');
-        credentials.className = 'cgfm-settings-grid';
-        webdav.append(credentials);
-        const username = field(credentials, '用户名', this.profile.dav.username);
-        const password = field(credentials, '密码', '', 'password');
-        password.placeholder = this.profile.dav.password ? '留空则保留原密码' : '输入 WebDAV 密码';
-        const file = field(webdav, '远端文件名', this.profile.dav.file);
-        const draft = () => ({ url: url.value.trim(), username: username.value.trim(), password: password.value || this.profile.dav.password, file: file.value.trim() || this.profile.dav.file });
-        const commitSettings = () => { const d = draft(); if (d.url && !/^https:\/\//i.test(d.url)) {
-            this.notice('WebDAV 地址必须是 HTTPS');
-            url.focus();
-            return false;
-        } if (d.url && !d.username) {
-            this.notice('请填写 WebDAV 用户名');
-            username.focus();
-            return false;
-        } if (d.url && !d.password) {
-            this.notice('请填写 WebDAV 密码');
-            password.focus();
-            return false;
-        } if (!d.file || d.file.includes('/') || d.file.includes('\\')) {
-            this.notice('远端文件名无效');
-            file.focus();
-            return false;
-        } const targetChanged = d.url !== this.profile.dav.url || d.file !== this.profile.dav.file; const changed = targetChanged || d.username !== this.profile.dav.username || d.password !== this.profile.dav.password; this.profile.dav = { ...this.profile.dav, ...d }; if (changed) {
-            this.authFailure = false;
-            this.syncRetryAt = 0;
-            this.profile.etag = '';
-        } if (targetChanged) {
-            this.profile.base = (0, model_1.blank)();
-            this.profile.baseRevision = 0;
-        } this.profile.preferences.sidebarWidth = Math.max(260, Math.min(500, Math.round((Number(width.value) || 330) / 5) * 5)); this.profile.preferences.customWidth = true; this.panel.style.width = this.profile.preferences.sidebarWidth + 'px'; this.persist(); this.width(); return true; };
-        const syncActions = document.createElement('div');
-        syncActions.className = 'cgfm-settings-actions';
-        webdav.append(syncActions);
-        const davResult = document.createElement('div');
-        davResult.className = 'cgfm-dav-status';
-        davResult.hidden = true;
-        webdav.append(davResult);
-        const setDavStatus = (msg, type) => { davResult.hidden = false; davResult.dataset.type = type; davResult.innerHTML = (type === 'loading' ? (0, icons_1.icon)('refresh-cw') : '') + `<span>${msg}</span>`; };
-        const testBtn = action(syncActions, '测试连接', async () => {
-            if (!commitSettings())
-                return;
-            testBtn.disabled = true;
-            const span = testBtn.querySelector('span');
-            const prev = span.textContent;
-            span.textContent = '测试中...';
-            setDavStatus('正在连接 WebDAV...', 'loading');
-            try {
-                const r = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
-                const ok = r.status === 404 ? '连接成功（远端文件尚不存在）' : r.status >= 200 && r.status < 300 ? '连接成功' : 'HTTP ' + r.status;
-                setDavStatus(ok, r.status < 300 || r.status === 404 ? 'success' : 'error');
-                if (commitSettings())
-                    void this.testConnection();
-            }
-            catch (e) {
-                setDavStatus('连接失败：' + String(e), 'error');
-            }
-            finally {
-                testBtn.disabled = false;
-                span.textContent = prev || '测试连接';
+            else if (act === 'delete') {
+                this.closeActiveMenu();
+                this.showDeleteConfirm(folder, rect);
             }
         });
-        const syncBtn = action(syncActions, '立即同步', async () => {
-            if (!commitSettings())
-                return;
-            syncBtn.disabled = true;
-            const span = syncBtn.querySelector('span');
-            const prev = span.textContent;
-            span.textContent = '同步中...';
-            setDavStatus('正在执行同步...', 'loading');
-            try {
-                await this.sync(true);
-                setDavStatus('同步完成', 'success');
-                if (commitSettings())
-                    void this.sync(true);
-            }
-            catch (e) {
-                setDavStatus('同步失败：' + String(e), 'error');
-            }
-            finally {
-                syncBtn.disabled = false;
-                span.textContent = prev || '立即同步';
-            }
-        }, 'refresh-cw');
-        const interfaceSection = section('界面设置');
-        const widthHeader = document.createElement('div');
-        widthHeader.className = 'cgfm-settings-row-between';
-        const widthLabelText = document.createElement('span');
-        widthLabelText.textContent = '文件夹面板宽度';
-        const currentW = Math.max(260, Math.min(500, Math.round((this.profile.preferences.sidebarWidth || 330) / 5) * 5));
-        const widthValue = document.createElement('span');
-        widthValue.className = 'cgfm-width-val';
-        widthValue.textContent = String(currentW) + ' px';
-        widthHeader.append(widthLabelText, widthValue);
-        interfaceSection.append(widthHeader);
-        const width = document.createElement('input');
-        width.type = 'range';
-        width.min = '260';
-        width.max = '500';
-        width.step = '5';
-        width.value = String(currentW);
-        width.setAttribute('aria-label', '文件夹面板宽度');
-        interfaceSection.append(width);
-        const ticks = document.createElement('div');
-        ticks.className = 'cgfm-slider-line';
-        ticks.innerHTML = '<span>260 px</span><span>500 px</span>';
-        interfaceSection.append(ticks);
-        width.addEventListener('input', () => { widthValue.textContent = width.value + ' px'; this.panel.style.width = width.value + 'px'; this.width(Number(width.value), true); });
-        const dataSection = section('数据管理');
-        const dataActions = document.createElement('div');
-        dataActions.className = 'cgfm-settings-actions cgfm-data-actions';
-        dataSection.append(dataActions);
-        action(dataActions, '导出 JSON', () => this.exportData(), 'download');
-        action(dataActions, '导入 JSON', () => this.importData(), 'upload');
-        const pullButton = action(dataActions, '强制拉取', () => { if (commitSettings())
-            void this.pull(); });
-        pullButton.classList.add('cgfm-danger');
-        const result = document.createElement('div');
-        result.className = 'cgfm-settings-result';
-        result.setAttribute('role', 'status');
-        result.setAttribute('aria-live', 'polite');
-        result.hidden = true;
-        result.style.display = 'none';
-        box.append(result);
-        const footer = document.createElement('footer');
-        footer.className = 'cgfm-settings-footer';
-        box.append(footer);
-        const cancelBtn = document.createElement('button');
-        cancelBtn.type = 'button';
-        cancelBtn.className = 'cgfm-btn-cancel';
-        cancelBtn.textContent = '取消';
-        cancelBtn.addEventListener('click', () => this.dismissPopup());
-        footer.append(cancelBtn);
-        const saveBtn = document.createElement('button');
-        saveBtn.type = 'button';
-        saveBtn.className = 'cgfm-btn-save';
-        saveBtn.textContent = '保存设置';
-        saveBtn.addEventListener('click', () => { if (commitSettings()) {
-            this.dismissPopup();
-            this.notice('设置已保存');
-        } });
-        footer.append(saveBtn);
-        this.showPopup(box);
+        document.body.appendChild(menu);
+        this.activeMenu = menu;
     }
-    width(previewWidth, previewActive) {
-        let el = document.getElementById('cgfm-next-width');
-        if (!el) {
-            el = document.createElement('style');
-            el.id = 'cgfm-next-width';
-            document.head.append(el);
+    closeActiveMenu() {
+        if (this.activeMenu) {
+            this.activeMenu.remove();
+            this.activeMenu = null;
         }
-        const active = previewActive ?? this.profile.preferences.customWidth;
-        const val = previewWidth ?? this.profile.preferences.sidebarWidth;
-        const px = `${val}px`;
-        const hasSidebar = !!document.querySelector('#app-shell-sidebar, [data-testid="sidebar"], #stage-slideover-sidebar, nav[data-app-navigation-rail="true"], aside');
-        el.textContent = active && hasSidebar ? `html{--codex-sidebar-preferred-width:${px}!important}html body{--sidebar-width:${px}!important}#app-shell-sidebar{--sidebar-width:${px}!important}` : '';
     }
-    exportData() { const content = JSON.stringify({ format: 'cgfm-ts-data', version: 1, account: this.account, data: this.profile.data }, null, 2); const url = URL.createObjectURL(new Blob([content], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'chatgpt-folders-ts.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 3000); }
-    importData() { const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json'; input.onchange = async () => { const file = input.files?.[0]; if (!file)
-        return; const account = this.account, generation = this.generation; try {
-        const parsed = JSON.parse(await file.text());
-        if (parsed.format !== 'cgfm-ts-data' || parsed.version !== 1)
-            throw Error('只接受新版数据格式');
-        (0, model_1.validate)(parsed.data);
-        if (generation !== this.generation || account !== this.account)
-            throw Error('账号已切换，取消导入');
-        if (parsed.account !== this.account && !confirm('导入数据账号与当前账号不匹配，仍然导入吗？'))
-            return;
-        if (!confirm('确认用导入数据替换当前分类？本地 WebDAV 配置会保留。'))
-            return;
-        const before = this.profile.data;
-        this.readOnly = false;
-        this.profile.data = (0, model_1.copy)(parsed.data);
-        this.profile.pending.push(...(0, model_1.diff)(before, this.profile.data, this.device, this.profile.pending.length));
-        this.persist();
-        this.render();
-        this.scheduleSync();
+    showDeleteConfirm(folder, anchorRect) {
+        this.closeActiveConfirm();
+        const card = document.createElement('div');
+        card.className = 'cgfm-confirm-card';
+        card.style.top = `${anchorRect.top}px`;
+        card.style.left = `${Math.min(anchorRect.left, window.innerWidth - 220)}px`;
+        card.innerHTML = `
+      <div class="cgfm-confirm-title">确认删除文件夹「${folder.name}」？其下对话将还原为未分类。</div>
+      <div class="cgfm-confirm-actions">
+        <button class="cgfm-btn-cancel">取消</button>
+        <button class="cgfm-btn-danger">确认删除</button>
+      </div>
+    `;
+        card.querySelector('.cgfm-btn-cancel').addEventListener('click', () => {
+            this.closeActiveConfirm();
+        });
+        card.querySelector('.cgfm-btn-danger').addEventListener('click', () => {
+            this.closeActiveConfirm();
+            this.executeChange({ type: 'folder.delete', id: folder.id });
+        });
+        document.body.appendChild(card);
+        this.activeConfirmCard = card;
     }
-    catch (e) {
-        this.notice('导入失败：' + String(e));
-    } }; input.click(); }
-    async testConnection() { if (!this.profile.dav.url) {
-        this.notice('请先配置 WebDAV HTTPS 目录');
-        return;
-    } try {
-        const r = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
-        this.notice(r.status === 404 ? '连接成功，远端文件尚不存在' : r.status >= 200 && r.status < 300 ? '连接成功' : 'HTTP ' + r.status);
-    }
-    catch (e) {
-        this.notice(String(e));
-    } }
-    async pull() { const generation = this.generation, account = this.account; if (!confirm('使用云端快照完全替换本地分类及未同步修改？'))
-        return; try {
-        const r = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
-        if (r.status !== 200)
-            throw Error(`HTTP ${r.status}`);
-        if (generation !== this.generation || account !== this.account)
-            throw Error('账号已切换，忽略旧请求');
-        const e = (0, sync_1.decodeRemote)(r.text, account);
-        this.profile.data = (0, model_1.copy)(e.data);
-        this.profile.base = (0, model_1.copy)(e.data);
-        this.profile.baseRevision = e.revision;
-        this.profile.etag = r.etag;
-        this.profile.pending = [];
-        this.profile.conflicts = [];
-        this.persist();
-        this.render();
-        this.notice('云端拉取成功');
-    }
-    catch (e) {
-        this.notice(String(e));
-    } }
-    async sync(manual) {
-        if (this.busy) {
-            if (manual)
-                this.notice('同步正在进行');
-            return;
+    closeActiveConfirm() {
+        if (this.activeConfirmCard) {
+            this.activeConfirmCard.remove();
+            this.activeConfirmCard = null;
         }
-        if (!this.profile.dav.url) {
-            if (manual)
-                this.notice('请先配置 WebDAV HTTPS 目录');
+    }
+    handleCreateFolder(parentId) {
+        const name = prompt('请输入新文件夹名称', '新建文件夹');
+        if (!name || !name.trim())
             return;
-        }
-        if (!manual && (Date.now() < this.syncRetryAt || this.authFailure || !navigator.onLine))
-            return;
-        if (this.account === 'local') {
-            if (manual)
-                this.notice('尚未识别 ChatGPT 账号，不能同步');
-            return;
-        }
-        this.busy = true;
-        this.updateOpen();
-        const generation = this.generation, account = this.account, dav = { ...this.profile.dav };
-        this.renderStatus();
+        this.executeChange({ type: 'folder.create', parentId, name: name.trim() });
+    }
+    handleRemoveChat(chatId) {
+        this.executeChange({ type: 'conversation.remove', id: chatId });
+    }
+    handleDrop(payload) {
         try {
-            let finished = false;
-            for (let attempt = 0; attempt < 4; attempt++) {
-                const read = await (0, sync_1.davRequest)(dav, 'GET');
-                if (generation !== this.generation || dav.url !== this.profile.dav.url || dav.file !== this.profile.dav.file || dav.username !== this.profile.dav.username || dav.password !== this.profile.dav.password)
-                    return;
-                if (read.status !== 200 && read.status !== 404)
-                    throw Error(`云端读取失败 HTTP ${read.status}`);
-                const remote = read.status === 404 ? null : (0, sync_1.decodeRemote)(read.text, account);
-                const baseline = this.profile.base;
-                const before = (0, model_1.copy)(this.profile.data);
-                const merged = remote ? (0, sync_1.merge)(baseline, before, remote.data) : { data: before, conflicts: [] };
-                const mergedData = merged.data;
-                const changed = JSON.stringify(mergedData) !== JSON.stringify(remote?.data ?? (0, model_1.blank)());
-                if (!changed && remote) {
-                    const after = this.profile.data;
-                    const updated = (0, sync_1.merge)(before, after, mergedData);
-                    this.profile.data = updated.data;
-                    this.profile.base = (0, model_1.copy)(mergedData);
-                    this.profile.baseRevision = remote.revision;
-                    this.profile.etag = read.etag;
-                    this.profile.pending = (0, model_1.diff)(mergedData, this.profile.data, this.device, 0);
-                    this.profile.conflicts.push(...merged.conflicts, ...updated.conflicts);
-                    this.persist();
-                    this.render();
-                    if (this.profile.pending.length)
-                        this.scheduleSync();
-                    finished = true;
-                    break;
-                }
-                if (remote && !read.etag)
-                    throw Error('服务器未提供 ETag，无法安全并发写入');
-                const envelope = (0, sync_1.createRemote)(account, this.device, (remote?.revision ?? 0) + 1, mergedData);
-                const ifHeaders = attempt >= 2 ? {} : (remote ? { 'If-Match': read.etag } : { 'If-None-Match': '*' });
-                const result = await (0, sync_1.davRequest)(dav, 'PUT', ifHeaders, JSON.stringify(envelope));
-                if (generation !== this.generation || dav.url !== this.profile.dav.url || dav.file !== this.profile.dav.file || dav.username !== this.profile.dav.username || dav.password !== this.profile.dav.password)
-                    return;
-                if (result.status === 412 || result.status === 409)
-                    continue;
-                if (result.status < 200 || result.status >= 300)
-                    throw Error(`云端写入失败 HTTP ${result.status}`);
-                // Never replace edits performed while the request was in flight.
-                const after = this.profile.data;
-                const newMerge = (0, sync_1.merge)(before, after, mergedData);
-                this.profile.data = newMerge.data;
-                this.profile.base = (0, model_1.copy)(mergedData);
-                this.profile.baseRevision = envelope.revision;
-                this.profile.etag = result.etag;
-                this.profile.conflicts.push(...merged.conflicts, ...newMerge.conflicts);
-                this.profile.pending = (0, model_1.diff)(mergedData, this.profile.data, this.device, 0);
-                this.persist();
-                this.render();
-                if (this.profile.pending.length)
-                    this.scheduleSync();
-                finished = true;
-                break;
+            if (payload.type === 'folder') {
+                this.executeChange({
+                    type: 'folder.move',
+                    id: payload.sourceId,
+                    parentId: payload.targetFolderId
+                });
             }
-            if (!finished)
-                throw Error('多次并发冲突，未能提交，请稍后重试');
-            this.syncFailures = 0;
-            this.syncRetryAt = 0;
-            this.authFailure = false;
-            this.profile.conflicts = [];
-            if (manual)
-                this.notice('同步请求完成');
+            else {
+                if (!payload.targetFolderId)
+                    return; // 对话不能放到根目录外
+                this.executeChange({
+                    type: 'conversation.assign',
+                    id: payload.sourceId,
+                    folderId: payload.targetFolderId,
+                    title: payload.title
+                });
+            }
         }
         catch (e) {
-            this.syncFailures++;
-            this.syncRetryAt = Date.now() + Math.min(4 * 3600000, 15000 * 2 ** Math.min(this.syncFailures, 8));
-            this.authFailure = /HTTP 40[13]/.test(String(e));
+            alert(String(e));
+        }
+    }
+    executeChange(cmd) {
+        try {
+            const before = this.profile.data;
+            const after = (0, model_1.executeCommand)(before, cmd);
+            this.profile.data = after;
+            this.profile.pending.push({
+                id: (0, model_1.uid)(),
+                device: this.storage.getDeviceId(),
+                seq: Date.now(),
+                time: Date.now(),
+                type: 'folder.upsert',
+                key: 'batch'
+            });
+            this.storage.saveProfile(this.profile);
+            this.render();
+            this.scheduleSync();
+        }
+        catch (e) {
+            alert(String(e));
+        }
+    }
+    scheduleSync() {
+        this.updateSyncState();
+        if (this.syncRetryTimer !== null)
+            return;
+        this.syncRetryTimer = window.setTimeout(() => {
+            this.syncRetryTimer = null;
+            this.sync(false);
+        }, 1500);
+    }
+    updateSyncState() {
+        if (!this.profile.dav.url) {
+            this.syncState = 'unconfigured';
+        }
+        else if (this.isSyncing) {
+            this.syncState = 'syncing';
+        }
+        else if (this.syncFailures > 0) {
+            this.syncState = 'error';
+        }
+        else if (this.profile.pending.length > 0) {
+            this.syncState = 'pending';
+        }
+        else {
+            this.syncState = 'synced';
+        }
+    }
+    async sync(manual) {
+        if (this.isSyncing)
+            return;
+        if (!this.profile.dav.url) {
             if (manual)
-                this.notice('同步失败：' + String(e));
-            console.warn('[CGFM] sync', e);
+                alert('请先在设置中配置 WebDAV HTTPS 地址与凭据');
+            return;
+        }
+        this.isSyncing = true;
+        this.updateSyncState();
+        this.renderSyncButton();
+        try {
+            const readRes = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
+            let remoteData = null;
+            let remoteRevision = 0;
+            if (readRes.status === 200) {
+                const env = (0, sync_1.decodeRemote)(readRes.text, this.storage.getAccount());
+                remoteData = env.data;
+                remoteRevision = env.revision;
+            }
+            else if (readRes.status !== 404) {
+                throw new Error(`云端读取失败 (HTTP ${readRes.status})`);
+            }
+            const baseline = this.profile.base;
+            const local = this.profile.data;
+            const mergedRes = remoteData
+                ? (0, sync_1.merge)(baseline, local, remoteData)
+                : { data: local, conflicts: [] };
+            // 提交到云端
+            const newEnvelope = (0, sync_1.createRemote)(this.storage.getAccount(), this.storage.getDeviceId(), remoteRevision + 1, mergedRes.data);
+            const headers = remoteData && readRes.etag
+                ? { 'If-Match': readRes.etag }
+                : { 'If-None-Match': '*' };
+            const putRes = await (0, sync_1.davRequest)(this.profile.dav, 'PUT', headers, JSON.stringify(newEnvelope));
+            if (putRes.status < 200 || putRes.status >= 300) {
+                throw new Error(`云端写入失败 (HTTP ${putRes.status})`);
+            }
+            this.profile.data = mergedRes.data;
+            this.profile.base = mergedRes.data;
+            this.profile.baseRevision = newEnvelope.revision;
+            this.profile.etag = putRes.etag;
+            this.profile.pending = [];
+            this.profile.conflicts = [];
+            this.syncFailures = 0;
+            this.storage.saveProfile(this.profile);
+            this.render();
+            if (manual)
+                alert('WebDAV 同步成功！');
+        }
+        catch (err) {
+            this.syncFailures++;
+            console.warn('[CGFM] Sync error', err);
+            if (manual)
+                alert(`同步失败: ${String(err)}`);
         }
         finally {
-            this.busy = false;
-            this.updateOpen();
-            this.renderStatus();
+            this.isSyncing = false;
+            this.updateSyncState();
+            this.renderSyncButton();
         }
     }
-    notice(message) { console.info('[CGFM]', message); const dav = this.popup?.querySelector('.cgfm-dav-status'); if (dav) {
-        dav.hidden = false;
-        dav.dataset.type = /失败|错误|损坏/.test(message) ? 'error' : 'success';
-        dav.innerHTML = `<span>${message}</span>`;
-    } const result = this.popup?.querySelector('.cgfm-settings-result'); if (result) {
-        result.hidden = true;
-        result.textContent = message;
-    } if (this.status) {
-        this.status.textContent = message;
-        setTimeout(() => this.renderStatus(), 3500);
+    renderSyncButton() {
+        const btn = this.rootEl?.querySelector('.cgfm-tool-btn[data-act="sync"]');
+        if (btn) {
+            btn.dataset.syncState = this.syncState;
+        }
     }
-    else
-        alert(message); }
+    toggleSettings() {
+        if (this.settingsEl) {
+            this.settingsEl.remove();
+            this.settingsEl = null;
+            return;
+        }
+        const panel = document.createElement('div');
+        panel.className = 'cgfm-settings-panel';
+        const currentWidth = this.profile.preferences.sidebarWidth || 312;
+        panel.innerHTML = `
+      <div class="cgfm-settings-header">
+        <span class="cgfm-settings-title">文件夹设置</span>
+        <button class="cgfm-mini-btn" data-act="close">${constants_1.ICONS.close}</button>
+      </div>
+
+      <div class="cgfm-settings-field">
+        <label>面板宽度 (<span class="cgfm-width-num">${currentWidth}</span>px)</label>
+        <input type="range" class="cgfm-width-slider" min="260" max="500" step="5" value="${currentWidth}" />
+      </div>
+
+      <div class="cgfm-settings-field">
+        <label>WebDAV HTTPS 目录</label>
+        <input type="text" class="cgfm-dav-url" placeholder="https://dav.example.com/folders/" value="${this.profile.dav.url}" />
+      </div>
+
+      <div class="cgfm-settings-row">
+        <div class="cgfm-settings-field" style="flex:1; margin-right:8px;">
+          <label>WebDAV 用户名</label>
+          <input type="text" class="cgfm-dav-user" value="${this.profile.dav.username}" />
+        </div>
+        <div class="cgfm-settings-field" style="flex:1;">
+          <label>密码 / App Token</label>
+          <input type="password" class="cgfm-dav-pass" value="${this.profile.dav.password}" />
+        </div>
+      </div>
+
+      <div class="cgfm-settings-field">
+        <label>云端文件名</label>
+        <input type="text" class="cgfm-dav-file" value="${this.profile.dav.file || 'chatgpt-folders-v2.json'}" />
+      </div>
+
+      <div class="cgfm-action-group">
+        <button class="cgfm-secondary-btn" data-act="test-dav">测试连接</button>
+        <button class="cgfm-primary-btn" data-act="save-dav">保存配置</button>
+      </div>
+
+      <div class="cgfm-status-box" style="display:none;"></div>
+
+      <div class="cgfm-action-group" style="margin-top:10px;">
+        <button class="cgfm-secondary-btn" data-act="export">导出 JSON</button>
+        <button class="cgfm-secondary-btn" data-act="import">导入 JSON</button>
+      </div>
+    `;
+        // 宽度滑块即时调节联动
+        const slider = panel.querySelector('.cgfm-width-slider');
+        const widthNum = panel.querySelector('.cgfm-width-num');
+        slider.addEventListener('input', () => {
+            const val = parseInt(slider.value, 10);
+            widthNum.textContent = String(val);
+            this.updatePanelWidth(val);
+        });
+        panel.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button');
+            if (!btn)
+                return;
+            const act = btn.dataset.act;
+            const statusBox = panel.querySelector('.cgfm-status-box');
+            if (act === 'close') {
+                this.toggleSettings();
+            }
+            else if (act === 'save-dav') {
+                this.profile.dav.url = panel.querySelector('.cgfm-dav-url').value.trim();
+                this.profile.dav.username = panel.querySelector('.cgfm-dav-user').value.trim();
+                this.profile.dav.password = panel.querySelector('.cgfm-dav-pass').value.trim();
+                this.profile.dav.file = panel.querySelector('.cgfm-dav-file').value.trim() || 'chatgpt-folders-v2.json';
+                this.storage.saveProfile(this.profile);
+                this.updateSyncState();
+                this.renderSyncButton();
+                statusBox.style.display = 'block';
+                statusBox.className = 'cgfm-status-box success';
+                statusBox.textContent = '配置已保存';
+            }
+            else if (act === 'test-dav') {
+                statusBox.style.display = 'block';
+                statusBox.className = 'cgfm-status-box';
+                statusBox.textContent = '正在测试连接...';
+                try {
+                    const cfg = {
+                        url: panel.querySelector('.cgfm-dav-url').value.trim(),
+                        username: panel.querySelector('.cgfm-dav-user').value.trim(),
+                        password: panel.querySelector('.cgfm-dav-pass').value.trim(),
+                        file: panel.querySelector('.cgfm-dav-file').value.trim() || 'chatgpt-folders-v2.json'
+                    };
+                    const res = await (0, sync_1.davRequest)(cfg, 'GET');
+                    statusBox.className = 'cgfm-status-box success';
+                    statusBox.textContent = res.status === 404 ? '连接成功（远端文件尚不存在）' : `连接成功 (HTTP ${res.status})`;
+                }
+                catch (err) {
+                    statusBox.className = 'cgfm-status-box error';
+                    statusBox.textContent = String(err);
+                }
+            }
+            else if (act === 'export') {
+                const json = this.storage.exportJson(this.profile.data);
+                const blob = new Blob([json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `chatgpt-folders-v2-${this.storage.getAccount()}-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+            else if (act === 'import') {
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.accept = '.json,application/json';
+                fileInput.onchange = () => {
+                    const file = fileInput.files?.[0];
+                    if (!file)
+                        return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        try {
+                            const data = this.storage.importJson(String(reader.result));
+                            if (confirm('确认使用导入的数据替换当前文件夹结构吗？')) {
+                                this.profile.data = data;
+                                this.storage.saveProfile(this.profile);
+                                this.render();
+                                alert('导入成功！');
+                            }
+                        }
+                        catch (err) {
+                            alert(`导入失败: ${String(err)}`);
+                        }
+                    };
+                    reader.readAsText(file);
+                };
+                fileInput.click();
+            }
+        });
+        document.body.appendChild(panel);
+        this.settingsEl = panel;
+    }
 }
-exports.FolderApplication = FolderApplication;
+exports.FolderUiController = FolderUiController;
 
 },
 "main":function(require,module,exports){
@@ -1490,9 +2268,9 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.1.0
-// @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
-// @author       ChatGPT
+// @version      2.0.0
+// @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
+// @author       Euphoria
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-start
@@ -1506,21 +2284,22 @@ exports.FolderApplication = FolderApplication;
 // @connect      *
 // ==/UserScript==
 Object.defineProperty(exports, "__esModule", { value: true });
-const runtime_1 = require("./runtime");
-function run() {
+const ui_1 = require("./ui");
+function bootstrap() {
     if (!document.body) {
-        document.addEventListener('DOMContentLoaded', run, { once: true });
+        document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
         return;
     }
-    if (document.querySelector('[data-cgfm-next-root]'))
+    if (document.getElementById('cgfm-root'))
         return;
     try {
-        new runtime_1.FolderApplication().start();
+        const app = new ui_1.FolderUiController();
+        app.init();
     }
-    catch (error) {
-        console.error('[CGFM] Initialization failed', error);
+    catch (err) {
+        console.error('[CGFM] Failed to initialize ChatGPT Folders:', err);
     }
 }
-run();
+bootstrap();
 
 }};const cache={};function get(name){const key=(name.startsWith('./')?name.slice(2):name);if(cache[key])return cache[key].exports;const fn=registry[key];if(!fn)throw Error('Missing bundled module '+key);const m={exports:{}};cache[key]=m;fn(get,m,m.exports);return m.exports;}get('main');})();
