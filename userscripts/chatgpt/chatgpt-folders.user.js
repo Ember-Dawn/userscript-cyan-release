@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.2
+// @version      2.0.3
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -25,41 +25,63 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ICONS = exports.PALETTE_COLORS = exports.KEY_AUTH_PREFIX = exports.KEY_TITLES_PREFIX = exports.KEY_COLLAPSED_PREFIX = exports.KEY_LAST_ACCOUNT = exports.KEY_DEVICE = exports.KEY_PREFIX_ACCOUNT = void 0;
+// 存储键名常量
 exports.KEY_PREFIX_ACCOUNT = 'cgfm.v2.account.';
 exports.KEY_DEVICE = 'cgfm.v2.device';
 exports.KEY_LAST_ACCOUNT = 'cgfm.v2.lastAccount';
 exports.KEY_COLLAPSED_PREFIX = 'cgfm.v2.collapsed.';
 exports.KEY_TITLES_PREFIX = 'cgfm.v2.titles.';
 exports.KEY_AUTH_PREFIX = 'cgfm.v2.auth.';
+// 10 种现代高质感色块 + 默认蓝色/灰色
 exports.PALETTE_COLORS = [
-    '#6b7280', // 默认灰
-    '#ef4444', // 红
-    '#f97316', // 橙
-    '#f59e0b', // 琥珀/黄
-    '#10b981', // 绿
-    '#06b6d4', // 青
-    '#3b82f6', // 蓝
+    '#3b82f6', // 经典蓝 (默认)
+    '#10b981', // 翡翠绿
+    '#06b6d4', // 青蓝
+    '#8b5cf6', // 紫罗兰
+    '#ec4899', // 玫红
+    '#f59e0b', // 琥珀黄
+    '#f97316', // 活力橙
+    '#ef4444', // 珊瑚红
     '#6366f1', // 靛蓝
-    '#8b5cf6', // 紫
-    '#ec4899', // 粉
+    '#6b7280' // 沉静灰
 ];
+// 正统标准的 Lucide SVG 图标集 (基于 Lucide 官方 24x24 矢量规范)
 exports.ICONS = {
-    folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>',
-    folderOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>',
-    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
-    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>',
-    sync: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>',
-    settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>',
-    pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a1 1 0 0 0 0-2H8a1 1 0 0 0 0 2h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>',
-    dots: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>',
-    edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>',
-    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>',
-    palette: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>',
-    chevronRight: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>',
-    chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>',
-    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
-    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
-    rail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>'
+    // 文件夹 (折叠状态)
+    folder: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>`,
+    // 文件夹 (展开状态)
+    folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+    // 对话气泡 (MessageSquare，与文件夹彻底区分)
+    messageSquare: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+    // 新建 (Plus)
+    plus: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>`,
+    // 同步刷新 (RotateCw)
+    rotateCw: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>`,
+    // 设置 (Settings)
+    settings: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>`,
+    // 固定 (Pin，未固定状态)
+    pin: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>`,
+    // 取消固定 (PinOff，已固定状态)
+    pinOff: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="2" x2="22" y1="2" y2="22"/><line x1="12" x2="12" y1="17" y2="22"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h12"/><path d="M15 9.34V6h1a2 2 0 0 0 0-4H7.89"/><path d="m2 2 20 20"/></svg>`,
+    // 展开收起箭头
+    chevronRight: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
+    chevronDown: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
+    // 更多操作 (MoreHorizontal)
+    moreHorizontal: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>`,
+    // 编辑铅笔 (Pencil)
+    pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`,
+    // 删除垃圾桶 (Trash2)
+    trash2: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="3 6h18"/><path d="19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>`,
+    // 调色板 (Palette)
+    palette: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>`,
+    // 勾号保存 (Check)
+    check: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
+    // 关闭 / 取消 (X)
+    x: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>`,
+    // 导出 JSON (Download)
+    download: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>`,
+    // 导入 JSON (Upload)
+    upload: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>`
 };
 
 },
@@ -631,7 +653,7 @@ class PointerDragManager {
             return;
         const preview = document.createElement('div');
         preview.className = 'cgfm-drag-preview';
-        preview.innerHTML = `${this.activeSession.type === 'folder' ? constants_1.ICONS.folder : constants_1.ICONS.chat}<span>${this.activeSession.title}</span>`;
+        preview.innerHTML = `${this.activeSession.type === 'folder' ? constants_1.ICONS.folder : constants_1.ICONS.messageSquare}<span>${this.activeSession.title}</span>`;
         document.body.appendChild(preview);
         this.activeSession.preview = preview;
         this.updatePreview(x, y);
@@ -897,12 +919,13 @@ exports.STYLES = `
 :root {
   --cg-bg: #ffffff;
   --cg-panel-bg: #ffffff;
+  --cg-card-bg: #f9fafb;
   --cg-text: #0d0d0d;
   --cg-border: #e5e7eb;
   --cg-hover: #f3f4f6;
-  --cg-input: #f9fafb;
+  --cg-input: #ffffff;
   --cg-muted: #6b7280;
-  --cg-shadow: rgba(0, 0, 0, 0.14);
+  --cg-shadow: rgba(0, 0, 0, 0.12);
   --cg-accent: #3b82f6;
   --cg-sidebar-width: 312px;
 }
@@ -910,16 +933,17 @@ exports.STYLES = `
 :root[class*="dark"], .dark, html[data-theme="dark"] {
   --cg-bg: #171717;
   --cg-panel-bg: #1e1e1e;
+  --cg-card-bg: #262626;
   --cg-text: #ececec;
-  --cg-border: #303030;
-  --cg-hover: #262626;
-  --cg-input: #202020;
+  --cg-border: #333333;
+  --cg-hover: #2a2a2a;
+  --cg-input: #1a1a1a;
   --cg-muted: #8e8ea0;
   --cg-shadow: rgba(0, 0, 0, 0.5);
   --cg-accent: #3b82f6;
 }
 
-/* 官方导航 Rail 挂载项目容器与按钮 */
+/* 官方导航 Rail 挂载项目容器与蓝色按钮 */
 #cgfm-rail-entry {
   display: flex !important;
   align-items: center !important;
@@ -987,28 +1011,23 @@ exports.STYLES = `
   display: flex !important;
 }
 
-/* 头部操作栏 */
+/* 头部操作栏 (修复文字折行 bug，去除大图标，保持干净纯文字) */
 .cgfm-header {
   height: 48px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--cg-border);
   flex-shrink: 0;
 }
 .cgfm-header-title {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  display: flex;
-  align-items: center;
-  gap: 6px;
   color: var(--cg-text);
-}
-.cgfm-header-title svg {
-  color: #3b82f6;
-  stroke: #3b82f6;
+  white-space: nowrap;
+  user-select: none;
 }
 .cgfm-header-actions {
   display: flex;
@@ -1016,8 +1035,8 @@ exports.STYLES = `
   gap: 4px;
 }
 .cgfm-tool-btn {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 6px;
   background: transparent;
   border: none;
@@ -1027,6 +1046,7 @@ exports.STYLES = `
   justify-content: center;
   cursor: pointer;
   transition: all 0.15s ease;
+  padding: 0;
 }
 .cgfm-tool-btn:hover {
   background: var(--cg-hover);
@@ -1037,8 +1057,8 @@ exports.STYLES = `
   color: #3b82f6;
 }
 .cgfm-tool-btn svg {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
 }
 
 .cgfm-tool-btn[data-sync-state="synced"] { color: #10b981; }
@@ -1066,7 +1086,7 @@ exports.STYLES = `
   text-transform: uppercase;
   color: var(--cg-muted);
   letter-spacing: 0.04em;
-  padding: 8px 10px 4px;
+  padding: 10px 10px 4px;
   margin-top: 6px;
 }
 
@@ -1106,25 +1126,34 @@ exports.STYLES = `
   height: 14px;
 }
 
-.cgfm-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+/* 文件夹专属图标 (纯正 Lucide，支持颜色着色，取消圆点) */
+.cgfm-folder-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  color: #3b82f6;
+}
+.cgfm-folder-icon svg {
+  width: 17px;
+  height: 17px;
 }
 
-.cgfm-icon {
-  width: 16px;
-  height: 16px;
+/* 对话专属图标 (Lucide MessageSquare 气泡) */
+.cgfm-chat-icon {
+  width: 18px;
+  height: 18px;
   color: var(--cg-muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
-.cgfm-icon svg {
-  width: 15px;
-  height: 15px;
+.cgfm-chat-icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 .cgfm-title {
@@ -1170,7 +1199,7 @@ exports.STYLES = `
   height: 13px;
 }
 
-/* 行内编辑框 */
+/* 行内编辑框 (文件夹与对话通用) */
 .cgfm-inline-edit {
   display: flex;
   align-items: center;
@@ -1200,13 +1229,13 @@ exports.STYLES = `
   z-index: 100005;
   display: flex;
   flex-direction: column;
-  min-width: 140px;
+  min-width: 145px;
 }
 .cgfm-menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 7px 10px;
   border-radius: 5px;
   background: transparent;
   border: none;
@@ -1277,14 +1306,14 @@ exports.STYLES = `
   box-shadow: 0 12px 28px var(--cg-shadow);
   padding: 12px;
   z-index: 100007;
-  width: 200px;
+  width: 210px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 .cgfm-confirm-title {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--cg-text);
   line-height: 1.4;
 }
@@ -1295,8 +1324,8 @@ exports.STYLES = `
   gap: 6px;
 }
 .cgfm-btn-cancel, .cgfm-btn-danger {
-  padding: 4px 10px;
-  border-radius: 5px;
+  padding: 5px 10px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
@@ -1318,35 +1347,112 @@ exports.STYLES = `
   background: #dc2626;
 }
 
-/* 紧凑设置弹窗 */
+/* 现代化卡片风格设置面板 (Settings Panel) */
 .cgfm-settings-panel {
   position: fixed;
   top: 0;
-  width: 360px;
+  width: 380px;
   max-height: 100vh;
   overflow-y: auto;
   background: var(--cg-panel-bg);
   border-right: 1px solid var(--cg-border);
-  box-shadow: 6px 0 24px var(--cg-shadow);
+  box-shadow: 6px 0 28px var(--cg-shadow);
   z-index: 100004;
-  padding: 16px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  box-sizing: border-box;
 }
+
 .cgfm-settings-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--cg-border);
 }
 .cgfm-settings-title {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
+  color: var(--cg-text);
 }
+
+/* 设置模块卡片 */
+.cgfm-card {
+  background: var(--cg-card-bg);
+  border: 1px solid var(--cg-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cgfm-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cg-muted);
+}
+
+/* 修复横向拖动条 Track 与 Thumb 样式 */
+.cgfm-slider-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cgfm-slider-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--cg-text);
+}
+.cgfm-width-num {
+  font-weight: 600;
+  color: #3b82f6;
+}
+
+.cgfm-width-slider {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 100% !important;
+  height: 6px !important;
+  border-radius: 3px !important;
+  background: var(--cg-border) !important;
+  outline: none !important;
+  margin: 6px 0 !important;
+  cursor: pointer !important;
+}
+.cgfm-width-slider::-webkit-slider-runnable-track {
+  width: 100% !important;
+  height: 6px !important;
+  border-radius: 3px !important;
+  background: var(--cg-border) !important;
+}
+.cgfm-width-slider::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  width: 18px !important;
+  height: 18px !important;
+  border-radius: 50% !important;
+  background: #3b82f6 !important;
+  border: 2px solid #ffffff !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3) !important;
+  cursor: pointer !important;
+  margin-top: -6px !important;
+  transition: transform 0.1s ease !important;
+}
+.cgfm-width-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15) !important;
+}
+
+/* 表单字段 */
 .cgfm-settings-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
 .cgfm-settings-field label {
   font-size: 12px;
@@ -1355,31 +1461,35 @@ exports.STYLES = `
 .cgfm-settings-field input[type="text"],
 .cgfm-settings-field input[type="password"] {
   height: 32px;
-  padding: 0 8px;
+  padding: 0 10px;
   border-radius: 6px;
   border: 1px solid var(--cg-border);
   background: var(--cg-input);
   color: var(--cg-text);
   font-size: 13px;
   outline: none;
+  box-sizing: border-box;
 }
 .cgfm-settings-field input[type="text"]:focus,
 .cgfm-settings-field input[type="password"]:focus {
-  border-color: var(--cg-accent);
+  border-color: #3b82f6;
 }
 .cgfm-settings-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
+
+/* 现代按钮组 */
 .cgfm-action-group {
   display: flex;
   gap: 8px;
+  margin-top: 4px;
 }
 .cgfm-primary-btn {
   flex: 1;
-  height: 32px;
-  border-radius: 6px;
+  height: 34px;
+  border-radius: 7px;
   background: #3b82f6;
   color: #ffffff;
   border: none;
@@ -1389,15 +1499,16 @@ exports.STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 6px;
+  transition: background 0.15s ease;
 }
 .cgfm-primary-btn:hover {
   background: #2563eb;
 }
 .cgfm-secondary-btn {
   flex: 1;
-  height: 32px;
-  border-radius: 6px;
+  height: 34px;
+  border-radius: 7px;
   background: var(--cg-hover);
   color: var(--cg-text);
   border: 1px solid var(--cg-border);
@@ -1407,13 +1518,20 @@ exports.STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 6px;
+  transition: all 0.15s ease;
 }
 .cgfm-secondary-btn:hover {
   background: var(--cg-input);
+  border-color: var(--cg-muted);
 }
+.cgfm-secondary-btn svg, .cgfm-primary-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
 .cgfm-status-box {
-  padding: 8px 10px;
+  padding: 8px 12px;
   border-radius: 6px;
   font-size: 12px;
   background: var(--cg-hover);
@@ -1429,6 +1547,28 @@ exports.STYLES = `
   background: rgba(16, 185, 129, 0.1);
   color: #10b981;
   border-color: rgba(16, 185, 129, 0.3);
+}
+
+/* 自绘轻量 Toast 胶囊通知 */
+.cgfm-toast {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1f2937;
+  color: #ffffff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+  z-index: 200000;
+  pointer-events: none;
+  animation: cgfm-toast-in 0.2s ease;
+}
+@keyframes cgfm-toast-in {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 /* 拖拽浮动预览 */
@@ -1489,7 +1629,7 @@ class FolderUiController {
     constructor() {
         this.storage = new storage_1.StorageManager((newProfile) => {
             this.profile = newProfile;
-            this.render();
+            this.renderFolderTree();
         });
         this.api = new api_1.ChatApiManager();
         this.profile = this.storage.loadProfile();
@@ -1516,7 +1656,9 @@ class FolderUiController {
             }
         });
         this.updateSyncState();
-        this.render();
+        this.renderSkeleton();
+        this.renderFolderTree();
+        this.renderRecentList();
     }
     injectStyles() {
         if (document.getElementById('cgfm-styles'))
@@ -1525,6 +1667,17 @@ class FolderUiController {
         style.id = 'cgfm-styles';
         style.textContent = styles_1.STYLES;
         document.head.appendChild(style);
+    }
+    showToast(message, duration = 2500) {
+        const toast = document.createElement('div');
+        toast.className = 'cgfm-toast';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        window.setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.2s ease';
+            window.setTimeout(() => toast.remove(), 200);
+        }, duration);
     }
     createRootPanel() {
         if (document.getElementById('cgfm-root'))
@@ -1557,9 +1710,11 @@ class FolderUiController {
         }, { capture: true });
     }
     updatePanelWidth(width) {
-        const val = Math.max(260, Math.min(500, width));
+        // 限制在 260 - 500 范围，并取 5px 整数倍
+        const rounded = Math.round(width / 5) * 5;
+        const val = Math.max(260, Math.min(500, rounded));
         this.profile.preferences.sidebarWidth = val;
-        this.rootEl.style.setProperty('--cg-sidebar-width', `${val}px`);
+        this.rootEl?.style.setProperty('--cg-sidebar-width', `${val}px`);
     }
     updatePosition() {
         const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
@@ -1591,7 +1746,6 @@ class FolderUiController {
         const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
         if (!rail)
             return;
-        // 定位实际项目列表容器
         const host = rail.querySelector('[data-appearance="plain"], .group\\/nav-list');
         if (!host)
             return;
@@ -1602,7 +1756,7 @@ class FolderUiController {
             btn.className = 'cgfm-rail-btn';
             btn.type = 'button';
             btn.title = 'ChatGPT 文件夹（悬停展开，点击固定）';
-            btn.innerHTML = constants_1.ICONS.rail;
+            btn.innerHTML = constants_1.ICONS.folder;
             const handleEnter = () => {
                 this.isHovered = true;
                 this.clearCloseTimer();
@@ -1626,7 +1780,7 @@ class FolderUiController {
                         this.closePanel();
                     }
                 }
-                this.render();
+                this.updateHeaderPinButton();
             };
             btn.addEventListener('pointerenter', handleEnter);
             btn.addEventListener('mouseenter', handleEnter);
@@ -1638,7 +1792,7 @@ class FolderUiController {
             this.railEntry = entry;
             this.railBtn = btn;
         }
-        // 需求：放在「更多/探索」图标的下面
+        // 核心定位：必须放在「更多/三个点」图标的下方
         const moreBtn = host.querySelector('[data-slot="popover-trigger"], button[aria-haspopup="dialog"], [data-slate-sidebar-peek-area="customize"]')?.closest('button, .flex.shrink-0');
         if (moreBtn && moreBtn.parentElement === host) {
             if (this.railEntry.previousElementSibling !== moreBtn) {
@@ -1678,7 +1832,8 @@ class FolderUiController {
                 this.api.setAccountId(detectedAccount);
                 this.profile = this.storage.loadProfile();
                 this.collapsedFolders = this.storage.loadCollapsedFolders();
-                this.render();
+                this.renderFolderTree();
+                this.renderRecentList();
             }
         };
         checkAccount();
@@ -1699,6 +1854,7 @@ class FolderUiController {
         this.rootEl.classList.add('cgfm-open');
         if (this.railBtn)
             this.railBtn.classList.add('active');
+        this.renderRecentList();
     }
     closePanel() {
         if (this.isPinned ||
@@ -1727,7 +1883,15 @@ class FolderUiController {
         else {
             this.closePanel();
         }
-        this.render();
+        this.updateHeaderPinButton();
+    }
+    updateHeaderPinButton() {
+        const pinBtn = this.rootEl.querySelector('.cgfm-tool-btn[data-act="pin"]');
+        if (pinBtn) {
+            pinBtn.className = `cgfm-tool-btn ${this.isPinned ? 'active' : ''}`;
+            pinBtn.title = this.isPinned ? '取消固定' : '固定面板';
+            pinBtn.innerHTML = this.isPinned ? constants_1.ICONS.pinOff : constants_1.ICONS.pin;
+        }
     }
     scheduleClose() {
         this.clearCloseTimer();
@@ -1741,20 +1905,17 @@ class FolderUiController {
             this.closeTimer = null;
         }
     }
-    render() {
+    renderSkeleton() {
         if (!this.rootEl)
             return;
         this.rootEl.innerHTML = `
       <div class="cgfm-header">
-        <div class="cgfm-header-title">
-          ${constants_1.ICONS.folder}
-          <span>文件夹</span>
-        </div>
+        <div class="cgfm-header-title">文件夹</div>
         <div class="cgfm-header-actions">
           <button class="cgfm-tool-btn" data-act="create-root" title="新建文件夹">${constants_1.ICONS.plus}</button>
-          <button class="cgfm-tool-btn" data-act="sync" data-sync-state="${this.syncState}" title="立即同步">${constants_1.ICONS.sync}</button>
+          <button class="cgfm-tool-btn" data-act="sync" data-sync-state="${this.syncState}" title="立即同步">${constants_1.ICONS.rotateCw}</button>
           <button class="cgfm-tool-btn" data-act="settings" title="设置">${constants_1.ICONS.settings}</button>
-          <button class="cgfm-tool-btn ${this.isPinned ? 'active' : ''}" data-act="pin" title="${this.isPinned ? '取消固定' : '固定面板'}">${constants_1.ICONS.pin}</button>
+          <button class="cgfm-tool-btn ${this.isPinned ? 'active' : ''}" data-act="pin" title="${this.isPinned ? '取消固定' : '固定面板'}">${this.isPinned ? constants_1.ICONS.pinOff : constants_1.ICONS.pin}</button>
         </div>
       </div>
       <div class="cgfm-scroll-area">
@@ -1763,7 +1924,6 @@ class FolderUiController {
         <div class="cgfm-recent-list"></div>
       </div>
     `;
-        // 绑定头部操作事件
         const header = this.rootEl.querySelector('.cgfm-header');
         header.addEventListener('click', (e) => {
             const btn = e.target.closest('.cgfm-tool-btn');
@@ -1771,7 +1931,7 @@ class FolderUiController {
                 return;
             const act = btn.dataset.act;
             if (act === 'create-root') {
-                this.handleCreateFolder(null);
+                this.startInlineCreateFolder(null);
             }
             else if (act === 'sync') {
                 this.sync(true);
@@ -1783,14 +1943,12 @@ class FolderUiController {
                 this.togglePin();
             }
         });
-        // 渲染文件夹树
-        const treeEl = this.rootEl.querySelector('.cgfm-folder-tree');
-        this.renderFolderTree(treeEl);
-        // 渲染最近对话
-        const recentEl = this.rootEl.querySelector('.cgfm-recent-list');
-        this.renderRecentChats(recentEl);
     }
-    renderFolderTree(container) {
+    renderFolderTree() {
+        const container = this.rootEl.querySelector('.cgfm-folder-tree');
+        if (!container)
+            return;
+        container.innerHTML = '';
         const { folders, conversations } = this.profile.data;
         const childrenMap = {};
         for (const f of Object.values(folders)) {
@@ -1810,12 +1968,13 @@ class FolderUiController {
                 row.className = 'cgfm-row';
                 row.dataset.folderId = f.id;
                 row.style.paddingLeft = `${depth * 14 + 8}px`;
+                const folderColor = f.color || '#3b82f6';
                 row.innerHTML = `
           <span class="cgfm-chevron" data-act="toggle">${isCollapsed ? constants_1.ICONS.chevronRight : constants_1.ICONS.chevronDown}</span>
-          <span class="cgfm-dot" style="background-color: ${f.color || '#3b82f6'}"></span>
+          <span class="cgfm-folder-icon" style="color: ${folderColor}">${isCollapsed ? constants_1.ICONS.folder : constants_1.ICONS.folderOpen}</span>
           <span class="cgfm-title">${f.name}</span>
           <div class="cgfm-row-actions">
-            <button class="cgfm-mini-btn" data-act="menu" title="文件夹操作">${constants_1.ICONS.dots}</button>
+            <button class="cgfm-mini-btn" data-act="menu" title="文件夹操作">${constants_1.ICONS.moreHorizontal}</button>
           </div>
         `;
                 row.addEventListener('click', (e) => {
@@ -1840,11 +1999,11 @@ class FolderUiController {
                         chatRow.dataset.chatId = c.id;
                         chatRow.style.paddingLeft = `${(depth + 1) * 14 + 8}px`;
                         chatRow.innerHTML = `
-              <span class="cgfm-icon">${constants_1.ICONS.chat}</span>
+              <span class="cgfm-chat-icon">${constants_1.ICONS.messageSquare}</span>
               <span class="cgfm-title" title="${c.title}">${c.title}</span>
               <div class="cgfm-row-actions">
-                <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.edit}</button>
-                <button class="cgfm-mini-btn" data-act="remove" title="从文件夹移出">${constants_1.ICONS.trash}</button>
+                <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.pencil}</button>
+                <button class="cgfm-mini-btn" data-act="remove" title="从文件夹移出">${constants_1.ICONS.trash2}</button>
               </div>
             `;
                         chatRow.addEventListener('click', (e) => {
@@ -1853,7 +2012,7 @@ class FolderUiController {
                             if (btn) {
                                 e.stopPropagation();
                                 if (btn.dataset.act === 'edit') {
-                                    this.startInlineRename(chatRow, c.id, c.title);
+                                    this.startInlineRenameChat(chatRow, c.id, c.title);
                                 }
                                 else if (btn.dataset.act === 'remove') {
                                     this.handleRemoveChat(c.id);
@@ -1870,7 +2029,11 @@ class FolderUiController {
         };
         renderLevel(null, 0);
     }
-    renderRecentChats(container) {
+    renderRecentList() {
+        const container = this.rootEl.querySelector('.cgfm-recent-list');
+        if (!container)
+            return;
+        container.innerHTML = '';
         const nativeLinks = document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
         const seenIds = new Set();
         for (const el of nativeLinks) {
@@ -1883,8 +2046,7 @@ class FolderUiController {
             if (seenIds.has(id))
                 continue;
             seenIds.add(id);
-            if (this.profile.data.conversations[id])
-                continue;
+            // 需求修正：绝不在最近列表中隐藏已分类对话，完整保留历史记录
             let title = el.textContent?.trim() || el.getAttribute('title') || '未命名对话';
             const guarded = this.api.getGuardedTitle(id);
             if (guarded)
@@ -1893,10 +2055,10 @@ class FolderUiController {
             row.className = 'cgfm-row';
             row.dataset.chatId = id;
             row.innerHTML = `
-        <span class="cgfm-icon">${constants_1.ICONS.chat}</span>
+        <span class="cgfm-chat-icon">${constants_1.ICONS.messageSquare}</span>
         <span class="cgfm-title" title="${title}">${title}</span>
         <div class="cgfm-row-actions">
-          <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.edit}</button>
+          <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.pencil}</button>
         </div>
       `;
             row.addEventListener('click', (e) => {
@@ -1904,7 +2066,7 @@ class FolderUiController {
                 const btn = target.closest('.cgfm-mini-btn');
                 if (btn?.dataset.act === 'edit') {
                     e.stopPropagation();
-                    this.startInlineRename(row, id, title);
+                    this.startInlineRenameChat(row, id, title);
                     return;
                 }
                 window.location.href = `https://chatgpt.com/c/${id}`;
@@ -1915,9 +2077,140 @@ class FolderUiController {
     toggleFolderCollapse(folderId) {
         this.collapsedFolders[folderId] = !this.collapsedFolders[folderId];
         this.storage.saveCollapsedFolders(this.collapsedFolders);
-        this.render();
+        this.renderFolderTree();
     }
-    startInlineRename(row, chatId, currentTitle) {
+    /**
+     * 行内直接创建文件夹 (绝不弹 window.prompt，直接就地编辑，Esc 直接取消)
+     */
+    startInlineCreateFolder(parentId) {
+        const container = this.rootEl.querySelector('.cgfm-folder-tree');
+        if (!container)
+            return;
+        this.isEditing = true;
+        // 如果是子文件夹，确保父文件夹先展开
+        if (parentId && this.collapsedFolders[parentId]) {
+            this.collapsedFolders[parentId] = false;
+            this.storage.saveCollapsedFolders(this.collapsedFolders);
+            this.renderFolderTree();
+        }
+        const editRow = document.createElement('div');
+        editRow.className = 'cgfm-row';
+        const depth = parentId ? 1 : 0;
+        editRow.style.paddingLeft = `${depth * 14 + 8}px`;
+        editRow.innerHTML = `
+      <span class="cgfm-folder-icon" style="color: #3b82f6">${constants_1.ICONS.folder}</span>
+      <div class="cgfm-inline-edit">
+        <input type="text" class="cgfm-inline-input" value="新建文件夹" />
+        <button class="cgfm-mini-btn" data-act="save" title="创建">${constants_1.ICONS.check}</button>
+        <button class="cgfm-mini-btn" data-act="cancel" title="取消">${constants_1.ICONS.x}</button>
+      </div>
+    `;
+        const input = editRow.querySelector('input');
+        const finish = (save) => {
+            this.isEditing = false;
+            const name = input.value.trim();
+            editRow.remove();
+            if (save && name) {
+                this.executeChange({ type: 'folder.create', parentId, name });
+            }
+        };
+        let isComposing = false;
+        input.addEventListener('compositionstart', () => (isComposing = true));
+        input.addEventListener('compositionend', () => (isComposing = false));
+        input.addEventListener('keydown', (e) => {
+            if (isComposing)
+                return;
+            if (e.key === 'Enter')
+                finish(true);
+            if (e.key === 'Escape')
+                finish(false);
+        });
+        editRow.addEventListener('click', (e) => {
+            const btn = e.target.closest('.cgfm-mini-btn');
+            if (!btn)
+                return;
+            e.stopPropagation();
+            if (btn.dataset.act === 'save')
+                finish(true);
+            if (btn.dataset.act === 'cancel')
+                finish(false);
+        });
+        // 寻找挂载位置
+        if (parentId) {
+            const parentRow = container.querySelector(`.cgfm-row[data-folder-id="${parentId}"]`);
+            if (parentRow) {
+                parentRow.after(editRow);
+            }
+            else {
+                container.prepend(editRow);
+            }
+        }
+        else {
+            container.prepend(editRow);
+        }
+        input.focus();
+        input.select();
+    }
+    /**
+     * 行内重命名文件夹 (绝不弹 window.prompt，直接就地编辑)
+     */
+    startInlineRenameFolder(row, folderId, currentName) {
+        this.isEditing = true;
+        const titleEl = row.querySelector('.cgfm-title');
+        const actionsEl = row.querySelector('.cgfm-row-actions');
+        if (!titleEl || !actionsEl)
+            return;
+        titleEl.style.display = 'none';
+        actionsEl.style.display = 'none';
+        const editWrap = document.createElement('div');
+        editWrap.className = 'cgfm-inline-edit';
+        editWrap.innerHTML = `
+      <input type="text" class="cgfm-inline-input" value="${currentName.replace(/"/g, '&quot;')}" />
+      <button class="cgfm-mini-btn" data-act="save" title="保存">${constants_1.ICONS.check}</button>
+      <button class="cgfm-mini-btn" data-act="cancel" title="取消">${constants_1.ICONS.x}</button>
+    `;
+        const input = editWrap.querySelector('input');
+        let isComposing = false;
+        input.addEventListener('compositionstart', () => (isComposing = true));
+        input.addEventListener('compositionend', () => (isComposing = false));
+        const finish = (save) => {
+            this.isEditing = false;
+            editWrap.remove();
+            titleEl.style.display = '';
+            actionsEl.style.display = '';
+            if (save) {
+                const newName = input.value.trim();
+                if (newName && newName !== currentName) {
+                    this.executeChange({ type: 'folder.rename', id: folderId, name: newName });
+                }
+            }
+        };
+        input.addEventListener('keydown', (e) => {
+            if (isComposing)
+                return;
+            if (e.key === 'Enter')
+                finish(true);
+            if (e.key === 'Escape')
+                finish(false);
+        });
+        editWrap.addEventListener('click', (e) => {
+            const btn = e.target.closest('.cgfm-mini-btn');
+            if (!btn)
+                return;
+            e.stopPropagation();
+            if (btn.dataset.act === 'save')
+                finish(true);
+            if (btn.dataset.act === 'cancel')
+                finish(false);
+        });
+        row.insertBefore(editWrap, actionsEl);
+        input.focus();
+        input.select();
+    }
+    /**
+     * 行内重命名对话
+     */
+    startInlineRenameChat(row, chatId, currentTitle) {
         this.isEditing = true;
         const titleEl = row.querySelector('.cgfm-title');
         const actionsEl = row.querySelector('.cgfm-row-actions');
@@ -1930,7 +2223,7 @@ class FolderUiController {
         editWrap.innerHTML = `
       <input type="text" class="cgfm-inline-input" value="${currentTitle.replace(/"/g, '&quot;')}" />
       <button class="cgfm-mini-btn" data-act="save" title="保存">${constants_1.ICONS.check}</button>
-      <button class="cgfm-mini-btn" data-act="cancel" title="取消">${constants_1.ICONS.close}</button>
+      <button class="cgfm-mini-btn" data-act="cancel" title="取消">${constants_1.ICONS.x}</button>
     `;
         const input = editWrap.querySelector('input');
         let isComposing = false;
@@ -1951,6 +2244,10 @@ class FolderUiController {
                             if (this.profile.data.conversations[chatId]) {
                                 this.executeChange({ type: 'conversation.title', id: chatId, title: newTitle });
                             }
+                            this.showToast('对话标题已同步更新');
+                        }
+                        else {
+                            this.showToast('服务端标题重命名未成功');
                         }
                     });
                 }
@@ -1993,8 +2290,8 @@ class FolderUiController {
         <button class="cgfm-menu-item" data-act="color">${constants_1.ICONS.palette}<span>修改颜色</span></button>
         <div class="cgfm-palette-grid">${paletteHtml}</div>
       </div>
-      <button class="cgfm-menu-item" data-act="rename">${constants_1.ICONS.edit}<span>重命名</span></button>
-      <button class="cgfm-menu-item danger" data-act="delete">${constants_1.ICONS.trash}<span>删除文件夹</span></button>
+      <button class="cgfm-menu-item" data-act="rename">${constants_1.ICONS.pencil}<span>重命名</span></button>
+      <button class="cgfm-menu-item danger" data-act="delete">${constants_1.ICONS.trash2}<span>删除文件夹</span></button>
     `;
         menu.addEventListener('click', (e) => {
             const target = e.target;
@@ -2011,13 +2308,13 @@ class FolderUiController {
             const act = item.dataset.act;
             if (act === 'add-sub') {
                 this.closeActiveMenu();
-                this.handleCreateFolder(folder.id);
+                this.startInlineCreateFolder(folder.id);
             }
             else if (act === 'rename') {
                 this.closeActiveMenu();
-                const newName = prompt('重命名文件夹', folder.name);
-                if (newName && newName.trim()) {
-                    this.executeChange({ type: 'folder.rename', id: folder.id, name: newName.trim() });
+                const row = this.rootEl.querySelector(`.cgfm-row[data-folder-id="${folder.id}"]`);
+                if (row) {
+                    this.startInlineRenameFolder(row, folder.id, folder.name);
                 }
             }
             else if (act === 'delete') {
@@ -2039,7 +2336,7 @@ class FolderUiController {
         const card = document.createElement('div');
         card.className = 'cgfm-confirm-card';
         card.style.top = `${anchorRect.top}px`;
-        card.style.left = `${Math.min(anchorRect.left, window.innerWidth - 220)}px`;
+        card.style.left = `${Math.min(anchorRect.left, window.innerWidth - 225)}px`;
         card.innerHTML = `
       <div class="cgfm-confirm-title">确认删除文件夹「${folder.name}」？其下对话将还原为未分类。</div>
       <div class="cgfm-confirm-actions">
@@ -2063,14 +2360,9 @@ class FolderUiController {
             this.activeConfirmCard = null;
         }
     }
-    handleCreateFolder(parentId) {
-        const name = prompt('请输入新文件夹名称', '新建文件夹');
-        if (!name || !name.trim())
-            return;
-        this.executeChange({ type: 'folder.create', parentId, name: name.trim() });
-    }
     handleRemoveChat(chatId) {
         this.executeChange({ type: 'conversation.remove', id: chatId });
+        this.showToast('已从文件夹移出');
     }
     handleDrop(payload) {
         try {
@@ -2090,10 +2382,11 @@ class FolderUiController {
                     folderId: payload.targetFolderId,
                     title: payload.title
                 });
+                this.showToast('已加入文件夹');
             }
         }
         catch (e) {
-            alert(String(e));
+            this.showToast(String(e));
         }
     }
     executeChange(cmd) {
@@ -2110,11 +2403,11 @@ class FolderUiController {
                 key: 'batch'
             });
             this.storage.saveProfile(this.profile);
-            this.render();
+            this.renderFolderTree();
             this.scheduleSync();
         }
         catch (e) {
-            alert(String(e));
+            this.showToast(String(e));
         }
     }
     scheduleSync() {
@@ -2148,7 +2441,7 @@ class FolderUiController {
             return;
         if (!this.profile.dav.url) {
             if (manual)
-                alert('请先在设置中配置 WebDAV HTTPS 地址与凭据');
+                this.showToast('请先在设置中配置 WebDAV HTTPS 凭据');
             return;
         }
         this.isSyncing = true;
@@ -2187,15 +2480,15 @@ class FolderUiController {
             this.profile.conflicts = [];
             this.syncFailures = 0;
             this.storage.saveProfile(this.profile);
-            this.render();
+            this.renderFolderTree();
             if (manual)
-                alert('WebDAV 同步成功！');
+                this.showToast('WebDAV 同步成功！');
         }
         catch (err) {
             this.syncFailures++;
             console.warn('[CGFM] Sync error', err);
             if (manual)
-                alert(`同步失败: ${String(err)}`);
+                this.showToast(`同步失败: ${String(err)}`);
         }
         finally {
             this.isSyncing = false;
@@ -2209,6 +2502,9 @@ class FolderUiController {
             btn.dataset.syncState = this.syncState;
         }
     }
+    /**
+     * 现代卡片风格设置面板
+     */
     toggleSettings() {
         if (this.settingsEl) {
             this.settingsEl.remove();
@@ -2222,53 +2518,75 @@ class FolderUiController {
         panel.innerHTML = `
       <div class="cgfm-settings-header">
         <span class="cgfm-settings-title">文件夹设置</span>
-        <button class="cgfm-mini-btn" data-act="close">${constants_1.ICONS.close}</button>
+        <button class="cgfm-mini-btn" data-act="close">${constants_1.ICONS.x}</button>
       </div>
 
-      <div class="cgfm-settings-field">
-        <label>面板宽度 (<span class="cgfm-width-num">${currentWidth}</span>px)</label>
-        <input type="range" class="cgfm-width-slider" min="260" max="500" step="5" value="${currentWidth}" />
-      </div>
-
-      <div class="cgfm-settings-field">
-        <label>WebDAV HTTPS 目录</label>
-        <input type="text" class="cgfm-dav-url" placeholder="https://dav.example.com/folders/" value="${this.profile.dav.url}" />
-      </div>
-
-      <div class="cgfm-settings-row">
-        <div class="cgfm-settings-field" style="flex:1; margin-right:8px;">
-          <label>WebDAV 用户名</label>
-          <input type="text" class="cgfm-dav-user" value="${this.profile.dav.username}" />
-        </div>
-        <div class="cgfm-settings-field" style="flex:1;">
-          <label>密码 / App Token</label>
-          <input type="password" class="cgfm-dav-pass" value="${this.profile.dav.password}" />
+      <!-- 面板外观卡片 -->
+      <div class="cgfm-card">
+        <div class="cgfm-card-title">面板外观</div>
+        <div class="cgfm-slider-wrap">
+          <div class="cgfm-slider-header">
+            <span>面板宽度</span>
+            <span class="cgfm-width-num">${currentWidth}px</span>
+          </div>
+          <input type="range" class="cgfm-width-slider" min="260" max="500" step="5" value="${currentWidth}" />
         </div>
       </div>
 
-      <div class="cgfm-settings-field">
-        <label>云端文件名</label>
-        <input type="text" class="cgfm-dav-file" value="${this.profile.dav.file || 'chatgpt-folders-v2.json'}" />
+      <!-- WebDAV 同步卡片 -->
+      <div class="cgfm-card">
+        <div class="cgfm-card-title">WebDAV 同步配置</div>
+        <div class="cgfm-settings-field">
+          <label>WebDAV HTTPS 目录</label>
+          <input type="text" class="cgfm-dav-url" placeholder="https://dav.example.com/folders/" value="${this.profile.dav.url}" />
+        </div>
+
+        <div class="cgfm-settings-row">
+          <div class="cgfm-settings-field" style="flex:1; margin-right:8px;">
+            <label>用户名</label>
+            <input type="text" class="cgfm-dav-user" value="${this.profile.dav.username}" />
+          </div>
+          <div class="cgfm-settings-field" style="flex:1;">
+            <label>密码 / App Token</label>
+            <input type="password" class="cgfm-dav-pass" value="${this.profile.dav.password}" />
+          </div>
+        </div>
+
+        <div class="cgfm-settings-field">
+          <label>云端文件名</label>
+          <input type="text" class="cgfm-dav-file" value="${this.profile.dav.file || 'chatgpt-folders-v2.json'}" />
+        </div>
+
+        <div class="cgfm-action-group">
+          <button class="cgfm-secondary-btn" data-act="test-dav">测试连接</button>
+          <button class="cgfm-primary-btn" data-act="save-dav">保存配置</button>
+        </div>
+
+        <div class="cgfm-status-box" style="display:none;"></div>
       </div>
 
-      <div class="cgfm-action-group">
-        <button class="cgfm-secondary-btn" data-act="test-dav">测试连接</button>
-        <button class="cgfm-primary-btn" data-act="save-dav">保存配置</button>
-      </div>
-
-      <div class="cgfm-status-box" style="display:none;"></div>
-
-      <div class="cgfm-action-group" style="margin-top:10px;">
-        <button class="cgfm-secondary-btn" data-act="export">导出 JSON</button>
-        <button class="cgfm-secondary-btn" data-act="import">导入 JSON</button>
+      <!-- 数据管理卡片 (带 Lucide 导出导入图标) -->
+      <div class="cgfm-card">
+        <div class="cgfm-card-title">数据管理</div>
+        <div class="cgfm-action-group">
+          <button class="cgfm-secondary-btn" data-act="export">
+            ${constants_1.ICONS.download}
+            <span>导出 JSON</span>
+          </button>
+          <button class="cgfm-secondary-btn" data-act="import">
+            ${constants_1.ICONS.upload}
+            <span>导入 JSON</span>
+          </button>
+        </div>
       </div>
     `;
         const slider = panel.querySelector('.cgfm-width-slider');
         const widthNum = panel.querySelector('.cgfm-width-num');
         slider.addEventListener('input', () => {
             const val = parseInt(slider.value, 10);
-            widthNum.textContent = String(val);
+            widthNum.textContent = `${val}px`;
             this.updatePanelWidth(val);
+            panel.style.left = `calc(${this.rootEl.style.left || '52px'} + var(--cg-sidebar-width))`;
         });
         panel.addEventListener('click', async (e) => {
             const btn = e.target.closest('button');
@@ -2333,15 +2651,13 @@ class FolderUiController {
                     reader.onload = () => {
                         try {
                             const data = this.storage.importJson(String(reader.result));
-                            if (confirm('确认使用导入的数据替换当前文件夹结构吗？')) {
-                                this.profile.data = data;
-                                this.storage.saveProfile(this.profile);
-                                this.render();
-                                alert('导入成功！');
-                            }
+                            this.profile.data = data;
+                            this.storage.saveProfile(this.profile);
+                            this.renderFolderTree();
+                            this.showToast('导入成功！');
                         }
                         catch (err) {
-                            alert(`导入失败: ${String(err)}`);
+                            this.showToast(`导入失败: ${String(err)}`);
                         }
                     };
                     reader.readAsText(file);
@@ -2365,7 +2681,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.2
+// @version      2.0.3
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
