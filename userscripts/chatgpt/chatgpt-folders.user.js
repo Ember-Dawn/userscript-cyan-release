@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.6
+// @version      2.0.7
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -310,7 +310,7 @@ const sync_1 = require("./sync");
 const icons_1 = require("./icons");
 const style = `
 #cgfm-next-root .cgfm-head button{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;padding:5px;color:var(--cg-text)}#cgfm-next-root .cgfm-head button svg{width:17px;height:17px}#cgfm-next-root .cgfm-head button[data-act="pin"][aria-pressed="true"]{color:#2876db;background:rgba(59,130,246,.15)}#cgfm-next-root .cgfm-head button[data-act="sync"][aria-busy="true"] svg{animation:cgfm-spin 1s linear infinite}@keyframes cgfm-spin{to{transform:rotate(360deg)}}
-#cgfm-next-root .cgfm-head button[data-sync-state="synced"]{color:#16856b}#cgfm-next-root .cgfm-head button[data-sync-state="pending"]{color:#c48b29}#cgfm-next-root .cgfm-head button[data-sync-state="syncing"]{color:#2876db}#cgfm-next-root .cgfm-head button[data-sync-state="error"]{color:#d14b4b}#cgfm-next-root .cgfm-head button[data-sync-state="unconfigured"]{color:var(--cg-muted)}#cgfm-next-root .cgfm-row button svg{width:16px;height:16px}#cgfm-next-root .cgfm-pop.cgfm-settings{width:min(440px,calc(100vw - 24px));max-width:calc(100vw - 24px)!important;min-width:0!important;max-height:calc(100dvh - 24px);overflow-y:auto;overscroll-behavior:contain;padding:0;border-radius:14px}#cgfm-next-root .cgfm-settings-header{display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-header strong{font-size:16px}#cgfm-next-root .cgfm-settings-section{padding:15px 18px;border-bottom:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-section h3{font-size:13px;margin:0 0 12px;font-weight:650}#cgfm-next-root .cgfm-settings label{display:flex;flex-direction:column;gap:5px;margin:0 0 11px;font-size:12px;color:var(--cg-muted)}#cgfm-next-root .cgfm-settings input:not([type=checkbox]):not([type=range]){height:36px;padding:7px 10px;font-size:13px;color:var(--cg-text)}#cgfm-next-root .cgfm-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}#cgfm-next-root .cgfm-settings-actions{display:flex;gap:8px;flex-wrap:wrap}#cgfm-next-root .cgfm-settings-actions button{margin:0;padding:8px 10px;display:inline-flex;align-items:center;gap:6px}#cgfm-next-root .cgfm-settings-actions button svg{width:15px;height:15px}#cgfm-next-root .cgfm-settings .cgfm-switch-row{display:flex;flex-direction:row;align-items:center;gap:8px;color:var(--cg-text);margin:0 0 10px}#cgfm-next-root .cgfm-settings .cgfm-switch-row input{width:16px;height:16px;margin:0;accent-color:#2876db;pointer-events:auto;cursor:pointer}#cgfm-next-root .cgfm-settings-footer{display:flex;justify-content:flex-end;padding:14px 18px}#cgfm-next-root .cgfm-settings-footer button{background:#2876db;color:#fff;border-color:#2876db;margin:0;padding:9px 17px}#cgfm-next-root .cgfm-settings .cgfm-danger{color:#b45309}#cgfm-next-root .cgfm-settings-result{padding:9px 12px;margin:0 18px 10px;border:1px solid var(--cg-border);border-radius:8px;color:var(--cg-text);background:var(--cg-hover);font-size:12px;overflow-wrap:anywhere}#cgfm-next-root .cgfm-password-wrap{position:relative;display:flex;align-items:center;min-width:0}#cgfm-next-root .cgfm-password-wrap input{padding-right:42px!important;min-width:0}#cgfm-next-root .cgfm-password-wrap button{position:absolute;right:4px;top:50%;transform:translateY(-50%);margin:0;width:30px;height:30px;display:grid;place-items:center;border:0;background:transparent}#cgfm-next-root .cgfm-password-wrap button svg{width:17px;height:17px}#cgfm-next-root .cgfm-settings input{min-width:0}#cgfm-next-root .cgfm-settings input[type=range]{width:100%;height:18px;padding:0;accent-color:#2876db;cursor:pointer}#cgfm-next-root .cgfm-settings .cgfm-slider-line{display:flex;justify-content:space-between;color:var(--cg-muted);font-size:11px}#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions{flex-wrap:nowrap;gap:5px}#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions button{padding:6px 7px;white-space:nowrap;font-size:11px;flex:1;justify-content:center}#cgfm-next-root .cgfm-settings-header{padding:9px 12px}#cgfm-next-root .cgfm-settings-section{padding:10px 12px}#cgfm-next-root .cgfm-settings-section h3{margin-bottom:8px}#cgfm-next-root .cgfm-settings-footer{padding:9px 12px}#cgfm-next-root .cgfm-pop.cgfm-settings{border-radius:10px;width:min(410px,calc(100vw - 24px))}#cgfm-next-root .cgfm-settings-grid>*{min-width:0}#cgfm-next-root .cgfm-settings-header{position:sticky;top:0;background:var(--cg-bg);z-index:1}#cgfm-next-root .cgfm-settings-footer{position:sticky;bottom:0;background:var(--cg-bg);z-index:1;border-top:1px solid var(--cg-border)}
+#cgfm-next-root .cgfm-head button[data-sync-state="synced"]{color:#16856b}#cgfm-next-root .cgfm-head button[data-sync-state="pending"]{color:#c48b29}#cgfm-next-root .cgfm-head button[data-sync-state="syncing"]{color:#2876db}#cgfm-next-root .cgfm-head button[data-sync-state="error"]{color:#d14b4b}#cgfm-next-root .cgfm-head button[data-sync-state="unconfigured"]{color:var(--cg-muted)}#cgfm-next-root .cgfm-head .cgfm-head-title{font-size:12px;font-weight:600;opacity:.7;padding-left:3px;user-select:none;flex:1}#cgfm-next-root .cgfm-row button svg{width:16px;height:16px}#cgfm-next-root .cgfm-pop.cgfm-settings{width:min(420px,calc(100vw - 24px));max-width:calc(100vw - 24px)!important;min-width:0!important;max-height:calc(100dvh - 24px);overflow-y:auto;overscroll-behavior:contain;padding:0;border-radius:12px;box-shadow:0 18px 42px var(--cg-shadow);border:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--cg-border);position:sticky;top:0;background:var(--cg-bg);z-index:1}#cgfm-next-root .cgfm-settings-header strong{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--cg-text)}#cgfm-next-root .cgfm-settings-close{width:28px;height:28px;padding:0;margin:0;border:0;border-radius:6px;background:transparent;color:var(--cg-muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s ease,color .15s ease}#cgfm-next-root .cgfm-settings-close:hover{background:var(--cg-hover);color:var(--cg-text)}#cgfm-next-root .cgfm-settings-close svg{width:16px;height:16px}#cgfm-next-root .cgfm-settings-section{padding:14px 16px;border-bottom:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-section h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--cg-muted);margin:0 0 10px}#cgfm-next-root .cgfm-settings label{display:flex;flex-direction:column;gap:5px;margin:0 0 11px;font-size:12px;color:var(--cg-muted)}#cgfm-next-root .cgfm-settings input:not([type=checkbox]):not([type=range]){height:36px;padding:7px 10px;font-size:13px;color:var(--cg-text);min-width:0;border-radius:6px}#cgfm-next-root .cgfm-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}#cgfm-next-root .cgfm-settings-grid>*{min-width:0}#cgfm-next-root .cgfm-settings-actions{display:flex;gap:8px;flex-wrap:wrap}#cgfm-next-root .cgfm-settings-actions button{margin:0;padding:8px 10px;display:inline-flex;align-items:center;gap:6px}#cgfm-next-root .cgfm-settings-actions button svg{width:15px;height:15px}#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions{display:flex;flex-wrap:nowrap;gap:8px}#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions button{padding:8px 10px;white-space:nowrap;font-size:13px;font-weight:500;flex:1;justify-content:center;border:1px solid var(--cg-border);border-radius:7px}#cgfm-next-root .cgfm-settings .cgfm-switch-row{display:flex;flex-direction:row;align-items:center;gap:8px;color:var(--cg-text);margin:0 0 10px;cursor:pointer;user-select:none}#cgfm-next-root .cgfm-settings .cgfm-switch-row input{width:16px;height:16px;margin:0;accent-color:#2876db;cursor:pointer}#cgfm-next-root .cgfm-settings-footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:12px 16px;position:sticky;bottom:0;background:var(--cg-bg);z-index:1;border-top:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel{margin:0;padding:8px 15px;border:1px solid var(--cg-border);border-radius:7px;background:transparent;color:var(--cg-text);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s ease}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel:hover{background:var(--cg-hover)}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save{margin:0;padding:8px 18px;border:1px solid #2876db;border-radius:7px;background:#2876db;color:#fff;font-size:13px;font-weight:500;cursor:pointer;transition:opacity .15s ease}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save:hover{opacity:.9}#cgfm-next-root .cgfm-settings .cgfm-danger{color:#b45309}#cgfm-next-root .cgfm-settings-result{padding:9px 12px;margin:0 16px 10px;border:1px solid var(--cg-border);border-radius:8px;color:var(--cg-text);background:var(--cg-hover);font-size:12px;overflow-wrap:anywhere}#cgfm-next-root .cgfm-password-wrap{position:relative;display:flex;align-items:center;min-width:0}#cgfm-next-root .cgfm-password-wrap input{padding-right:42px!important;min-width:0}#cgfm-next-root .cgfm-password-wrap button{position:absolute;right:4px;top:50%;transform:translateY(-50%);margin:0;width:30px;height:30px;display:grid;place-items:center;border:0;background:transparent}#cgfm-next-root .cgfm-password-wrap button svg{width:17px;height:17px}#cgfm-next-root .cgfm-settings input{min-width:0}#cgfm-next-root .cgfm-settings input[type=range]{width:100%;height:18px;padding:0;accent-color:#2876db;cursor:pointer}#cgfm-next-root .cgfm-settings .cgfm-slider-line{display:flex;justify-content:space-between;color:var(--cg-muted);font-size:11px}
 
 #cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--cg-text);--cg-bg:#f4f4f2;--cg-text:#0d0d0d;--cg-muted:#656565;--cg-border:#d4d4d2;--cg-hover:#e8e8e6;--cg-input:#fff;--cg-shadow:#0002}
 html[data-cgfm-theme="dark"] #cgfm-next-root{--cg-bg:#212121;--cg-text:#ececec;--cg-muted:#b4b4b4;--cg-border:#424242;--cg-hover:#343434;--cg-input:#2b2b2b;--cg-shadow:#0007}
@@ -484,7 +484,7 @@ class FolderApplication {
         this.root = document.createElement('div');
         this.root.id = 'cgfm-next-root';
         this.root.dataset.cgfmNextRoot = '1';
-        this.root.innerHTML = `<button id="cgfm-next-launch" title="ChatGPT 文件夹">${(0, icons_1.icon)('folder')}</button><section id="cgfm-next-panel"><div class="cgfm-head"><b style="flex:1">ChatGPT 文件夹</b><button data-act="create" title="新建文件夹" aria-label="新建文件夹">${(0, icons_1.icon)('folder-plus')}</button><button data-act="sync" title="立即同步" aria-label="立即同步">${(0, icons_1.icon)('refresh-cw')}</button><button data-act="settings" title="设置" aria-label="设置">${(0, icons_1.icon)('settings')}</button><button data-act="pin" title="固定面板" aria-label="固定面板" aria-pressed="false">${(0, icons_1.icon)('pin-off')}</button></div><div class="cgfm-scroll"></div><div class="cgfm-foot"></div></section>`;
+        this.root.innerHTML = `<button id="cgfm-next-launch" title="ChatGPT 文件夹">${(0, icons_1.icon)('folder')}</button><section id="cgfm-next-panel"><div class="cgfm-head"><span class="cgfm-head-title">文件夹</span><button data-act="create" title="新建文件夹" aria-label="新建文件夹">${(0, icons_1.icon)('folder-plus')}</button><button data-act="sync" title="立即同步" aria-label="立即同步">${(0, icons_1.icon)('refresh-cw')}</button><button data-act="settings" title="设置" aria-label="设置">${(0, icons_1.icon)('settings')}</button><button data-act="pin" title="固定面板" aria-label="固定面板" aria-pressed="false">${(0, icons_1.icon)('pin-off')}</button></div><div class="cgfm-scroll"></div><div class="cgfm-foot"></div></section>`;
         document.body.append(this.root);
         this.panel = this.root.querySelector('#cgfm-next-panel');
         this.list = this.root.querySelector('.cgfm-scroll');
@@ -615,7 +615,7 @@ class FolderApplication {
         btn.title = { unconfigured: '未配置 WebDAV', syncing: '同步中', error: '同步失败或存在冲突', pending: '有待同步的本地修改', synced: '已同步' }[state];
     } this.status.textContent = `${this.busy ? '正在同步' : this.dirty ? '待同步' : '已保存'} · ${this.profile.pending.length} 条待同步 · ${this.profile.conflicts.length} 条冲突`; this.status.title = this.profile.conflicts.slice(-8).join('\n'); }
     render() { if (!this.list || this.editId || this.drag?.started)
-        return; this.list.replaceChildren(); const add = (text, cls = 'cgfm-group') => { const x = document.createElement('div'); x.className = cls; x.textContent = text; this.list.append(x); }; add('文件夹'); const folders = Object.values(this.profile.data.folders); const walk = (parent, depth) => { if (depth > 100)
+        return; this.list.replaceChildren(); const add = (text, cls = 'cgfm-group') => { const x = document.createElement('div'); x.className = cls; x.textContent = text; this.list.append(x); }; const folders = Object.values(this.profile.data.folders); const walk = (parent, depth) => { if (depth > 100)
         return; for (const f of folders.filter(x => x.parentId === parent).sort((a, b) => model_1.natural.compare(a.name, b.name))) {
         const row = this.row('folder', f.id, f.name, depth, f.color);
         const toggle = document.createElement('button');
@@ -680,7 +680,7 @@ class FolderApplication {
     else
         this.chatMenu(row.dataset.id, row.dataset.type === 'recent', e.target); }
     navigate(id) { location.assign('/c/' + encodeURIComponent(id)); }
-    dismissPopup() { this.popup?.remove(); this.popup = null; this.updateOpen(); }
+    dismissPopup() { this.popup?.remove(); this.popup = null; this.width(); this.updateOpen(); }
     showPopup(el, anchor) { const anchorRect = anchor?.getBoundingClientRect(); this.popup?.remove(); this.popup = el; el.classList.add('cgfm-pop'); const isSettings = el.classList.contains('cgfm-settings'); el.style.cssText = 'position:fixed;z-index:2147483001;' + (isSettings ? '' : 'max-width:300px;min-width:200px'); this.root.append(el); const r = anchorRect; const w = el.getBoundingClientRect().width; const h = el.getBoundingClientRect().height; el.style.left = (isSettings ? Math.max(12, (innerWidth - w) / 2) : Math.max(5, Math.min(innerWidth - w - 5, r?.left ?? innerWidth / 3))) + 'px'; el.style.top = (isSettings ? Math.max(12, (innerHeight - h) / 2) : Math.max(5, Math.min(innerHeight - h - 5, r?.bottom ?? 100))) + 'px'; this.updateOpen(); }
     menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { this.dismissPopup(); fn(); }); box.append(b); }
     folderMenu(id, anchor) { const f = this.profile.data.folders[id]; if (!f)
@@ -874,6 +874,7 @@ class FolderApplication {
         header.innerHTML = `<strong>文件夹设置</strong>`;
         const close = document.createElement('button');
         close.type = 'button';
+        close.className = 'cgfm-settings-close';
         close.title = '关闭';
         close.setAttribute('aria-label', '关闭设置');
         close.innerHTML = (0, icons_1.icon)('x');
@@ -952,13 +953,13 @@ class FolderApplication {
         ticks.className = 'cgfm-slider-line';
         ticks.innerHTML = '<span>240 px</span><span>520 px</span>';
         interfaceSection.append(ticks);
-        width.addEventListener('input', () => { widthValue.textContent = width.value + ' px'; });
-        widthCheckbox.addEventListener('change', () => { width.disabled = !widthCheckbox.checked; });
+        width.addEventListener('input', () => { widthValue.textContent = width.value + ' px'; if (widthCheckbox.checked)
+            this.width(Number(width.value), true); });
+        widthCheckbox.addEventListener('change', () => { width.disabled = !widthCheckbox.checked; this.width(Number(width.value), widthCheckbox.checked); });
         const dataSection = section('数据管理');
         const dataActions = document.createElement('div');
-        dataActions.className = 'cgfm-settings-actions';
+        dataActions.className = 'cgfm-settings-actions cgfm-data-actions';
         dataSection.append(dataActions);
-        dataActions.classList.add('cgfm-data-actions');
         action(dataActions, '导出 JSON', () => this.exportData(), 'download');
         action(dataActions, '导入 JSON', () => this.importData(), 'upload');
         const pullButton = action(dataActions, '强制拉取', () => { if (commitSettings())
@@ -973,22 +974,35 @@ class FolderApplication {
         const footer = document.createElement('footer');
         footer.className = 'cgfm-settings-footer';
         box.append(footer);
-        action(footer, '保存设置', () => { if (commitSettings()) {
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.className = 'cgfm-btn-cancel';
+        cancelBtn.textContent = '取消';
+        cancelBtn.addEventListener('click', () => this.dismissPopup());
+        footer.append(cancelBtn);
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.className = 'cgfm-btn-save';
+        saveBtn.textContent = '保存设置';
+        saveBtn.addEventListener('click', () => { if (commitSettings()) {
             this.dismissPopup();
             this.notice('设置已保存');
         } });
+        footer.append(saveBtn);
         this.showPopup(box);
     }
-    width() {
+    width(previewWidth, previewActive) {
         let el = document.getElementById('cgfm-next-width');
         if (!el) {
             el = document.createElement('style');
             el.id = 'cgfm-next-width';
             document.head.append(el);
         }
-        const px = `${this.profile.preferences.sidebarWidth}px`;
-        const pinned = !!document.querySelector('#stage-slideover-sidebar') && !!document.querySelector('[data-testid="sidebar"]');
-        el.textContent = this.profile.preferences.customWidth && pinned ? `html{--codex-sidebar-preferred-width:${px}!important}html body{--sidebar-width:${px}!important}` : '';
+        const active = previewActive ?? this.profile.preferences.customWidth;
+        const val = previewWidth ?? this.profile.preferences.sidebarWidth;
+        const px = `${val}px`;
+        const hasSidebar = !!document.querySelector('#app-shell-sidebar, [data-testid="sidebar"], #stage-slideover-sidebar, nav[data-app-navigation-rail="true"], aside');
+        el.textContent = active && hasSidebar ? `html{--codex-sidebar-preferred-width:${px}!important}html body{--sidebar-width:${px}!important}#app-shell-sidebar{--sidebar-width:${px}!important}` : '';
     }
     exportData() { const content = JSON.stringify({ format: 'cgfm-ts-data', version: 1, account: this.account, data: this.profile.data }, null, 2); const url = URL.createObjectURL(new Blob([content], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'chatgpt-folders-ts.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 3000); }
     importData() { const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json'; input.onchange = async () => { const file = input.files?.[0]; if (!file)
@@ -1167,7 +1181,7 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.6
+// @version      2.0.7
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
