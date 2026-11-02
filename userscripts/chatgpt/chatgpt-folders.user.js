@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.1
+// @version      2.0.2
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -179,8 +179,14 @@ function merge(base, local, remote) {
                 continue;
             }
             if (!lv || !rv) {
-                if (lv !== rv)
+                if (lv !== rv) {
                     conflicts.push(`${kind}:${id}:delete-vs-edit`);
+                    if (kind === 'conversation') {
+                        const surviving = lv || rv;
+                        if (surviving && JSON.stringify(surviving) !== JSON.stringify(bv))
+                            out[id] = (0, model_1.copy)(surviving);
+                    }
+                }
                 continue;
             }
             const v = {};
@@ -222,11 +228,18 @@ function merge(base, local, remote) {
             p = result.folders[p]?.parentId ?? null;
         }
     }
-    for (const c of Object.values(result.conversations))
-        if (!result.folders[c.folderId]) {
-            conflicts.push(`conversation:${c.id}:orphan`);
-            delete result.conversations[c.id];
+    // Never silently discard an assignment during delete-vs-move conflicts.
+    // Attach unresolved conversation references to a stable recovery folder.
+    const orphans = Object.values(result.conversations).filter(c => !result.folders[c.folderId]);
+    if (orphans.length) {
+        const recoveryId = 'cgfm-recovered-conversations';
+        if (!result.folders[recoveryId])
+            result.folders[recoveryId] = { id: recoveryId, parentId: null, name: '冲突恢复的对话', color: '#d97706', collapsed: false, createdAt: 0, updatedAt: 0 };
+        for (const c of orphans) {
+            conflicts.push(`conversation:${c.id}:orphan:${c.folderId}`);
+            c.folderId = recoveryId;
         }
+    }
     (0, model_1.validate)(result);
     return { data: result, conflicts };
 }
@@ -264,13 +277,14 @@ exports.FolderApplication = void 0;
 const model_1 = require("./model");
 const sync_1 = require("./sync");
 const style = `
-#cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--text-primary,#dedede);--cg-bg:var(--main-surface-primary,#202123);--cg-border:var(--border-light,#555)}
+#cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--cg-text);--cg-bg:#f4f4f2;--cg-text:#0d0d0d;--cg-muted:#656565;--cg-border:#d4d4d2;--cg-hover:#e8e8e6;--cg-input:#fff;--cg-shadow:#0002}
+html[data-cgfm-theme="dark"] #cgfm-next-root{--cg-bg:#212121;--cg-text:#ececec;--cg-muted:#b4b4b4;--cg-border:#424242;--cg-hover:#343434;--cg-input:#2b2b2b;--cg-shadow:#0007}
 #cgfm-next-root *{box-sizing:border-box}#cgfm-next-rail-entry{display:flex;align-items:center;justify-content:center;width:100%;flex:none}#cgfm-next-rail{display:flex;align-items:center;justify-content:center;width:36px;height:36px;padding:8px;border:0;border-radius:10px;background:transparent;color:var(--text-secondary,var(--token-text-tertiary,currentColor));cursor:pointer}#cgfm-next-rail:hover,#cgfm-next-rail[data-cgfm-open="true"]{background:var(--sidebar-surface-secondary,rgba(128,128,128,.14));color:var(--text-primary,currentColor)}#cgfm-next-rail svg{width:20px;height:20px;fill:rgba(58,131,247,.20);stroke:#3A83F7;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}#cgfm-next-launch{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:12px;padding:10px;cursor:pointer}
-#cgfm-next-panel{position:absolute;top:0;left:45px;width:330px;max-height:78vh;display:none;flex-direction:column;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:14px;box-shadow:0 8px 36px #0005;overflow:hidden}
+#cgfm-next-panel{position:absolute;top:0;left:45px;width:330px;max-height:100dvh;display:none;flex-direction:column;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:14px;box-shadow:0 8px 36px var(--cg-shadow);overflow:hidden}
 #cgfm-next-root[data-open="yes"] #cgfm-next-panel{display:flex}.cgfm-head{display:flex;align-items:center;gap:6px;padding:11px;border-bottom:1px solid var(--cg-border)}
-.cgfm-scroll{overflow:auto;min-height:70px;padding:7px}.cgfm-row{min-height:32px;display:flex;align-items:center;gap:5px;border-radius:7px;padding:2px 5px;cursor:pointer;user-select:none}.cgfm-row:hover,.cgfm-row.cgfm-selected{background:var(--surface-hover,#6664)}.cgfm-row.cgfm-drop{outline:2px solid #70a6f0}
+.cgfm-scroll{overflow:auto;flex:1;min-height:70px;padding:7px}.cgfm-row{min-height:32px;display:flex;align-items:center;gap:5px;border-radius:7px;padding:2px 5px;cursor:pointer;user-select:none}.cgfm-row:hover,.cgfm-row.cgfm-selected{background:var(--cg-hover)}.cgfm-row.cgfm-drop{outline:2px solid #70a6f0}
 .cgfm-item-icon{display:flex;align-items:center;justify-content:center;width:20px;min-width:20px;height:20px}.cgfm-item-icon svg{width:20px;height:20px;stroke-width:2}.cgfm-row span.cgfm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.cgfm-row button,.cgfm-head button{border:0;color:inherit;background:transparent;cursor:pointer;border-radius:6px;padding:4px 6px}.cgfm-row button:hover,.cgfm-head button:hover{background:#8884}
-.cgfm-group{padding:9px 7px 4px;font-size:12px;opacity:.65}.cgfm-pop{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:10px;padding:12px;box-shadow:0 8px 30px #0005;color:inherit}.cgfm-pop input,.cgfm-pop select{color:inherit;background:var(--cg-bg);border:1px solid var(--cg-border);padding:6px;border-radius:6px;width:100%}.cgfm-pop label{display:block;margin:7px 0}.cgfm-pop button{margin:3px;border:1px solid var(--cg-border);border-radius:6px;padding:6px;background:transparent;color:inherit;cursor:pointer}.cgfm-muted{opacity:.7;font-size:11px}.cgfm-foot{padding:7px 11px;border-top:1px solid var(--cg-border);font-size:11px;cursor:pointer}
+.cgfm-group{padding:9px 7px 4px;font-size:12px;opacity:.65}.cgfm-pop{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:10px;padding:12px;box-shadow:0 8px 30px var(--cg-shadow);color:var(--cg-text)}.cgfm-pop input,.cgfm-pop select{color:var(--cg-text);background:var(--cg-input);border:1px solid var(--cg-border);padding:6px;border-radius:6px;width:100%}.cgfm-pop input[type=checkbox]{width:auto}.cgfm-pop label{display:block;margin:7px 0}.cgfm-pop button{margin:3px;border:1px solid var(--cg-border);border-radius:6px;padding:6px;background:transparent;color:inherit;cursor:pointer}.cgfm-muted{color:var(--cg-muted);font-size:11px}.cgfm-foot{padding:7px 11px;border-top:1px solid var(--cg-border);font-size:11px;cursor:pointer}
 `;
 class FolderApplication {
     account = '';
@@ -307,12 +321,14 @@ class FolderApplication {
     ghost = null;
     authHeaders = {};
     authInstalled = false;
-    start() { this.device = GM_getValue('cgfm.next.device', '') || (0, model_1.uid)(); GM_setValue('cgfm.next.device', this.device); this.account = this.detectAccount(); this.load(); this.loadTitleGuards(); this.restoreAuth(); this.build(); this.installAuthCapture(); this.bindGlobal(); this.scanRecents(); this.render(); this.timer = window.setInterval(() => { this.checkAccount(); if (Date.now() - this.lastRefresh > 30000) {
+    themeObserver = null;
+    start() { this.device = GM_getValue('cgfm.next.device', '') || (0, model_1.uid)(); GM_setValue('cgfm.next.device', this.device); this.account = this.detectAccount(); this.load(); this.loadTitleGuards(); this.restoreAuth(); this.build(); this.updateTheme(); this.installAuthCapture(); this.bindGlobal(); this.scanRecents(); this.render(); this.timer = window.setInterval(() => { this.checkAccount(); if (Date.now() - this.lastRefresh > 30000) {
         this.lastRefresh = Date.now();
         if (this.isOpen())
             this.scanRecents();
     } if (this.profile.dav.url && document.visibilityState === 'visible')
         void this.sync(false); }, 30000); window.setTimeout(() => { this.checkAccount(); this.mountRail(); }, 1500); }
+    updateTheme() { const html = document.documentElement; const scheme = getComputedStyle(html).colorScheme; const dark = html.classList.contains('dark') || html.getAttribute('data-theme') === 'dark' || (scheme === 'dark' && !html.classList.contains('light')); html.dataset.cgfmTheme = dark ? 'dark' : 'light'; }
     key() { return `cgfm.next.account.${this.account}`; }
     detectAccount() {
         try {
@@ -343,10 +359,10 @@ class FolderApplication {
             GM_setValue('cgfm.next.lastAccount', key);
             return key;
         }
-        return GM_getValue('cgfm.next.lastAccount', 'local');
+        return 'local';
     }
     checkAccount() { const next = this.detectAccount(); if (next === this.account)
-        return; this.account = next; this.generation++; this.load(); this.loadTitleGuards(); this.restoreAuth(); this.render(); }
+        return; this.generation++; this.account = next; this.busy = false; this.recent = []; this.selected = null; this.dismissPopup(); this.load(); this.loadTitleGuards(); this.restoreAuth(); this.render(); }
     load() {
         this.readOnly = false;
         if (this.listener)
@@ -440,7 +456,7 @@ class FolderApplication {
         this.panel.addEventListener('pointerdown', e => this.dragStart(e));
         this.panel.addEventListener('pointermove', e => this.dragMove(e));
         this.panel.addEventListener('pointerup', e => this.dragEnd(e));
-        this.panel.addEventListener('pointercancel', () => { this.drag = null; this.removeGhost(); });
+        this.panel.addEventListener('pointercancel', () => this.cancelDrag());
         this.mountRail();
     }
     scheduleClose() { window.clearTimeout(this.closeTimer); this.closeTimer = window.setTimeout(() => { const buttonHover = !!this.railButton?.matches(':hover'); const panelHover = !!this.panel?.matches(':hover'); this.hovered = buttonHover || panelHover || !!this.launch?.matches(':hover'); this.updateOpen(); }, 230); }
@@ -487,8 +503,7 @@ class FolderApplication {
         this.railButton.setAttribute('aria-expanded', this.isOpen() ? 'true' : 'false');
     }
     bindGlobal() { document.addEventListener('keydown', e => { if (e.key === 'Escape') {
-        this.drag = null;
-        this.removeGhost();
+        this.cancelDrag();
         this.dismissPopup();
         if (!this.editId) {
             this.pinned = false;
@@ -500,7 +515,7 @@ class FolderApplication {
         this.mountRail();
         this.scanRecents();
     } }); window.addEventListener('popstate', () => { this.checkAccount(); this.scanRecents(); }); window.addEventListener('online', () => this.scheduleSync()); this.observer = new MutationObserver(() => { if (!this.launch.isConnected)
-        this.root.prepend(this.launch); this.mountRail(); }); this.observer.observe(document.body, { childList: true }); window.setInterval(() => { this.mountRail(); this.width(); }, 10000); this.width(); }
+        this.root.prepend(this.launch); this.mountRail(); }); this.observer.observe(document.body, { childList: true }); this.themeObserver = new MutationObserver(() => this.updateTheme()); this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }); window.setInterval(() => { this.mountRail(); this.width(); }, 10000); this.width(); }
     updateOpen() { this.root.dataset.open = this.pinned || this.hovered || !!this.editId || !!this.popup || !!this.drag ? 'yes' : 'no'; if (this.railButton) {
         this.railButton.dataset.cgfmOpen = String(this.isOpen());
         this.railButton.setAttribute('aria-expanded', String(this.isOpen()));
@@ -574,7 +589,7 @@ class FolderApplication {
         this.chatMenu(row.dataset.id, row.dataset.type === 'recent', e.target); }
     navigate(id) { location.assign('/c/' + encodeURIComponent(id)); }
     dismissPopup() { this.popup?.remove(); this.popup = null; this.updateOpen(); }
-    showPopup(el, anchor) { this.dismissPopup(); this.popup = el; el.classList.add('cgfm-pop'); el.style.cssText = 'position:fixed;z-index:2147483001;max-width:300px;min-width:200px'; document.body.append(el); const r = anchor?.getBoundingClientRect(); el.style.left = Math.min(innerWidth - 310, Math.max(5, r?.left ?? innerWidth / 3)) + 'px'; el.style.top = Math.min(innerHeight - 350, Math.max(5, r?.bottom ?? 100)) + 'px'; this.updateOpen(); }
+    showPopup(el, anchor) { this.dismissPopup(); this.popup = el; el.classList.add('cgfm-pop'); el.style.cssText = 'position:fixed;z-index:2147483001;max-width:300px;min-width:200px'; this.root.append(el); const r = anchor?.getBoundingClientRect(); const w = Math.min(310, Math.max(200, el.getBoundingClientRect().width)); const h = el.getBoundingClientRect().height; el.style.left = Math.max(5, Math.min(innerWidth - w - 5, r?.left ?? innerWidth / 3)) + 'px'; el.style.top = Math.max(5, Math.min(innerHeight - h - 5, r?.bottom ?? 100)) + 'px'; this.updateOpen(); }
     menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { this.dismissPopup(); fn(); }); box.append(b); }
     folderMenu(id, anchor) { const f = this.profile.data.folders[id]; if (!f)
         return; const box = document.createElement('div'); for (const [name, fn] of [['创建子文件夹', () => this.editFolder(id)], ['重命名', () => this.editFolder(f.parentId, id)], ['颜色', () => this.colorDialog(id)], ['刷新对话标题', () => { this.scanRecents(); this.apiAt = 0; void this.refreshApi(); }], ['移动至...', () => this.folderPicker('folder', id)], ['删除文件夹', () => { if (confirm(`删除「${f.name}」及其子文件夹和分类引用？不会删除 ChatGPT 对话。`))
@@ -736,18 +751,26 @@ class FolderApplication {
     }
     catch { } return original.call(this, input, init); }; }
     removeGhost() { this.ghost?.remove(); this.ghost = null; }
+    cancelDrag() { this.drag = null; this.removeGhost(); this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); this.updateOpen(); }
     dragStart(e) { if (e.button !== 0 || e.target.closest('button,input,select'))
         return; const row = e.target.closest('.cgfm-row'); if (!row)
-        return; this.drag = { type: row.dataset.type === 'folder' ? 'folder' : 'chat', id: row.dataset.id, startX: e.clientX, startY: e.clientY, started: false }; }
+        return; this.drag = { type: row.dataset.type === 'folder' ? 'folder' : 'chat', id: row.dataset.id, startX: e.clientX, startY: e.clientY, started: false }; try {
+        this.panel.setPointerCapture(e.pointerId);
+    }
+    catch { } }
     dragMove(e) { if (!this.drag)
         return; if (!this.drag.started && Math.hypot(e.clientX - this.drag.startX, e.clientY - this.drag.startY) < 5)
         return; this.drag.started = true; if (!this.ghost) {
         this.ghost = document.createElement('div');
         this.ghost.textContent = this.drag.type === 'folder' ? '📁 移动文件夹' : '▤ 移动对话';
-        this.ghost.style.cssText = 'position:fixed;z-index:2147483003;pointer-events:none;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:8px;padding:7px 12px;box-shadow:0 5px 20px #0005';
-        document.body.append(this.ghost);
+        this.ghost.style.cssText = 'position:fixed;z-index:2147483003;pointer-events:none;background:var(--cg-bg);color:var(--cg-text);border:1px solid var(--cg-border);border-radius:8px;padding:7px 12px;box-shadow:0 5px 20px var(--cg-shadow)';
+        this.root.append(this.ghost);
     } this.ghost.style.left = e.clientX + 12 + 'px'; this.ghost.style.top = e.clientY + 12 + 'px'; this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cgfm-row[data-type="folder"]'); target?.classList.add('cgfm-drop'); }
-    dragEnd(e) { const d = this.drag; this.drag = null; this.removeGhost(); this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); if (!d?.started)
+    dragEnd(e) { const d = this.drag; this.drag = null; try {
+        if (this.panel.hasPointerCapture(e.pointerId))
+            this.panel.releasePointerCapture(e.pointerId);
+    }
+    catch { } this.removeGhost(); this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); if (!d?.started)
         return; this.suppressClickUntil = Date.now() + 300; const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cgfm-row[data-type="folder"]'); if (target?.dataset.id) {
         this.apply(d.type === 'folder' ? { type: 'folder.move', id: d.id, parentId: target.dataset.id } : { type: 'conversation.assign', id: d.id, folderId: target.dataset.id, title: this.title(d.id) });
     } this.updateOpen(); }
@@ -775,11 +798,13 @@ class FolderApplication {
     }
     exportData() { const content = JSON.stringify({ format: 'cgfm-ts-data', version: 1, account: this.account, data: this.profile.data }, null, 2); const url = URL.createObjectURL(new Blob([content], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'chatgpt-folders-ts.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 3000); }
     importData() { const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json'; input.onchange = async () => { const file = input.files?.[0]; if (!file)
-        return; try {
+        return; const account = this.account, generation = this.generation; try {
         const parsed = JSON.parse(await file.text());
         if (parsed.format !== 'cgfm-ts-data' || parsed.version !== 1)
             throw Error('只接受新版数据格式');
         (0, model_1.validate)(parsed.data);
+        if (generation !== this.generation || account !== this.account)
+            throw Error('账号已切换，取消导入');
         if (parsed.account !== this.account && !confirm('导入数据账号与当前账号不匹配，仍然导入吗？'))
             return;
         if (!confirm('确认用导入数据替换当前分类？本地 WebDAV 配置会保留。'))
@@ -802,12 +827,14 @@ class FolderApplication {
     catch (e) {
         this.notice(String(e));
     } }
-    async pull() { if (!confirm('使用云端快照完全替换本地分类及未同步修改？'))
+    async pull() { const generation = this.generation, account = this.account; if (!confirm('使用云端快照完全替换本地分类及未同步修改？'))
         return; try {
         const r = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
         if (r.status !== 200)
             throw Error(`HTTP ${r.status}`);
-        const e = (0, sync_1.decodeRemote)(r.text, this.account);
+        if (generation !== this.generation || account !== this.account)
+            throw Error('账号已切换，忽略旧请求');
+        const e = (0, sync_1.decodeRemote)(r.text, account);
         this.profile.data = (0, model_1.copy)(e.data);
         this.profile.base = (0, model_1.copy)(e.data);
         this.profile.baseRevision = e.revision;
@@ -832,12 +859,12 @@ class FolderApplication {
             return;
         }
         this.busy = true;
-        const generation = this.generation, account = this.account;
+        const generation = this.generation, account = this.account, dav = { ...this.profile.dav };
         this.renderStatus();
         try {
             let finished = false;
             for (let attempt = 0; attempt < 4; attempt++) {
-                const read = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
+                const read = await (0, sync_1.davRequest)(dav, 'GET');
                 if (generation !== this.generation)
                     return;
                 if (read.status !== 200 && read.status !== 404)
@@ -867,8 +894,8 @@ class FolderApplication {
                 if (remote && !read.etag)
                     throw Error('服务器未提供 ETag，无法安全并发写入');
                 const envelope = (0, sync_1.createRemote)(account, this.device, (remote?.revision ?? 0) + 1, mergedData);
-                const result = await (0, sync_1.davRequest)(this.profile.dav, 'PUT', remote ? { 'If-Match': read.etag } : { 'If-None-Match': '*' }, JSON.stringify(envelope));
-                if (generation !== this.generation)
+                const result = await (0, sync_1.davRequest)(dav, 'PUT', remote ? { 'If-Match': read.etag } : { 'If-None-Match': '*' }, JSON.stringify(envelope));
+                if (generation !== this.generation || dav.url !== this.profile.dav.url || dav.file !== this.profile.dav.file)
                     return;
                 if (result.status === 412 || result.status === 409)
                     continue;
@@ -930,7 +957,7 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.1
+// @version      2.0.2
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
