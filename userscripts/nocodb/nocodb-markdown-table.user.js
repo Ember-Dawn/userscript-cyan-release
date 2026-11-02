@@ -4,7 +4,7 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js
 // @version      0.3.6
 // @description  在 NocoDB Rich Text 中内嵌显示 Markdown 表格并直接编辑单元格
 // @match        https://nocodb.380782744.xyz/*

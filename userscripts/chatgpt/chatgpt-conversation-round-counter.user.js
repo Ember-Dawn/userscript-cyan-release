@@ -4,7 +4,7 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @version      0.2.8
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数。
 // @author       Ember-Dawn

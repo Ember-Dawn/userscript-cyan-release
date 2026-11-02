@@ -4,7 +4,7 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js
 // @version      1.0.3
 // @description  在 NocoDB LongText Rich Text 弹窗中复制或下载当前编辑器内容为 Markdown
 // @match        https://nocodb.380782744.xyz/*

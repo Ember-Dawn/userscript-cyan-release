@@ -4,7 +4,7 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @version      1.5.2
 // @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
 // @author       ChatGPT

@@ -6,7 +6,7 @@
 // @author       Ember-Dawn
 // @match        https://solidtime.380782744.xyz/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/solidtime/solidtime-enhancer.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==

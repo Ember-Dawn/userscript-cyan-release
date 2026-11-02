@@ -6,7 +6,7 @@
 // @author       Ember-Dawn
 // @match        https://www.flaticon.com/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/flaticon/flaticon-quick-download.user.js
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==

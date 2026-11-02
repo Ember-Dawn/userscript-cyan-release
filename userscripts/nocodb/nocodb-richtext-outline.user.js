@@ -4,7 +4,7 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @version      0.2.1
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*

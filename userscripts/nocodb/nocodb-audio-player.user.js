@@ -4,7 +4,7 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js
 // @version      0.5.0
 // @description  拦截 NocoDB 中指向 Media Manager MP3 的 openURL，在右下角使用可拖动的深色悬浮播放器播放，并提供进度与键盘快捷键。
 // @match        https://nocodb.380782744.xyz/*

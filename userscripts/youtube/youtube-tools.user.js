@@ -4,7 +4,7 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/youtube/youtube-tools.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/youtube/youtube-tools.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/youtube/youtube-tools.user.js
 // @version      1.6.3
 // @description  Open a channel upload playlist, convert playlist upload dates, and export playlist CSV.
 // @author       OpenAI (merged from hoppingd/youtubequickchannelplaylist and uploaded playlist tools)

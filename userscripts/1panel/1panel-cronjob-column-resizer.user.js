@@ -6,7 +6,7 @@
 // @author       Ember-Dawn
 // @match        https://1panel.380782744.xyz/*
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/1panel/1panel-cronjob-column-resizer.user.js
-// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/1panel/1panel-cronjob-column-resizer.user.js
+// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/1panel/1panel-cronjob-column-resizer.user.js
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
