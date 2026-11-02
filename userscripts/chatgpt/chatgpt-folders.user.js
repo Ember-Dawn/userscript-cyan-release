@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.2
+// @version      2.0.3
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -322,6 +322,8 @@ class FolderApplication {
     authHeaders = {};
     authInstalled = false;
     themeObserver = null;
+    recoveryQueued = false;
+    recovering = false;
     start() { this.device = GM_getValue('cgfm.next.device', '') || (0, model_1.uid)(); GM_setValue('cgfm.next.device', this.device); this.account = this.detectAccount(); this.load(); this.loadTitleGuards(); this.restoreAuth(); this.build(); this.updateTheme(); this.installAuthCapture(); this.bindGlobal(); this.scanRecents(); this.render(); this.timer = window.setInterval(() => { this.checkAccount(); if (Date.now() - this.lastRefresh > 30000) {
         this.lastRefresh = Date.now();
         if (this.isOpen())
@@ -436,7 +438,8 @@ class FolderApplication {
     build() {
         const s = document.createElement('style');
         s.textContent = style;
-        document.head.append(s);
+        s.dataset.cgfmStyle = '1';
+        (document.head || document.documentElement).append(s);
         this.root = document.createElement('div');
         this.root.id = 'cgfm-next-root';
         this.root.dataset.cgfmNextRoot = '1';
@@ -446,7 +449,7 @@ class FolderApplication {
         this.list = this.root.querySelector('.cgfm-scroll');
         this.status = this.root.querySelector('.cgfm-foot');
         this.launch = this.root.querySelector('#cgfm-next-launch');
-        this.launch.addEventListener('click', () => { this.pinned = !this.pinned; this.updateOpen(); });
+        this.launch.addEventListener('click', () => { this.ensureMounted(); this.pinned = !this.pinned; this.updateOpen(); });
         this.launch.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
         this.launch.addEventListener('mouseleave', () => { this.hovered = false; window.setTimeout(() => this.updateOpen(), 280); });
         this.panel.addEventListener('pointerenter', () => { window.clearTimeout(this.closeTimer); this.hovered = true; this.updateOpen(); });
@@ -460,7 +463,46 @@ class FolderApplication {
         this.mountRail();
     }
     scheduleClose() { window.clearTimeout(this.closeTimer); this.closeTimer = window.setTimeout(() => { const buttonHover = !!this.railButton?.matches(':hover'); const panelHover = !!this.panel?.matches(':hover'); this.hovered = buttonHover || panelHover || !!this.launch?.matches(':hover'); this.updateOpen(); }, 230); }
+    // Reattach existing elements instead of rebuilding them and losing listeners or editor state.
+    ensureMounted() {
+        if (this.recovering || !document.body)
+            return;
+        this.recovering = true;
+        try {
+            if (!this.root.isConnected) {
+                document.body.append(this.root);
+                console.info('[CGFM] Restored detached panel root');
+            }
+            if (this.panel.parentElement !== this.root)
+                this.root.append(this.panel);
+            if (this.launch.parentElement !== this.root)
+                this.root.prepend(this.launch);
+            if (this.list.parentElement !== this.panel)
+                this.panel.append(this.list);
+            if (this.status.parentElement !== this.panel)
+                this.panel.append(this.status);
+        }
+        finally {
+            this.recovering = false;
+        }
+    }
+    queueRecovery() {
+        if (this.recoveryQueued)
+            return;
+        this.recoveryQueued = true;
+        queueMicrotask(() => {
+            this.recoveryQueued = false;
+            if (!document.body)
+                return;
+            const missing = !this.root.isConnected || !this.panel.isConnected || !this.launch.isConnected;
+            if (missing)
+                this.ensureMounted();
+            if (!this.railEntry?.isConnected || missing)
+                this.mountRail();
+        });
+    }
     mountRail() {
+        this.ensureMounted();
         // Preserve the original rail mount: the plain navigation group below the three-dot item.
         // Never append to arbitrary <nav> elements (which may contain the account footer).
         const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
@@ -482,9 +524,9 @@ class FolderApplication {
             btn.title = '文件夹（悬停打开，点击固定）';
             btn.setAttribute('aria-label', '文件夹');
             btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-            btn.addEventListener('pointerenter', () => { window.clearTimeout(this.closeTimer); this.hovered = true; this.updateOpen(); });
+            btn.addEventListener('pointerenter', () => { this.ensureMounted(); window.clearTimeout(this.closeTimer); this.hovered = true; this.updateOpen(); });
             btn.addEventListener('pointerleave', () => this.scheduleClose());
-            btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); window.clearTimeout(this.closeTimer); this.pinned = !this.pinned; this.updateOpen(); if (!this.pinned)
+            btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); this.ensureMounted(); window.clearTimeout(this.closeTimer); this.pinned = !this.pinned; this.updateOpen(); if (!this.pinned)
                 this.scheduleClose(); });
             entry.append(btn);
             this.railButton = btn;
@@ -512,11 +554,11 @@ class FolderApplication {
     } }); document.addEventListener('click', e => { if (this.popup && !this.popup.contains(e.target) && !e.target.closest('#cgfm-next-panel'))
         this.dismissPopup(); }); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') {
         this.checkAccount();
+        this.ensureMounted();
         this.mountRail();
         this.scanRecents();
-    } }); window.addEventListener('popstate', () => { this.checkAccount(); this.scanRecents(); }); window.addEventListener('online', () => this.scheduleSync()); this.observer = new MutationObserver(() => { if (!this.launch.isConnected)
-        this.root.prepend(this.launch); this.mountRail(); }); this.observer.observe(document.body, { childList: true }); this.themeObserver = new MutationObserver(() => this.updateTheme()); this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }); window.setInterval(() => { this.mountRail(); this.width(); }, 10000); this.width(); }
-    updateOpen() { this.root.dataset.open = this.pinned || this.hovered || !!this.editId || !!this.popup || !!this.drag ? 'yes' : 'no'; if (this.railButton) {
+    } }); window.addEventListener('popstate', () => { this.checkAccount(); this.scanRecents(); }); window.addEventListener('online', () => this.scheduleSync()); this.observer = new MutationObserver(() => this.queueRecovery()); this.observer.observe(document.documentElement, { childList: true, subtree: true }); this.themeObserver = new MutationObserver(() => this.updateTheme()); this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] }); window.setInterval(() => { this.ensureMounted(); this.mountRail(); this.width(); }, 10000); this.width(); }
+    updateOpen() { this.ensureMounted(); this.root.dataset.open = this.pinned || this.hovered || !!this.editId || !!this.popup || !!this.drag ? 'yes' : 'no'; if (this.railButton) {
         this.railButton.dataset.cgfmOpen = String(this.isOpen());
         this.railButton.setAttribute('aria-expanded', String(this.isOpen()));
     } if (this.isOpen())
@@ -957,7 +999,7 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.2
+// @version      2.0.3
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -981,7 +1023,12 @@ function run() {
     }
     if (document.querySelector('[data-cgfm-next-root]'))
         return;
-    new runtime_1.FolderApplication().start();
+    try {
+        new runtime_1.FolderApplication().start();
+    }
+    catch (error) {
+        console.error('[CGFM] Initialization failed', error);
+    }
 }
 run();
 
