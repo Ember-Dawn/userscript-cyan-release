@@ -903,7 +903,7 @@ exports.STYLES = `
   --cg-input: #f9fafb;
   --cg-muted: #6b7280;
   --cg-shadow: rgba(0, 0, 0, 0.14);
-  --cg-accent: #10a37f;
+  --cg-accent: #3b82f6;
   --cg-sidebar-width: 312px;
 }
 
@@ -916,7 +916,7 @@ exports.STYLES = `
   --cg-input: #202020;
   --cg-muted: #8e8ea0;
   --cg-shadow: rgba(0, 0, 0, 0.5);
-  --cg-accent: #10a37f;
+  --cg-accent: #3b82f6;
 }
 
 /* 官方导航 Rail 挂载项目容器与按钮 */
@@ -926,8 +926,11 @@ exports.STYLES = `
   justify-content: center !important;
   width: 100% !important;
   flex-shrink: 0 !important;
-  margin: 2px 0 !important;
+  margin: 4px 0 !important;
   box-sizing: border-box !important;
+  pointer-events: auto !important;
+  position: relative !important;
+  z-index: 50 !important;
 }
 
 .cgfm-rail-btn {
@@ -939,23 +942,27 @@ exports.STYLES = `
   border-radius: 8px !important;
   background: transparent !important;
   border: none !important;
-  color: var(--cg-muted) !important;
+  color: #3b82f6 !important;
   cursor: pointer !important;
   transition: all 0.15s ease !important;
   position: relative !important;
   padding: 0 !important;
   box-sizing: border-box !important;
+  pointer-events: auto !important;
 }
 .cgfm-rail-btn:hover, .cgfm-rail-btn.active {
-  background: var(--cg-hover) !important;
-  color: var(--cg-text) !important;
+  background: rgba(59, 130, 246, 0.15) !important;
+  color: #2563eb !important;
 }
 .cgfm-rail-btn svg {
   width: 20px !important;
   height: 20px !important;
+  color: #3b82f6 !important;
+  stroke: #3b82f6 !important;
+  pointer-events: none !important;
 }
 
-/* 独立根面板（采用 display: none / flex 与高 z-index 保障可靠显隐） */
+/* 独立根面板（采用 display: none / flex 与最高 z-index 保障可靠显隐） */
 #cgfm-root {
   position: fixed !important;
   top: 0 !important;
@@ -966,13 +973,14 @@ exports.STYLES = `
   color: var(--cg-text) !important;
   border-right: 1px solid var(--cg-border) !important;
   box-shadow: 6px 0 32px var(--cg-shadow) !important;
-  z-index: 99999 !important;
+  z-index: 100000 !important;
   display: none !important;
   flex-direction: column !important;
   font-family: inherit !important;
   font-size: 13px !important;
   user-select: none !important;
   box-sizing: border-box !important;
+  pointer-events: auto !important;
 }
 
 #cgfm-root.cgfm-open {
@@ -996,6 +1004,11 @@ exports.STYLES = `
   display: flex;
   align-items: center;
   gap: 6px;
+  color: var(--cg-text);
+}
+.cgfm-header-title svg {
+  color: #3b82f6;
+  stroke: #3b82f6;
 }
 .cgfm-header-actions {
   display: flex;
@@ -1020,8 +1033,8 @@ exports.STYLES = `
   color: var(--cg-text);
 }
 .cgfm-tool-btn.active {
-  background: rgba(16, 163, 127, 0.15);
-  color: var(--cg-accent);
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
 }
 .cgfm-tool-btn svg {
   width: 16px;
@@ -1075,7 +1088,7 @@ exports.STYLES = `
   background: var(--cg-hover);
 }
 .cgfm-row.cgfm-drag-over {
-  background: rgba(16, 163, 127, 0.2) !important;
+  background: rgba(59, 130, 246, 0.2) !important;
   outline: 1px dashed var(--cg-accent);
 }
 
@@ -1184,7 +1197,7 @@ exports.STYLES = `
   border-radius: 8px;
   box-shadow: 0 10px 25px var(--cg-shadow);
   padding: 4px;
-  z-index: 100001;
+  z-index: 100005;
   display: flex;
   flex-direction: column;
   min-width: 140px;
@@ -1237,7 +1250,7 @@ exports.STYLES = `
   border-radius: 8px;
   box-shadow: 0 10px 25px var(--cg-shadow);
   display: none;
-  z-index: 100002;
+  z-index: 100006;
 }
 .cgfm-palette-wrap:hover .cgfm-palette-grid,
 .cgfm-palette-grid:hover {
@@ -1263,7 +1276,7 @@ exports.STYLES = `
   border-radius: 8px;
   box-shadow: 0 12px 28px var(--cg-shadow);
   padding: 12px;
-  z-index: 100003;
+  z-index: 100007;
   width: 200px;
   display: flex;
   flex-direction: column;
@@ -1315,7 +1328,7 @@ exports.STYLES = `
   background: var(--cg-panel-bg);
   border-right: 1px solid var(--cg-border);
   box-shadow: 6px 0 24px var(--cg-shadow);
-  z-index: 100000;
+  z-index: 100004;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -1367,7 +1380,7 @@ exports.STYLES = `
   flex: 1;
   height: 32px;
   border-radius: 6px;
-  background: var(--cg-accent);
+  background: #3b82f6;
   color: #ffffff;
   border: none;
   font-size: 12px;
@@ -1379,7 +1392,7 @@ exports.STYLES = `
   gap: 4px;
 }
 .cgfm-primary-btn:hover {
-  background: #0d8a6a;
+  background: #2563eb;
 }
 .cgfm-secondary-btn {
   flex: 1;
