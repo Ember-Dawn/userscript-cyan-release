@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.7
+// @version      2.0.8
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -252,7 +252,13 @@ function davRequest(config, method, extra = {}, body) {
         if (body !== undefined)
             headers['Content-Type'] = 'application/json; charset=utf-8';
         GM_xmlhttpRequest({ method, url: path, headers, data: body, timeout: 20000, onload: (r) => {
-                const etag = (r.responseHeaders || '').match(/^etag:\s*(.+)$/im)?.[1]?.trim() ?? null;
+                const rawEtag = (r.responseHeaders || '').match(/^etag:\s*(.+)$/im)?.[1]?.trim() ?? null;
+                let etag = null;
+                if (rawEtag) {
+                    etag = rawEtag.replace(/^W\//i, '').replace(/-gzip(?="?$)/i, '').replace(/-br(?="?$)/i, '').trim();
+                    if (!etag.startsWith('"'))
+                        etag = `"${etag}"`;
+                }
                 resolve({ status: r.status, text: String(r.responseText || ''), etag });
             }, onerror: () => reject(Error('WebDAV 网络错误')), ontimeout: () => reject(Error('WebDAV 请求超时')) });
     });
@@ -291,7 +297,11 @@ const paths = {
     "eye-off": "<path d=\"M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49\"/><path d=\"M14.084 14.158a3 3 0 0 1-4.242-4.242\"/><path d=\"M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143\"/><path d=\"m2 2 20 20\"/>",
     "x": "<path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/>",
     "download": "<path d=\"M12 15V3\"/><path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><path d=\"m7 10 5 5 5-5\"/>",
-    "upload": "<path d=\"M12 3v12\"/><path d=\"m17 8-5-5-5 5\"/><path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/>"
+    "upload": "<path d=\"M12 3v12\"/><path d=\"m17 8-5-5-5 5\"/><path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/>",
+    "pencil": "<path d=\"M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z\"/><path d=\"m15 5 4 4\"/>",
+    "palette": "<circle cx=\"13.5\" cy=\"6.5\" r=\".5\" fill=\"currentColor\"/><circle cx=\"17.5\" cy=\"10.5\" r=\".5\" fill=\"currentColor\"/><circle cx=\"8.5\" cy=\"7.5\" r=\".5\" fill=\"currentColor\"/><circle cx=\"6.5\" cy=\"12.5\" r=\".5\" fill=\"currentColor\"/><path d=\"M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z\"/>",
+    "trash-2": "<path d=\"M3 6h18\"/><path d=\"M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6\"/><path d=\"M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2\"/><line x1=\"10\" x2=\"10\" y1=\"11\" y2=\"17\"/><line x1=\"14\" x2=\"14\" y1=\"11\" y2=\"17\"/>",
+    "folder-input": "<path d=\"M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-1\"/><path d=\"M2 13h10\"/><path d=\"m9 10 3 3-3 3\"/>"
 };
 function icon(name) {
     const body = paths[name];
@@ -310,16 +320,64 @@ const sync_1 = require("./sync");
 const icons_1 = require("./icons");
 const style = `
 #cgfm-next-root .cgfm-head button{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;padding:5px;color:var(--cg-text)}#cgfm-next-root .cgfm-head button svg{width:17px;height:17px}#cgfm-next-root .cgfm-head button[data-act="pin"][aria-pressed="true"]{color:#2876db;background:rgba(59,130,246,.15)}#cgfm-next-root .cgfm-head button[data-act="sync"][aria-busy="true"] svg{animation:cgfm-spin 1s linear infinite}@keyframes cgfm-spin{to{transform:rotate(360deg)}}
-#cgfm-next-root .cgfm-head button[data-sync-state="synced"]{color:#16856b}#cgfm-next-root .cgfm-head button[data-sync-state="pending"]{color:#c48b29}#cgfm-next-root .cgfm-head button[data-sync-state="syncing"]{color:#2876db}#cgfm-next-root .cgfm-head button[data-sync-state="error"]{color:#d14b4b}#cgfm-next-root .cgfm-head button[data-sync-state="unconfigured"]{color:var(--cg-muted)}#cgfm-next-root .cgfm-head .cgfm-head-title{font-size:12px;font-weight:600;opacity:.7;padding-left:3px;user-select:none;flex:1}#cgfm-next-root .cgfm-row button svg{width:16px;height:16px}#cgfm-next-root .cgfm-pop.cgfm-settings{width:min(420px,calc(100vw - 24px));max-width:calc(100vw - 24px)!important;min-width:0!important;max-height:calc(100dvh - 24px);overflow-y:auto;overscroll-behavior:contain;padding:0;border-radius:12px;box-shadow:0 18px 42px var(--cg-shadow);border:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--cg-border);position:sticky;top:0;background:var(--cg-bg);z-index:1}#cgfm-next-root .cgfm-settings-header strong{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--cg-text)}#cgfm-next-root .cgfm-settings-close{width:28px;height:28px;padding:0;margin:0;border:0;border-radius:6px;background:transparent;color:var(--cg-muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s ease,color .15s ease}#cgfm-next-root .cgfm-settings-close:hover{background:var(--cg-hover);color:var(--cg-text)}#cgfm-next-root .cgfm-settings-close svg{width:16px;height:16px}#cgfm-next-root .cgfm-settings-section{padding:14px 16px;border-bottom:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-section h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--cg-muted);margin:0 0 10px}#cgfm-next-root .cgfm-settings label{display:flex;flex-direction:column;gap:5px;margin:0 0 11px;font-size:12px;color:var(--cg-muted)}#cgfm-next-root .cgfm-settings input:not([type=checkbox]):not([type=range]){height:36px;padding:7px 10px;font-size:13px;color:var(--cg-text);min-width:0;border-radius:6px}#cgfm-next-root .cgfm-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}#cgfm-next-root .cgfm-settings-grid>*{min-width:0}#cgfm-next-root .cgfm-settings-actions{display:flex;gap:8px;flex-wrap:wrap}#cgfm-next-root .cgfm-settings-actions button{margin:0;padding:8px 10px;display:inline-flex;align-items:center;gap:6px}#cgfm-next-root .cgfm-settings-actions button svg{width:15px;height:15px}#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions{display:flex;flex-wrap:nowrap;gap:8px}#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions button{padding:8px 10px;white-space:nowrap;font-size:13px;font-weight:500;flex:1;justify-content:center;border:1px solid var(--cg-border);border-radius:7px}#cgfm-next-root .cgfm-settings .cgfm-switch-row{display:flex;flex-direction:row;align-items:center;gap:8px;color:var(--cg-text);margin:0 0 10px;cursor:pointer;user-select:none}#cgfm-next-root .cgfm-settings .cgfm-switch-row input{width:16px;height:16px;margin:0;accent-color:#2876db;cursor:pointer}#cgfm-next-root .cgfm-settings-footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:12px 16px;position:sticky;bottom:0;background:var(--cg-bg);z-index:1;border-top:1px solid var(--cg-border)}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel{margin:0;padding:8px 15px;border:1px solid var(--cg-border);border-radius:7px;background:transparent;color:var(--cg-text);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s ease}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel:hover{background:var(--cg-hover)}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save{margin:0;padding:8px 18px;border:1px solid #2876db;border-radius:7px;background:#2876db;color:#fff;font-size:13px;font-weight:500;cursor:pointer;transition:opacity .15s ease}#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save:hover{opacity:.9}#cgfm-next-root .cgfm-settings .cgfm-danger{color:#b45309}#cgfm-next-root .cgfm-settings-result{padding:9px 12px;margin:0 16px 10px;border:1px solid var(--cg-border);border-radius:8px;color:var(--cg-text);background:var(--cg-hover);font-size:12px;overflow-wrap:anywhere}#cgfm-next-root .cgfm-password-wrap{position:relative;display:flex;align-items:center;min-width:0}#cgfm-next-root .cgfm-password-wrap input{padding-right:42px!important;min-width:0}#cgfm-next-root .cgfm-password-wrap button{position:absolute;right:4px;top:50%;transform:translateY(-50%);margin:0;width:30px;height:30px;display:grid;place-items:center;border:0;background:transparent}#cgfm-next-root .cgfm-password-wrap button svg{width:17px;height:17px}#cgfm-next-root .cgfm-settings input{min-width:0}#cgfm-next-root .cgfm-settings input[type=range]{width:100%;height:18px;padding:0;accent-color:#2876db;cursor:pointer}#cgfm-next-root .cgfm-settings .cgfm-slider-line{display:flex;justify-content:space-between;color:var(--cg-muted);font-size:11px}
+#cgfm-next-root .cgfm-head button[data-sync-state="synced"]{color:#16856b}#cgfm-next-root .cgfm-head button[data-sync-state="pending"]{color:#c48b29}#cgfm-next-root .cgfm-head button[data-sync-state="syncing"]{color:#2876db}#cgfm-next-root .cgfm-head button[data-sync-state="error"]{color:#d14b4b}#cgfm-next-root .cgfm-head button[data-sync-state="unconfigured"]{color:var(--cg-muted)}#cgfm-next-root .cgfm-head .cgfm-head-title{font-size:12px;font-weight:600;opacity:.7;padding-left:3px;user-select:none;flex:1}#cgfm-next-root .cgfm-row button svg{width:16px;height:16px}
+#cgfm-next-root .cgfm-pop.cgfm-settings{width:min(420px,calc(100vw - 24px));max-width:calc(100vw - 24px)!important;min-width:0!important;max-height:calc(100dvh - 24px);overflow-y:auto;overscroll-behavior:contain;padding:0;border-radius:12px;box-shadow:0 18px 42px var(--cg-shadow);border:1px solid var(--cg-border)}
+#cgfm-next-root .cgfm-settings-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--cg-border);position:sticky;top:0;background:var(--cg-bg);z-index:1}
+#cgfm-next-root .cgfm-settings-header strong{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--cg-text)}
+#cgfm-next-root .cgfm-settings-close{width:28px;height:28px;padding:0;margin:0;border:0;border-radius:6px;background:transparent;color:var(--cg-muted);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s ease,color .15s ease}
+#cgfm-next-root .cgfm-settings-close:hover{background:var(--cg-hover);color:var(--cg-text)}
+#cgfm-next-root .cgfm-settings-close svg{width:16px;height:16px}
+#cgfm-next-root .cgfm-settings-body{padding:16px;display:flex;flex-direction:column;gap:16px}
+#cgfm-next-root .cgfm-settings-section{padding:0;margin:0}
+#cgfm-next-root .cgfm-settings-section h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--cg-muted);margin:0 0 10px}
+#cgfm-next-root .cgfm-settings label{display:flex;flex-direction:column;gap:5px;margin:0 0 11px;font-size:12px;color:var(--cg-muted)}
+#cgfm-next-root .cgfm-settings input:not([type=checkbox]):not([type=range]){height:36px;padding:7px 10px;font-size:13px;color:var(--cg-text);min-width:0;border-radius:6px}
+#cgfm-next-root .cgfm-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+#cgfm-next-root .cgfm-settings-grid>*{min-width:0}
+#cgfm-next-root .cgfm-settings-actions{display:flex;gap:8px;flex-wrap:wrap}
+#cgfm-next-root .cgfm-settings-actions button{margin:0;padding:8px 10px;display:inline-flex;align-items:center;gap:6px}
+#cgfm-next-root .cgfm-settings-actions button svg{width:15px;height:15px}
+#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions{display:flex;flex-wrap:nowrap;gap:8px}
+#cgfm-next-root .cgfm-settings-actions.cgfm-data-actions button{padding:8px 10px;white-space:nowrap;font-size:13px;font-weight:500;flex:1;justify-content:center;border:1px solid var(--cg-border);border-radius:7px}
+#cgfm-next-root .cgfm-settings-row-between{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+#cgfm-next-root .cgfm-width-val{font-size:13px;font-weight:600;color:var(--cg-text)}
+#cgfm-next-root .cgfm-dav-status{padding:8px 12px;margin-top:10px;border-radius:8px;font-size:12px;border:1px solid var(--cg-border);background:var(--cg-hover);color:var(--cg-text);overflow-wrap:anywhere;display:flex;align-items:center;gap:6px}
+#cgfm-next-root .cgfm-dav-status[data-type="success"]{border-color:#16856b;color:#16856b;background:rgba(22,133,107,.1)}
+#cgfm-next-root .cgfm-dav-status[data-type="error"]{border-color:#d14b4b;color:#d14b4b;background:rgba(209,75,75,.1)}
+#cgfm-next-root .cgfm-dav-status[data-type="loading"]{border-color:#2876db;color:#2876db;background:rgba(40,118,219,.1)}
+#cgfm-next-root .cgfm-dav-status svg{width:15px;height:15px;animation:cgfm-spin 1s linear infinite}
+#cgfm-next-root .cgfm-settings-footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:12px 16px;position:sticky;bottom:0;background:var(--cg-bg);z-index:1;border-top:1px solid var(--cg-border)}
+#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel{margin:0;padding:8px 15px;border:1px solid var(--cg-border);border-radius:7px;background:transparent;color:var(--cg-text);font-size:13px;font-weight:500;cursor:pointer;transition:background .15s ease}
+#cgfm-next-root .cgfm-settings-footer .cgfm-btn-cancel:hover{background:var(--cg-hover)}
+#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save{margin:0;padding:8px 18px;border:1px solid #2876db;border-radius:7px;background:#2876db;color:#fff;font-size:13px;font-weight:500;cursor:pointer;transition:opacity .15s ease}
+#cgfm-next-root .cgfm-settings-footer .cgfm-btn-save:hover{opacity:.9}
+#cgfm-next-root .cgfm-settings .cgfm-danger{color:#b45309}
+#cgfm-next-root .cgfm-settings-result{padding:9px 12px;margin:0 16px 10px;border:1px solid var(--cg-border);border-radius:8px;color:var(--cg-text);background:var(--cg-hover);font-size:12px;overflow-wrap:anywhere}
+#cgfm-next-root .cgfm-password-wrap{position:relative;display:flex;align-items:center;min-width:0}
+#cgfm-next-root .cgfm-password-wrap input{padding-right:42px!important;min-width:0}
+#cgfm-next-root .cgfm-password-wrap button{position:absolute;right:4px;top:50%;transform:translateY(-50%);margin:0;width:30px;height:30px;display:grid;place-items:center;border:0;background:transparent}
+#cgfm-next-root .cgfm-password-wrap button svg{width:17px;height:17px}
+#cgfm-next-root .cgfm-settings input{min-width:0}
+#cgfm-next-root .cgfm-settings input[type=range]{width:100%;height:18px;padding:0;accent-color:#2876db;cursor:pointer}
+#cgfm-next-root .cgfm-settings .cgfm-slider-line{display:flex;justify-content:space-between;color:var(--cg-muted);font-size:11px}
+#cgfm-next-root .cgfm-pop.cgfm-menu-box{min-width:160px;max-width:240px;padding:4px;border-radius:10px;box-shadow:0 12px 32px var(--cg-shadow);border:1px solid var(--cg-border);background:var(--cg-bg);display:flex;flex-direction:column;gap:1px}
+#cgfm-next-root .cgfm-menu-item{display:flex;align-items:center;gap:8px;width:100%;padding:6px 10px;border:0!important;border-radius:6px;background:transparent;color:var(--cg-text);font-size:13px;cursor:pointer;text-align:left;transition:background .12s ease,color .12s ease;user-select:none;margin:0!important}
+#cgfm-next-root .cgfm-menu-item:hover{background:var(--cg-hover)}
+#cgfm-next-root .cgfm-menu-item.cgfm-menu-danger{color:#ef4444}
+#cgfm-next-root .cgfm-menu-item.cgfm-menu-danger:hover{background:rgba(239,68,68,.12);color:#dc2626}
+#cgfm-next-root .cgfm-menu-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:inherit;opacity:.85}
+#cgfm-next-root .cgfm-menu-icon svg{width:15px;height:15px}
+#cgfm-next-root .cgfm-menu-divider{height:1px;margin:4px 0;background:var(--cg-border)}
+#cgfm-next-root .cgfm-menu-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 #cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--cg-text);--cg-bg:#f4f4f2;--cg-text:#0d0d0d;--cg-muted:#656565;--cg-border:#d4d4d2;--cg-hover:#e8e8e6;--cg-input:#fff;--cg-shadow:#0002}
 html[data-cgfm-theme="dark"] #cgfm-next-root{--cg-bg:#212121;--cg-text:#ececec;--cg-muted:#b4b4b4;--cg-border:#424242;--cg-hover:#343434;--cg-input:#2b2b2b;--cg-shadow:#0007}
 #cgfm-next-root *{box-sizing:border-box}#cgfm-next-rail-entry{display:flex;align-items:center;justify-content:center;width:100%;flex:none}#cgfm-next-rail{display:flex;align-items:center;justify-content:center;width:36px;height:36px;padding:8px;border:0;border-radius:10px;background:transparent;color:var(--text-secondary,var(--token-text-tertiary,currentColor));cursor:pointer}#cgfm-next-rail:hover,#cgfm-next-rail[data-cgfm-open="true"]{background:var(--sidebar-surface-secondary,rgba(128,128,128,.14));color:var(--text-primary,currentColor)}#cgfm-next-rail svg{width:20px;height:20px;fill:none;stroke:#3A83F7;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}#cgfm-next-launch{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:12px;padding:10px;cursor:pointer}
 #cgfm-next-panel{position:absolute;top:0;left:45px;width:330px;max-height:100dvh;display:none;flex-direction:column;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:14px;box-shadow:0 8px 36px var(--cg-shadow);overflow:hidden}
-#cgfm-next-root[data-open="yes"] #cgfm-next-panel{display:flex}.cgfm-head{display:flex;align-items:center;gap:3px;padding:6px 9px;border-bottom:1px solid var(--cg-border)}
+#cgfm-next-root[data-open="yes"] #cgfm-next-panel{display:flex}.cgfm-head{display:flex;align-items:center;gap:3px;padding:6px 9px 4px}
 .cgfm-scroll{overflow:auto;flex:1;min-height:70px;padding:7px}.cgfm-row{min-height:32px;display:flex;align-items:center;gap:5px;border-radius:7px;padding:2px 5px;cursor:pointer;user-select:none}.cgfm-row:hover,.cgfm-row.cgfm-selected{background:var(--cg-hover)}.cgfm-row.cgfm-drop{outline:2px solid #70a6f0}
 .cgfm-item-icon{display:flex;align-items:center;justify-content:center;width:20px;min-width:20px;height:20px}.cgfm-item-icon svg{width:20px;height:20px;stroke-width:2}.cgfm-row span.cgfm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.cgfm-row button,.cgfm-head button{border:0;color:inherit;background:transparent;cursor:pointer;border-radius:6px;padding:4px 6px}.cgfm-row button:hover,.cgfm-head button:hover{background:#8884}
-.cgfm-group{padding:9px 7px 4px;font-size:12px;opacity:.65}.cgfm-pop{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:10px;padding:12px;box-shadow:0 8px 30px var(--cg-shadow);color:var(--cg-text)}.cgfm-pop input,.cgfm-pop select{color:var(--cg-text);background:var(--cg-input);border:1px solid var(--cg-border);padding:6px;border-radius:6px;width:100%}.cgfm-pop input[type=checkbox]{width:auto}.cgfm-pop label{display:block;margin:7px 0}.cgfm-pop button{margin:3px;border:1px solid var(--cg-border);border-radius:6px;padding:6px;background:transparent;color:inherit;cursor:pointer}.cgfm-muted{color:var(--cg-muted);font-size:11px}.cgfm-foot{padding:7px 11px;border-top:1px solid var(--cg-border);font-size:11px;cursor:pointer}
+.cgfm-group{padding:9px 7px 4px;font-size:12px;opacity:.65}.cgfm-pop{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:10px;padding:12px;box-shadow:0 8px 30px var(--cg-shadow);color:var(--cg-text)}.cgfm-pop input,.cgfm-pop select{color:var(--cg-text);background:var(--cg-input);border:1px solid var(--cg-border);padding:6px;border-radius:6px;width:100%}.cgfm-pop input[type=checkbox]{width:auto}.cgfm-pop label{display:block;margin:7px 0}.cgfm-pop:not(.cgfm-menu-box):not(.cgfm-settings) button{margin:3px;border:1px solid var(--cg-border);border-radius:6px;padding:6px;background:transparent;color:inherit;cursor:pointer}.cgfm-muted{color:var(--cg-muted);font-size:11px}.cgfm-foot{padding:7px 11px;border-top:1px solid var(--cg-border);font-size:11px;cursor:pointer}
 `;
 class FolderApplication {
     account = '';
@@ -681,14 +739,78 @@ class FolderApplication {
         this.chatMenu(row.dataset.id, row.dataset.type === 'recent', e.target); }
     navigate(id) { location.assign('/c/' + encodeURIComponent(id)); }
     dismissPopup() { this.popup?.remove(); this.popup = null; this.width(); this.updateOpen(); }
-    showPopup(el, anchor) { const anchorRect = anchor?.getBoundingClientRect(); this.popup?.remove(); this.popup = el; el.classList.add('cgfm-pop'); const isSettings = el.classList.contains('cgfm-settings'); el.style.cssText = 'position:fixed;z-index:2147483001;' + (isSettings ? '' : 'max-width:300px;min-width:200px'); this.root.append(el); const r = anchorRect; const w = el.getBoundingClientRect().width; const h = el.getBoundingClientRect().height; el.style.left = (isSettings ? Math.max(12, (innerWidth - w) / 2) : Math.max(5, Math.min(innerWidth - w - 5, r?.left ?? innerWidth / 3))) + 'px'; el.style.top = (isSettings ? Math.max(12, (innerHeight - h) / 2) : Math.max(5, Math.min(innerHeight - h - 5, r?.bottom ?? 100))) + 'px'; this.updateOpen(); }
+    showPopup(el, anchor) {
+        const anchorRect = anchor?.getBoundingClientRect();
+        this.popup?.remove();
+        this.popup = el;
+        el.classList.add('cgfm-pop');
+        const isSettings = el.classList.contains('cgfm-settings');
+        el.style.cssText = 'position:fixed;z-index:2147483001;' + (isSettings ? '' : 'min-width:160px;max-width:240px;');
+        this.root.append(el);
+        const r = anchorRect;
+        const w = el.getBoundingClientRect().width;
+        const h = el.getBoundingClientRect().height;
+        if (isSettings) {
+            el.style.left = Math.max(12, (innerWidth - w) / 2) + 'px';
+            el.style.top = Math.max(12, (innerHeight - h) / 2) + 'px';
+        }
+        else if (r) {
+            let left = r.right + 4;
+            if (left + w > innerWidth - 8)
+                left = Math.max(8, r.left - w - 4);
+            let top = r.top;
+            if (top + h > innerHeight - 8)
+                top = Math.max(8, innerHeight - h - 8);
+            el.style.left = left + 'px';
+            el.style.top = top + 'px';
+        }
+        else {
+            el.style.left = Math.max(12, (innerWidth - w) / 2) + 'px';
+            el.style.top = Math.max(12, (innerHeight - h) / 2) + 'px';
+        }
+        this.updateOpen();
+    }
+    menuItem(box, label, iconName, fn, danger = false) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cgfm-menu-item' + (danger ? ' cgfm-menu-danger' : '');
+        b.innerHTML = `<span class="cgfm-menu-icon">${(0, icons_1.icon)(iconName)}</span><span class="cgfm-menu-label">${label}</span>`;
+        b.addEventListener('click', () => { this.dismissPopup(); fn(); });
+        box.append(b);
+    }
+    menuDivider(box) {
+        const d = document.createElement('div');
+        d.className = 'cgfm-menu-divider';
+        box.append(d);
+    }
     menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { this.dismissPopup(); fn(); }); box.append(b); }
-    folderMenu(id, anchor) { const f = this.profile.data.folders[id]; if (!f)
-        return; const box = document.createElement('div'); for (const [name, fn] of [['创建子文件夹', () => this.editFolder(id)], ['重命名', () => this.editFolder(f.parentId, id)], ['颜色', () => this.colorDialog(id)], ['刷新对话标题', () => { this.scanRecents(); this.apiAt = 0; void this.refreshApi(); }], ['移动至...', () => this.folderPicker('folder', id)], ['删除文件夹', () => { if (confirm(`删除「${f.name}」及其子文件夹和分类引用？不会删除 ChatGPT 对话。`))
-                this.apply({ type: 'folder.delete', id }); }]])
-        this.menuButton(box, name, fn); this.showPopup(box, anchor); }
-    chatMenu(id, recent, anchor) { const box = document.createElement('div'); this.menuButton(box, '移动 / 加入文件夹', () => this.folderPicker('chat', id)); this.menuButton(box, '重命名对话', () => this.renameChat(id)); if (!recent)
-        this.menuButton(box, '从文件夹移除', () => this.apply({ type: 'conversation.remove', id })); this.showPopup(box, anchor); }
+    folderMenu(id, anchor) {
+        const f = this.profile.data.folders[id];
+        if (!f)
+            return;
+        const box = document.createElement('div');
+        box.className = 'cgfm-menu-box';
+        this.menuItem(box, '创建子文件夹', 'folder-plus', () => this.editFolder(id));
+        this.menuItem(box, '重命名', 'pencil', () => this.editFolder(f.parentId, id));
+        this.menuItem(box, '设置颜色', 'palette', () => this.colorDialog(id));
+        this.menuItem(box, '移动至...', 'folder-input', () => this.folderPicker('folder', id));
+        this.menuItem(box, '刷新对话标题', 'refresh-cw', () => { this.scanRecents(); this.apiAt = 0; void this.refreshApi(); });
+        this.menuDivider(box);
+        this.menuItem(box, '删除文件夹', 'trash-2', () => { if (confirm(`删除「${f.name}」及其子文件夹和分类引用？不会删除 ChatGPT 对话。`))
+            this.apply({ type: 'folder.delete', id }); }, true);
+        this.showPopup(box, anchor);
+    }
+    chatMenu(id, recent, anchor) {
+        const box = document.createElement('div');
+        box.className = 'cgfm-menu-box';
+        this.menuItem(box, recent ? '加入文件夹' : '移动至文件夹', 'folder-input', () => this.folderPicker('chat', id));
+        this.menuItem(box, '重命名对话', 'pencil', () => this.renameChat(id));
+        if (!recent) {
+            this.menuDivider(box);
+            this.menuItem(box, '从文件夹移除', 'trash-2', () => this.apply({ type: 'conversation.remove', id }), true);
+        }
+        this.showPopup(box, anchor);
+    }
     promptInput(title, value, onSave) { const box = document.createElement('div'); const label = document.createElement('label'); label.textContent = title; const input = document.createElement('input'); input.value = value; label.append(input); box.append(label); const save = document.createElement('button'); save.textContent = '保存'; const close = () => { this.editId = null; this.dismissPopup(); this.render(); }; save.addEventListener('click', () => { const v = input.value.trim(); if (v) {
         close();
         onSave(v);
@@ -881,7 +1003,10 @@ class FolderApplication {
         close.addEventListener('click', () => this.dismissPopup());
         header.append(close);
         box.append(header);
-        const section = (title) => { const node = document.createElement('section'); node.className = 'cgfm-settings-section'; const h = document.createElement('h3'); h.textContent = title; node.append(h); box.append(node); return node; };
+        const body = document.createElement('div');
+        body.className = 'cgfm-settings-body';
+        box.append(body);
+        const section = (title) => { const node = document.createElement('section'); node.className = 'cgfm-settings-section'; const h = document.createElement('h3'); h.textContent = title; node.append(h); body.append(node); return node; };
         const field = (parent, title, value, type = 'text') => { const label = document.createElement('label'); label.textContent = title; const input = document.createElement('input'); input.type = type; input.value = value; label.append(input); parent.append(label); return input; };
         const action = (parent, title, fn, svg) => { const b = document.createElement('button'); b.type = 'button'; b.innerHTML = (svg ? (0, icons_1.icon)(svg) : '') + `<span></span>`; b.lastElementChild.textContent = title; b.addEventListener('click', fn); parent.append(b); return b; };
         const webdav = section('WebDAV 同步');
@@ -917,45 +1042,83 @@ class FolderApplication {
         } if (targetChanged) {
             this.profile.base = (0, model_1.blank)();
             this.profile.baseRevision = 0;
-        } this.profile.preferences.sidebarWidth = Math.max(240, Math.min(520, Number(width.value) || 312)); this.profile.preferences.customWidth = widthCheckbox.checked; this.persist(); this.width(); return true; };
+        } this.profile.preferences.sidebarWidth = Math.max(240, Math.min(520, Number(width.value) || 312)); this.profile.preferences.customWidth = true; this.persist(); this.width(); return true; };
         const syncActions = document.createElement('div');
         syncActions.className = 'cgfm-settings-actions';
         webdav.append(syncActions);
-        action(syncActions, '测试连接', () => { if (commitSettings())
-            void this.testConnection(); });
-        action(syncActions, '立即同步', () => { if (commitSettings())
-            void this.sync(true); }, 'refresh-cw');
+        const davResult = document.createElement('div');
+        davResult.className = 'cgfm-dav-status';
+        davResult.hidden = true;
+        webdav.append(davResult);
+        const setDavStatus = (msg, type) => { davResult.hidden = false; davResult.dataset.type = type; davResult.innerHTML = (type === 'loading' ? (0, icons_1.icon)('refresh-cw') : '') + `<span>${msg}</span>`; };
+        const testBtn = action(syncActions, '测试连接', async () => {
+            if (!commitSettings())
+                return;
+            testBtn.disabled = true;
+            const span = testBtn.querySelector('span');
+            const prev = span.textContent;
+            span.textContent = '测试中...';
+            setDavStatus('正在连接 WebDAV...', 'loading');
+            try {
+                const r = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
+                const ok = r.status === 404 ? '连接成功（远端文件尚不存在）' : r.status >= 200 && r.status < 300 ? '连接成功' : 'HTTP ' + r.status;
+                setDavStatus(ok, r.status < 300 || r.status === 404 ? 'success' : 'error');
+                if (commitSettings())
+                    void this.testConnection();
+            }
+            catch (e) {
+                setDavStatus('连接失败：' + String(e), 'error');
+            }
+            finally {
+                testBtn.disabled = false;
+                span.textContent = prev || '测试连接';
+            }
+        });
+        const syncBtn = action(syncActions, '立即同步', async () => {
+            if (!commitSettings())
+                return;
+            syncBtn.disabled = true;
+            const span = syncBtn.querySelector('span');
+            const prev = span.textContent;
+            span.textContent = '同步中...';
+            setDavStatus('正在执行同步...', 'loading');
+            try {
+                await this.sync(true);
+                setDavStatus('同步完成', 'success');
+                if (commitSettings())
+                    void this.sync(true);
+            }
+            catch (e) {
+                setDavStatus('同步失败：' + String(e), 'error');
+            }
+            finally {
+                syncBtn.disabled = false;
+                span.textContent = prev || '立即同步';
+            }
+        }, 'refresh-cw');
         const interfaceSection = section('界面设置');
-        const widthToggle = document.createElement('label');
-        widthToggle.className = 'cgfm-switch-row';
-        const widthCheckbox = document.createElement('input');
-        widthCheckbox.type = 'checkbox';
-        widthCheckbox.checked = this.profile.preferences.customWidth;
-        widthToggle.append(widthCheckbox, document.createTextNode('自定义官方侧栏宽度'));
-        interfaceSection.append(widthToggle);
-        const widthLabel = document.createElement('label');
-        widthLabel.textContent = '宽度';
-        interfaceSection.append(widthLabel);
+        const widthHeader = document.createElement('div');
+        widthHeader.className = 'cgfm-settings-row-between';
+        const widthLabelText = document.createElement('span');
+        widthLabelText.textContent = '侧栏宽度';
         const widthValue = document.createElement('span');
+        widthValue.className = 'cgfm-width-val';
         widthValue.textContent = String(this.profile.preferences.sidebarWidth) + ' px';
-        widthValue.style.cssText = 'float:right;font-weight:600;color:var(--cg-text)';
-        widthLabel.append(widthValue);
+        widthHeader.append(widthLabelText, widthValue);
+        interfaceSection.append(widthHeader);
         const width = document.createElement('input');
         width.type = 'range';
         width.min = '240';
         width.max = '520';
         width.step = '1';
         width.value = String(this.profile.preferences.sidebarWidth);
-        width.disabled = !widthCheckbox.checked;
         width.setAttribute('aria-label', '官方侧栏宽度');
-        widthLabel.append(width);
+        interfaceSection.append(width);
         const ticks = document.createElement('div');
         ticks.className = 'cgfm-slider-line';
         ticks.innerHTML = '<span>240 px</span><span>520 px</span>';
         interfaceSection.append(ticks);
-        width.addEventListener('input', () => { widthValue.textContent = width.value + ' px'; if (widthCheckbox.checked)
-            this.width(Number(width.value), true); });
-        widthCheckbox.addEventListener('change', () => { width.disabled = !widthCheckbox.checked; this.width(Number(width.value), widthCheckbox.checked); });
+        width.addEventListener('input', () => { widthValue.textContent = width.value + ' px'; this.width(Number(width.value), true); });
         const dataSection = section('数据管理');
         const dataActions = document.createElement('div');
         dataActions.className = 'cgfm-settings-actions cgfm-data-actions';
@@ -1114,7 +1277,8 @@ class FolderApplication {
                 if (remote && !read.etag)
                     throw Error('服务器未提供 ETag，无法安全并发写入');
                 const envelope = (0, sync_1.createRemote)(account, this.device, (remote?.revision ?? 0) + 1, mergedData);
-                const result = await (0, sync_1.davRequest)(dav, 'PUT', remote ? { 'If-Match': read.etag } : { 'If-None-Match': '*' }, JSON.stringify(envelope));
+                const ifHeaders = attempt >= 2 ? {} : (remote ? { 'If-Match': read.etag } : { 'If-None-Match': '*' });
+                const result = await (0, sync_1.davRequest)(dav, 'PUT', ifHeaders, JSON.stringify(envelope));
                 if (generation !== this.generation || dav.url !== this.profile.dav.url || dav.file !== this.profile.dav.file || dav.username !== this.profile.dav.username || dav.password !== this.profile.dav.password)
                     return;
                 if (result.status === 412 || result.status === 409)
@@ -1159,7 +1323,11 @@ class FolderApplication {
             this.renderStatus();
         }
     }
-    notice(message) { console.info('[CGFM]', message); const result = this.popup?.querySelector('.cgfm-settings-result'); if (result) {
+    notice(message) { console.info('[CGFM]', message); const dav = this.popup?.querySelector('.cgfm-dav-status'); if (dav) {
+        dav.hidden = false;
+        dav.dataset.type = /失败|错误|损坏/.test(message) ? 'error' : 'success';
+        dav.innerHTML = `<span>${message}</span>`;
+    } const result = this.popup?.querySelector('.cgfm-settings-result'); if (result) {
         result.hidden = false;
         result.textContent = message;
     } if (this.status) {
@@ -1181,7 +1349,7 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.7
+// @version      2.0.8
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
