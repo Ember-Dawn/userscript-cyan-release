@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.1
+// @version      2.0.2
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -1477,9 +1477,11 @@ class FolderUiController {
     activeConfirmCard = null;
     isOpen = false;
     isPinned = false;
+    isHovered = false;
     isEditing = false;
     isDragging = false;
     closeTimer = null;
+    mountQueued = false;
     syncState = 'unconfigured';
     isSyncing = false;
     syncRetryTimer = null;
@@ -1530,16 +1532,20 @@ class FolderUiController {
         this.rootEl = document.createElement('div');
         this.rootEl.id = 'cgfm-root';
         this.updatePanelWidth(this.profile.preferences.sidebarWidth || 312);
-        this.rootEl.addEventListener('pointerenter', () => {
+        const onEnter = () => {
+            this.isHovered = true;
             this.clearCloseTimer();
-        });
-        this.rootEl.addEventListener('pointerleave', () => {
-            if (!this.isPinned && !this.isEditing && !this.isDragging && !this.settingsEl && !this.activeMenu && !this.activeConfirmCard) {
-                this.scheduleClose();
-            }
-        });
+        };
+        const onLeave = () => {
+            this.isHovered = false;
+            this.scheduleClose();
+        };
+        this.rootEl.addEventListener('pointerenter', onEnter);
+        this.rootEl.addEventListener('mouseenter', onEnter);
+        this.rootEl.addEventListener('pointerleave', onLeave);
+        this.rootEl.addEventListener('mouseleave', onLeave);
         document.body.appendChild(this.rootEl);
-        // 全局点击关闭上下文菜单与删除确认卡片
+        // 全局点击关闭菜单
         window.addEventListener('click', (e) => {
             const target = e.target;
             if (this.activeMenu && !this.activeMenu.contains(target) && !target.closest('.cgfm-mini-btn')) {
@@ -1548,7 +1554,7 @@ class FolderUiController {
             if (this.activeConfirmCard && !this.activeConfirmCard.contains(target)) {
                 this.closeActiveConfirm();
             }
-        });
+        }, { capture: true });
     }
     updatePanelWidth(width) {
         const val = Math.max(260, Math.min(500, width));
@@ -1559,80 +1565,91 @@ class FolderUiController {
         const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
         if (rail && this.rootEl) {
             const rect = rail.getBoundingClientRect();
-            this.rootEl.style.left = `${Math.max(0, Math.round(rect.right))}px`;
+            const right = Math.max(0, Math.round(rect.right));
+            this.rootEl.style.left = `${right}px`;
         }
         else if (this.rootEl) {
             this.rootEl.style.left = '52px';
         }
     }
     setupRailWatcher() {
-        const tryMount = () => {
-            // 精确匹配 ChatGPT 侧栏导航 rail
-            const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
-            if (!rail)
+        const queueMount = () => {
+            if (this.mountQueued)
                 return;
-            // 必须挂载在包含各个图标的实际导航列表容器 [data-appearance="plain"]
-            // 绝对不能挂载到 border 遮罩 div 或 nav 顶层直接破坏 React reconciliation
-            const host = rail.querySelector('[data-appearance="plain"], .group\\/nav-list');
-            if (!host)
-                return;
-            if (!this.railEntry) {
-                const entry = document.createElement('div');
-                entry.id = 'cgfm-rail-entry';
-                const btn = document.createElement('button');
-                btn.className = 'cgfm-rail-btn';
-                btn.type = 'button';
-                btn.title = 'ChatGPT 文件夹（点击固定/打开）';
-                btn.innerHTML = constants_1.ICONS.rail;
-                btn.addEventListener('pointerenter', () => {
-                    this.clearCloseTimer();
-                    this.openPanel();
-                });
-                btn.addEventListener('pointerleave', () => {
-                    if (!this.isPinned && !this.isEditing && !this.isDragging) {
-                        this.scheduleClose();
-                    }
-                });
-                btn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.clearCloseTimer();
-                    if (this.isOpen) {
-                        if (this.isPinned) {
-                            this.isPinned = false;
-                            this.closePanel();
-                        }
-                        else {
-                            this.isPinned = true;
-                        }
-                    }
-                    else {
-                        this.isPinned = true;
-                        this.openPanel();
-                    }
-                    this.render();
-                });
-                entry.appendChild(btn);
-                this.railEntry = entry;
-                this.railBtn = btn;
-            }
-            // 挂载位置：优先放在首页（builtin:home）下方，没有则追加至末尾
-            const homeItem = host.querySelector('[data-sidebar-destination="builtin:home"]')?.closest('.flex.shrink-0');
-            if (homeItem && homeItem.parentElement === host) {
-                if (this.railEntry.previousElementSibling !== homeItem) {
-                    homeItem.after(this.railEntry);
-                }
-            }
-            else {
-                if (this.railEntry.parentElement !== host) {
-                    host.appendChild(this.railEntry);
-                }
-            }
+            this.mountQueued = true;
+            window.requestAnimationFrame(() => {
+                this.mountQueued = false;
+                this.tryMount();
+            });
         };
-        tryMount();
-        const obs = new MutationObserver(() => tryMount());
-        obs.observe(document.body, { childList: true, subtree: true });
-        window.setInterval(tryMount, 2000);
+        this.tryMount();
+        const obs = new MutationObserver(() => queueMount());
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+        window.setInterval(() => queueMount(), 2000);
+    }
+    tryMount() {
+        const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
+        if (!rail)
+            return;
+        // 定位实际项目列表容器
+        const host = rail.querySelector('[data-appearance="plain"], .group\\/nav-list');
+        if (!host)
+            return;
+        if (!this.railEntry || !this.railBtn) {
+            const entry = document.createElement('div');
+            entry.id = 'cgfm-rail-entry';
+            const btn = document.createElement('button');
+            btn.className = 'cgfm-rail-btn';
+            btn.type = 'button';
+            btn.title = 'ChatGPT 文件夹（悬停展开，点击固定）';
+            btn.innerHTML = constants_1.ICONS.rail;
+            const handleEnter = () => {
+                this.isHovered = true;
+                this.clearCloseTimer();
+                this.openPanel();
+            };
+            const handleLeave = () => {
+                this.isHovered = false;
+                this.scheduleClose();
+            };
+            const handleActivate = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.clearCloseTimer();
+                if (!this.isOpen) {
+                    this.isPinned = true;
+                    this.openPanel();
+                }
+                else {
+                    this.isPinned = !this.isPinned;
+                    if (!this.isPinned) {
+                        this.closePanel();
+                    }
+                }
+                this.render();
+            };
+            btn.addEventListener('pointerenter', handleEnter);
+            btn.addEventListener('mouseenter', handleEnter);
+            btn.addEventListener('pointerleave', handleLeave);
+            btn.addEventListener('mouseleave', handleLeave);
+            btn.addEventListener('click', handleActivate, { capture: true });
+            btn.addEventListener('pointerdown', (e) => e.stopPropagation(), { capture: true });
+            entry.appendChild(btn);
+            this.railEntry = entry;
+            this.railBtn = btn;
+        }
+        // 需求：放在「更多/探索」图标的下面
+        const moreBtn = host.querySelector('[data-slot="popover-trigger"], button[aria-haspopup="dialog"], [data-slate-sidebar-peek-area="customize"]')?.closest('button, .flex.shrink-0');
+        if (moreBtn && moreBtn.parentElement === host) {
+            if (this.railEntry.previousElementSibling !== moreBtn) {
+                moreBtn.after(this.railEntry);
+            }
+        }
+        else {
+            if (this.railEntry.parentElement !== host) {
+                host.appendChild(this.railEntry);
+            }
+        }
     }
     setupAccountWatcher() {
         const checkAccount = () => {
@@ -1684,8 +1701,15 @@ class FolderUiController {
             this.railBtn.classList.add('active');
     }
     closePanel() {
-        if (this.isPinned || this.isEditing || this.isDragging || this.settingsEl || this.activeMenu || this.activeConfirmCard)
+        if (this.isPinned ||
+            this.isHovered ||
+            this.isEditing ||
+            this.isDragging ||
+            this.settingsEl ||
+            this.activeMenu ||
+            this.activeConfirmCard) {
             return;
+        }
         this.isOpen = false;
         this.rootEl.classList.remove('cgfm-open');
         if (this.railBtn)
@@ -1709,7 +1733,7 @@ class FolderUiController {
         this.clearCloseTimer();
         this.closeTimer = window.setTimeout(() => {
             this.closePanel();
-        }, 250);
+        }, 350);
     }
     clearCloseTimer() {
         if (this.closeTimer !== null) {
@@ -1768,7 +1792,6 @@ class FolderUiController {
     }
     renderFolderTree(container) {
         const { folders, conversations } = this.profile.data;
-        // 构建层级树
         const childrenMap = {};
         for (const f of Object.values(folders)) {
             const p = f.parentId || '__root__';
@@ -1776,7 +1799,6 @@ class FolderUiController {
                 childrenMap[p] = [];
             childrenMap[p].push(f);
         }
-        // 排序
         for (const list of Object.values(childrenMap)) {
             list.sort((a, b) => model_1.naturalSort.compare(a.name, b.name));
         }
@@ -1790,7 +1812,7 @@ class FolderUiController {
                 row.style.paddingLeft = `${depth * 14 + 8}px`;
                 row.innerHTML = `
           <span class="cgfm-chevron" data-act="toggle">${isCollapsed ? constants_1.ICONS.chevronRight : constants_1.ICONS.chevronDown}</span>
-          <span class="cgfm-dot" style="background-color: ${f.color || '#6b7280'}"></span>
+          <span class="cgfm-dot" style="background-color: ${f.color || '#3b82f6'}"></span>
           <span class="cgfm-title">${f.name}</span>
           <div class="cgfm-row-actions">
             <button class="cgfm-mini-btn" data-act="menu" title="文件夹操作">${constants_1.ICONS.dots}</button>
@@ -1809,7 +1831,6 @@ class FolderUiController {
                     }
                 });
                 container.appendChild(row);
-                // 如果未折叠，渲染包含的对话和子文件夹
                 if (!isCollapsed) {
                     const chats = Object.values(conversations).filter((c) => c.folderId === f.id);
                     chats.sort((a, b) => model_1.naturalSort.compare(a.title, b.title));
@@ -1850,7 +1871,6 @@ class FolderUiController {
         renderLevel(null, 0);
     }
     renderRecentChats(container) {
-        // 兼容 ChatGPT 最新与经典历史侧栏选择器
         const nativeLinks = document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
         const seenIds = new Set();
         for (const el of nativeLinks) {
@@ -2345,7 +2365,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.1
+// @version      2.0.2
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
