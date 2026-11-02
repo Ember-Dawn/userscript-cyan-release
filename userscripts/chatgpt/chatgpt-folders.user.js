@@ -4,9 +4,9 @@
 // @homepageURL  https://github.com/Ember-Dawn/userscript-cyan-release
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      1.5.2
-// @description  ChatGPT 独立文件夹面板：导航栏文件夹入口、最近对话、悬浮与点击固定；不改变官方侧栏。
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
+// @version      2.0.0
+// @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -21,4273 +21,923 @@
 // @connect      *
 // ==/UserScript==
 
-/*
-ChatGPT文件夹维护摘要（完整说明见 userscripts/chatgpt/chatgpt-folders.md）
-
-- 作用：在 ChatGPT 原生导航 rail 加入文件夹入口，独立浮层展示本地文件夹和已发现的最近对话；不修改 ChatGPT 后端，也不保存聊天正文。
-- 数据：内存 state 是当前账号单一数据源；本地 profile 按 ChatGPT 账号隔离；同浏览器通过 revision key 事件同步；跨设备通过 WebDAV schema 3、操作日志、基准快照和墓碑进行合并。
-- DOM：#cgfm-root 是 document.body 的持久直属子节点，不进入 React 内容容器；独立文件夹按钮插入导航 rail，浮层相对 rail 右侧定位。优先使用 data-sidebar-chatgpt-conversation-key / role=listitem，旧 /c/ anchor 仅作兼容回退。
-- Hydration：DOM/state boot 延后至 DOMContentLoaded；独立面板不依赖官方 sidebar hydration。
-- 性能：禁止长期观察 document/sidebar subtree、mousemove 热路径和高频全量扫描。新增入口使用导航列表 childList 窄观察以恢复重建；最近对话在打开时限频收集；原生三点菜单仍只短时观察。
-- 交互：仅在脚本自有面板中使用 Pointer Events 拖拽；官方最近对话仅用于采集与菜单入口，不拦截其拖拽或点击。
-- 安全：WebDAV 凭据仅保存在本地；导出、远端 JSON、日志和诊断不得包含密码、token、cookie 或完整 client-bootstrap。
-- 修改要求：行为变更需提升 @version；修改架构、同步、挂载、存储或关键交互时同步更新 chatgpt-folders.md；发布前至少执行 node --check。
-*/
-
-
-(function () {
-  'use strict';
-
-  const APP = 'cgfm';
-  const APP_NAME = 'ChatGPT文件夹';
-  const VERSION = '1.5.2';
-  const ACCOUNT_PROFILE_PREFIX = 'cgfm.v3.profile.';
-  const ACCOUNT_REVISION_PREFIX = 'cgfm.v3.revision.';
-  const ACCOUNT_FILE_MAP_KEY = 'cgfm.v3.remoteFileMap';
-  const DEVICE_ID_KEY = 'cgfm.v3.deviceId';
-  const RUNTIME_LOCK_ATTR = 'data-cgfm-runtime-active';
-  const LAST_ACCOUNT_KEY = 'cgfm.v1.lastAccount';
-  const CURRENT_PROFILE_ID = 'local_current';
-  const ROOT_ID = 'root';
-  const SIDEBAR_CONVERSATION_PREFIX = 'chatgpt:conversation:';
-  const NATIVE_CHAT_ROW_SELECTOR = '[data-sidebar-chatgpt-conversation-key^="' + SIDEBAR_CONVERSATION_PREFIX + '"][role="listitem"]';
-  const RECENTS_SECTION_SELECTOR = 'section[data-app-action-sidebar-section-heading="Recents"]';
-  const DEFAULT_FOLDER_COLOR = '#6b7280';
-  const DEFAULT_DEBOUNCE_MS = 12000;
-  const DEFAULT_INTERVAL_MS = 15 * 60 * 1000; // legacy setting fallback
-  const DEFAULT_REMOTE_CHECK_MS = 30 * 1000;
-  const MIN_REMOTE_CHECK_MS = 15 * 1000;
-  const MAX_REMOTE_OPERATIONS = 1500;
-  const MAX_LOCAL_OPERATIONS = 500;
-  const SYNC_EPOCH = '1970-01-01T00:00:00.000Z';
-  const DEFAULT_SIDEBAR_WIDTH_PX = 312;
-  const MIN_SIDEBAR_WIDTH_PX = 240;
-  const MAX_SIDEBAR_WIDTH_PX = 520;
-  const FOLDER_SORT_LOCALE = undefined;
-  const folderCollator = new Intl.Collator(FOLDER_SORT_LOCALE, { numeric: true, sensitivity: 'base' });
-  const TAB_ID = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-
-  // Safari userscript managers may inject the same script more than once during SPA
-  // restoration. A document-level lock prevents duplicate roots, listeners and timers.
-  if (document.documentElement.hasAttribute(RUNTIME_LOCK_ATTR)) {
-    console.info(APP_NAME, 'duplicate runtime blocked');
-    return;
-  }
-  document.documentElement.setAttribute(RUNTIME_LOCK_ATTR, VERSION);
-
-  let state = null;
-  let currentAccount = null;
-  let selectedFolderId = ROOT_ID; // 仅当前页面使用，不持久化、不跨标签同步
-  let rootEl = null;
-  let treeEl = null;
-  let folderButton = null;
-  let folderButtonHost = null;
-  let folderRailObserver = null;
-  let folderButtonPinned = false;
-  let folderPointerInButton = false;
-  let folderPointerInPane = false;
-  let lastPanelPointer = null; // Pointer coordinates, recorded only inside the owned panel.
-  let folderCloseTimer = null;
-  let ownedDragActive = false;
-  let renderDeferredDuringPanelDrag = false;
-  let ownedDragSafetyTimer = null;
-  let recentMutationObserver = null;
-  let recentObserverHost = null;
-  let recentRefreshTimer = null;
-  let lastRecentScan = 0;
-  let recentKnown = [];
-  let recentCacheAccount = '';
-  let chatRenameDialog = null;
-  let renderDeferredDuringChatEdit = false;
-  let confirmedTitles = new Map();
-  let confirmedTitlesAccount = '';
-  let capturedOfficialHistoryRequest = null; // Live template, optionally restored from account-scoped GM cache.
-  const AUTH_CACHE_PREFIX = 'cgfm.v1.authCache.';
-  const AUTH_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-  const AUTH_HEADER_ALLOWLIST = ['authorization', 'chatgpt-account-id', 'oai-did', 'oai-language', 'originator', 'x-openai-codex-window-type', 'x-openai-web-frontend'];
-  let historyRefreshPromise = null;
-  const RECENT_REFRESH_PREFIX = 'cgfm.v1.historyRefresh.';
-  const RECENT_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
-  const RECENT_REFRESH_ERROR_MS = 10 * 60 * 1000;
-  const RECENT_REFRESH_LOCK_MS = 15 * 1000;
-  const RECENT_REFRESH_MAX_BACKOFF_MS = 4 * 60 * 60 * 1000;
-  let recentLastOpenState = false;
-  // The script does not pin or alter the native sidebar.
-  let dualSidebarOpen = false;
-  let mounted = false;
-  let renderQueued = false;
-  let pendingPersistTimer = null;
-  let pendingPersistReason = '';
-  let pendingWebdavTimer = null;
-  let periodicWebdavTimer = null;
-  let dirtySincePush = false;
-  let editingFolderId = '';
-  let editingNewFolderId = '';
-  let editingOriginalName = '';
-  let pointerDragSession = null;
-  let pendingPanelMove = null; // Replay only this move if another tab wins a storage revision race.
-  let panelMoveRebaseAttempts = 0;
-  let menuEl = null;
-  let modalEl = null;
-  let sidebarWidthStyleEl = null;
-  let syncStatus = 'off';
-  let settingsModalSnapshot = null;
-  let settingsWidthPreviewApplied = false;
-  let nativeMenuChat = null;
-  let nativeMenuTriggerId = '';
-  let nativeMenuObserver = null;
-  let nativeMenuObserveTimer = null;
-  let nativeFolderSubmenus = [];
-  let nativeMenuPollTimer = null;
-  let resumeRecoveryTimers = [];
-  let appShellStateRaf = 0;
-  let storageWriteSeq = 0;
-  let lastSeenStorageRevision = '';
-  let lastSeenStorageProjection = '';
-  let localUnsavedChanges = false;
-  let storageSyncBound = false;
-  let storageSyncListenerId = null;
-  let storageSyncListenerKey = '';
-  let crossTabApplyTimer = null;
-  let lockedAccountKey = '';
-  let pendingAccountKey = '';
-  let pendingAccountHits = 0;
-  let webdavOperation = null;
-  let webdavRetryCount = 0;
-  let webdavRetryNotBefore = 0;
-  let webdavPausedForAuth = false;
-  let webdavResyncRequested = false;
-  let lastRemoteCheckAt = 0;
-  let accountSwitching = false;
-  let accountGeneration = 0;
-  let mutationBaseline = null;
-  const DEVICE_ID = getOrCreateDeviceId();
-
-  // ---------------------------------------------------------------------------
-  // 1. Constants, small utilities and safe Tampermonkey storage wrappers
-  // ---------------------------------------------------------------------------
-
-  function nowIso() { return new Date().toISOString(); }
-  function uid(prefix) { return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
-  function cleanText(text) { return String(text || '').replace(/\s+/g, ' ').trim(); }
-  function clamp(n, min, max) { return Math.min(max, Math.max(min, n)); }
-  function unique(arr) { return Array.from(new Set((arr || []).filter(Boolean))); }
-  function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])); }
-  function escapeAttr(s) { return escapeHtml(s).replace(/'/g, '&#39;'); }
-  function safeError(err) { return err && (err.message || err.toString()) || String(err || 'Unknown error'); }
-  function shortTime(iso) { try { return new Date(iso).toLocaleString(); } catch (_) { return String(iso || ''); } }
-  function normalizeColor(color) { return /^#[0-9a-fA-F]{6}$/.test(String(color || '')) ? String(color) : DEFAULT_FOLDER_COLOR; }
-  function cssEscape(value) { return window.CSS && CSS.escape ? CSS.escape(String(value)) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&'); }
-
-  function gmGet(key, fallback) {
-    try {
-      const value = GM_getValue(key, fallback);
-      return value === undefined ? fallback : value;
-    } catch (err) {
-      console.warn(APP_NAME, 'GM_getValue failed', err);
-      return fallback;
-    }
-  }
-
-  function gmSet(key, value) {
-    try { GM_setValue(key, value); }
-    catch (err) { console.warn(APP_NAME, 'GM_setValue failed', err); }
-  }
-
-  function getOrCreateDeviceId() {
-    let id = String(gmGet(DEVICE_ID_KEY, '') || '');
-    if (!id) {
-      id = 'dev_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
-      gmSet(DEVICE_ID_KEY, id);
-    }
-    return id;
-  }
-
-  function accountStableKey(info) {
-    const acct = info || currentAccount || readLastAccountInfo() || {};
-    const raw = cleanText(acct.accountId || acct.email || acct.id || 'acct_default');
-    return sanitizeFilePart(raw).slice(0, 120) || 'acct_default';
-  }
-
-  function activeProfileStorageKey(info) { return ACCOUNT_PROFILE_PREFIX + accountStableKey(info); }
-  function activeRevisionStorageKey(info) { return ACCOUNT_REVISION_PREFIX + accountStableKey(info); }
-
-  // ---------------------------------------------------------------------------
-  // 2. Account-scoped state and folder data normalization (no legacy migration)
-  // ---------------------------------------------------------------------------
-
-  function makeEmptyState(label) {
-    return makeProfile(CURRENT_PROFILE_ID, label || 'ChatGPT account');
-  }
-
-  function makeProfile(id, label) {
-    const t = nowIso();
-    return {
-      id,
-      label: label || 'ChatGPT account',
-      createdAt: t,
-      updatedAt: t,
-      folders: {
-        [ROOT_ID]: { id: ROOT_ID, name: 'root', parentId: '', childFolderIds: [], chatIds: [], color: DEFAULT_FOLDER_COLOR, collapsed: false, createdAt: t, updatedAt: t }
-      },
-      conversations: {},
-      settings: {
-        ui: { sectionCollapsed: false, sidebarWidthEnabled: false, sidebarWidthPx: DEFAULT_SIDEBAR_WIDTH_PX },
-        webdav: { enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, remoteCheckMs: DEFAULT_REMOTE_CHECK_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false, pendingPush: false, remoteInitialized: false, syncTarget: '', lastMergeAt: '', lastMergeSummary: '' }
-      }
-    };
-  }
-
-  function loadState(info) {
-    const accountInfo = info || currentAccount || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account' };
-    const accountKey = activeProfileStorageKey(accountInfo);
-    const direct = gmGet(accountKey, '');
-    if (direct) {
-      try {
-        const parsed = typeof direct === 'string' ? JSON.parse(direct) : direct;
-        return normalizeLoadedProfile(parsed, accountInfo.label || 'ChatGPT account');
-      } catch (err) {
-        console.warn(APP_NAME, 'failed to parse account profile; starting empty', err);
-      }
-    }
-
-    // v0.5.0+ intentionally does not import v1/v2 single-profile storage. A device with
-    // no account-scoped profile starts empty, then initializes from the configured
-    // account-specific WebDAV JSON. This keeps account ownership explicit and removes
-    // the historical migration branches that could duplicate data across accounts.
-    return makeEmptyState(accountInfo.label);
-  }
-
-  function normalizeLoadedProfile(data, label) {
-    const profile = data && data.profile ? data.profile : data;
-    if (profile && profile.folders && profile.conversations) return normalizeProfile(profile, CURRENT_PROFILE_ID, label || profile.label);
-    return makeEmptyState(label);
-  }
-
-  function normalizeProfile(profile, id, label) {
-    const p = profile && typeof profile === 'object' ? profile : makeProfile(id, label);
-    p.id = id || p.id || 'default';
-    p.label = label || p.label || 'ChatGPT account';
-    p.createdAt = p.createdAt || nowIso();
-    p.updatedAt = p.updatedAt || p.createdAt;
-    p.folders = p.folders && typeof p.folders === 'object' ? p.folders : {};
-    p.conversations = p.conversations && typeof p.conversations === 'object' ? p.conversations : {};
-    p.settings = p.settings && typeof p.settings === 'object' ? p.settings : {};
-    delete p.selectedFolderId; // 兼容旧数据：选中高亮不再属于持久化 profile。
-    p.settings.ui = Object.assign({ sectionCollapsed: false, sidebarWidthEnabled: false, sidebarWidthPx: DEFAULT_SIDEBAR_WIDTH_PX }, p.settings.ui || {});
-    p.settings.webdav = Object.assign({ enabled: false, url: '', username: '', password: '', debounceMs: DEFAULT_DEBOUNCE_MS, intervalMs: DEFAULT_INTERVAL_MS, remoteCheckMs: DEFAULT_REMOTE_CHECK_MS, lastPushAt: '', lastPullAt: '', lastStatus: '', lastError: '', remoteEtag: '', remoteRevision: 0, lastRemoteCheckAt: '', conflict: false, pendingPush: false, remoteInitialized: false, syncTarget: '', lastMergeAt: '', lastMergeSummary: '' }, p.settings.webdav || {});
-    p.settings.webdav.remoteCheckMs = clamp(Number(p.settings.webdav.remoteCheckMs || DEFAULT_REMOTE_CHECK_MS), MIN_REMOTE_CHECK_MS, 5 * 60 * 1000);
-    if (!p.settings.webdav.pendingPush && (/conflict|push failed|pushing/i.test(String(p.settings.webdav.lastStatus || '')) || /PUT failed with HTTP 412/i.test(String(p.settings.webdav.lastError || '')))) {
-      p.settings.webdav.pendingPush = true;
-    }
-    // ETag is transaction-scoped in v0.5.0+. Keep only revision/snapshot metadata as the durable base.
-    p.settings.webdav.remoteEtag = '';
-    p.settings.webdav.remoteInitialized = !!(p.settings.webdav.remoteInitialized || Number(p.settings.webdav.remoteRevision || 0) > 0);
-    if (!p.folders[ROOT_ID]) p.folders[ROOT_ID] = { id: ROOT_ID, name: 'root', parentId: '', childFolderIds: [], chatIds: [], color: DEFAULT_FOLDER_COLOR, collapsed: false, createdAt: nowIso(), updatedAt: nowIso() };
-
-    for (const fid of Object.keys(p.folders)) {
-      const f = p.folders[fid] || {};
-      f.id = fid;
-      f.name = fid === ROOT_ID ? 'root' : String(f.name || '新建文件夹');
-      f.parentId = fid === ROOT_ID ? '' : (p.folders[f.parentId] ? f.parentId : ROOT_ID);
-      f.childFolderIds = unique(Array.isArray(f.childFolderIds) ? f.childFolderIds : []);
-      f.chatIds = unique(Array.isArray(f.chatIds) ? f.chatIds : []);
-      f.color = normalizeColor(f.color || DEFAULT_FOLDER_COLOR);
-      f.collapsed = !!f.collapsed;
-      f.createdAt = f.createdAt || nowIso();
-      f.updatedAt = f.updatedAt || f.createdAt;
-      p.folders[fid] = f;
-    }
-
-    for (const fid of Object.keys(p.folders)) {
-      if (fid === ROOT_ID) continue;
-      const f = p.folders[fid];
-      const parent = p.folders[f.parentId] || p.folders[ROOT_ID];
-      if (!parent.childFolderIds.includes(fid)) parent.childFolderIds.push(fid);
-    }
-
-    const seenChat = new Set();
-    for (const cid of Object.keys(p.conversations)) {
-      const c = p.conversations[cid] || {};
-      c.id = cid;
-      c.title = String(c.title || 'Untitled chat');
-      c.url = normalizeStoredUrl(c.url || ('/c/' + cid));
-      c.folderId = p.folders[c.folderId] ? c.folderId : ROOT_ID;
-      c.addedAt = c.addedAt || nowIso();
-      c.updatedAt = c.updatedAt || c.addedAt;
-      p.conversations[cid] = c;
-    }
-    for (const fid of Object.keys(p.folders)) {
-      const f = p.folders[fid];
-      f.childFolderIds = unique(f.childFolderIds).filter(child => child !== fid && p.folders[child] && p.folders[child].parentId === fid);
-      f.chatIds = unique(f.chatIds).filter(cid => p.conversations[cid] && !seenChat.has(cid));
-      for (const cid of f.chatIds) {
-        p.conversations[cid].folderId = fid;
-        seenChat.add(cid);
-      }
-    }
-    for (const cid of Object.keys(p.conversations)) {
-      if (!seenChat.has(cid)) {
-        const fid = p.conversations[cid].folderId || ROOT_ID;
-        (p.folders[fid] || p.folders[ROOT_ID]).chatIds.push(cid);
-        seenChat.add(cid);
-      }
-    }
-    sortAllFolders(p);
-    ensureSyncMeta(p);
-    return p;
-  }
-
-  function sortFolderChildren(p, parentId) {
-    const parent = p.folders[parentId];
-    if (!parent) return;
-    parent.childFolderIds = unique(parent.childFolderIds).filter(fid => p.folders[fid]).sort((a, b) => {
-      const fa = p.folders[a];
-      const fb = p.folders[b];
-      return folderCollator.compare(fa.name || '', fb.name || '');
-    });
-  }
-
-  function sortAllFolders(p) {
-    for (const fid of Object.keys(p.folders || {})) sortFolderChildren(p, fid);
-  }
-
-  function profileHasUserData(p) {
-    return !!(p && ((p.conversations && Object.keys(p.conversations).length) || (p.folders && Object.keys(p.folders).some(id => id !== ROOT_ID))));
-  }
-
-
-  function deepClone(value) {
-    return value == null ? value : JSON.parse(JSON.stringify(value));
-  }
-
-  function stableStringify(value) {
-    const visit = item => {
-      if (Array.isArray(item)) return item.map(visit);
-      if (!item || typeof item !== 'object') return item;
-      const out = {};
-      Object.keys(item).sort().forEach(key => { out[key] = visit(item[key]); });
-      return out;
-    };
-    return JSON.stringify(visit(value));
-  }
-
-  function emptySyncProjection(label) {
-    return {
-      id: CURRENT_PROFILE_ID,
-      label: label || 'ChatGPT account',
-      createdAt: SYNC_EPOCH,
-      updatedAt: SYNC_EPOCH,
-      folders: {
-        [ROOT_ID]: { id: ROOT_ID, name: 'root', parentId: '', childFolderIds: [], chatIds: [], color: DEFAULT_FOLDER_COLOR, createdAt: SYNC_EPOCH, updatedAt: SYNC_EPOCH }
-      },
-      conversations: {},
-      settings: { ui: { sidebarWidthEnabled: false, sidebarWidthPx: DEFAULT_SIDEBAR_WIDTH_PX } }
-    };
-  }
-
-  function syncProjection(profile) {
-    const source = profile || emptySyncProjection('ChatGPT account');
-    const out = {
-      id: source.id || CURRENT_PROFILE_ID,
-      label: source.label || 'ChatGPT account',
-      createdAt: SYNC_EPOCH,
-      updatedAt: SYNC_EPOCH,
-      folders: {},
-      conversations: {},
-      settings: {
-        ui: {
-          sidebarWidthEnabled: !!(((source.settings || {}).ui || {}).sidebarWidthEnabled),
-          sidebarWidthPx: clamp(Number((((source.settings || {}).ui || {}).sidebarWidthPx) || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX)
+(function(){'use strict';const registry={"model":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.natural = exports.defaultLocal = exports.uid = exports.copy = exports.blank = void 0;
+exports.validate = validate;
+exports.command = command;
+exports.diff = diff;
+const blank = () => ({ schema: 1, folders: {}, conversations: {} });
+exports.blank = blank;
+const copy = (v) => JSON.parse(JSON.stringify(v));
+exports.copy = copy;
+const uid = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+exports.uid = uid;
+const defaultLocal = () => ({ data: (0, exports.blank)(), base: (0, exports.blank)(), preferences: { sidebarWidth: 312, customWidth: false }, dav: { url: '', username: '', password: '', file: 'chatgpt-folders-ts-v1.json' }, pending: [], baseRevision: 0, etag: null, conflicts: [] });
+exports.defaultLocal = defaultLocal;
+exports.natural = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+function validate(data) {
+    if (data?.schema !== 1 || !data.folders || !data.conversations || Array.isArray(data.folders) || Array.isArray(data.conversations))
+        throw Error('不支持的数据格式');
+    for (const [id, f] of Object.entries(data.folders)) {
+        if (f.id !== id || typeof f.name !== 'string' || typeof f.color !== 'string' || !/^#[a-f0-9]{6}$/i.test(f.color))
+            throw Error('文件夹数据损坏');
+        if (f.parentId !== null && !data.folders[f.parentId])
+            throw Error('文件夹的父级不存在');
+        const visited = new Set([id]);
+        let parent = f.parentId;
+        while (parent) {
+            if (visited.has(parent))
+                throw Error('检测到文件夹循环');
+            visited.add(parent);
+            parent = data.folders[parent]?.parentId ?? null;
         }
-      }
-    };
-    for (const [id, raw] of Object.entries(source.folders || {})) {
-      const f = raw || {};
-      out.folders[id] = {
-        id,
-        name: id === ROOT_ID ? 'root' : String(f.name || '新建文件夹'),
-        parentId: id === ROOT_ID ? '' : String(f.parentId || ROOT_ID),
-        childFolderIds: unique(Array.isArray(f.childFolderIds) ? f.childFolderIds : []),
-        chatIds: unique(Array.isArray(f.chatIds) ? f.chatIds : []),
-        color: normalizeColor(f.color || DEFAULT_FOLDER_COLOR),
-        createdAt: f.createdAt || SYNC_EPOCH,
-        updatedAt: f.updatedAt || f.createdAt || SYNC_EPOCH
-      };
     }
-    if (!out.folders[ROOT_ID]) out.folders[ROOT_ID] = emptySyncProjection(out.label).folders[ROOT_ID];
-    for (const [id, raw] of Object.entries(source.conversations || {})) {
-      const c = raw || {};
-      out.conversations[id] = {
-        id,
-        title: String(c.title || 'Untitled chat'),
-        url: normalizeStoredUrl(c.url || ('/c/' + id)),
-        folderId: out.folders[c.folderId] ? c.folderId : ROOT_ID,
-        addedAt: c.addedAt || SYNC_EPOCH,
-        updatedAt: c.updatedAt || c.addedAt || SYNC_EPOCH
-      };
-    }
-    return out;
-  }
-
-  function makeSyncMeta(profile) {
-    const w = ((profile || {}).settings || {}).webdav || {};
-    return {
-      baseRevision: Number(w.remoteRevision || 0),
-      baseProfile: w.remoteInitialized ? syncProjection(profile) : null,
-      operations: [],
-      tombstones: { folders: {}, conversations: {} },
-      lastCompactedAt: ''
-    };
-  }
-
-  function ensureSyncMeta(profile) {
-    if (!profile || typeof profile !== 'object') return makeSyncMeta(profile);
-    const existing = profile.__cgfmSync && typeof profile.__cgfmSync === 'object' ? profile.__cgfmSync : {};
-    const meta = profile.__cgfmSync = Object.assign(makeSyncMeta(profile), existing);
-    meta.baseRevision = Number(meta.baseRevision || (((profile.settings || {}).webdav || {}).remoteRevision) || 0);
-    meta.baseProfile = meta.baseProfile && meta.baseProfile.folders ? syncProjection(meta.baseProfile) : ((((profile.settings || {}).webdav || {}).remoteInitialized) ? syncProjection(profile) : null);
-    meta.operations = Array.isArray(meta.operations) ? meta.operations.filter(Boolean).slice(-MAX_LOCAL_OPERATIONS) : [];
-    meta.tombstones = meta.tombstones && typeof meta.tombstones === 'object' ? meta.tombstones : {};
-    meta.tombstones.folders = meta.tombstones.folders && typeof meta.tombstones.folders === 'object' ? meta.tombstones.folders : {};
-    meta.tombstones.conversations = meta.tombstones.conversations && typeof meta.tombstones.conversations === 'object' ? meta.tombstones.conversations : {};
-    const w = ((profile.settings || {}).webdav || {});
-    if (meta.operations.length || (meta.baseProfile && stableStringify(syncProjection(profile)) !== stableStringify(meta.baseProfile))) w.pendingPush = true;
-    return meta;
-  }
-
-  function makeOperation(kind, entityId, value, reason, options) {
-    const opts = options || {};
-    const at = opts.at || nowIso();
-    return {
-      id: opts.id || uid('op'),
-      kind,
-      entityId: String(entityId || ''),
-      value: value == null ? null : deepClone(value),
-      reason: String(reason || opts.reason || 'change'),
-      at,
-      deviceId: String(opts.deviceId || DEVICE_ID),
-      baseRevision: Number(opts.baseRevision || 0),
-      revision: Number(opts.revision || 0)
-    };
-  }
-
-  function deriveOperations(before, after, reason, options) {
-    const opts = options || {};
-    const a = before && before.folders ? before : emptySyncProjection((after || {}).label);
-    const b = after && after.folders ? after : emptySyncProjection((before || {}).label);
-    const ops = [];
-    const compareMap = (kindPrefix, left, right) => {
-      const ids = unique([...Object.keys(left || {}), ...Object.keys(right || {})]).sort();
-      ids.forEach(id => {
-        if (!(id in (right || {}))) {
-          if (kindPrefix === 'folder' && id === ROOT_ID) return;
-          ops.push(makeOperation(kindPrefix + '-delete', id, null, reason, opts));
-        } else if (!(id in (left || {})) || stableStringify(left[id]) !== stableStringify(right[id])) {
-          ops.push(makeOperation(kindPrefix + '-upsert', id, right[id], reason, opts));
+    for (const [id, c] of Object.entries(data.conversations))
+        if (c.id !== id || !data.folders[c.folderId] || typeof c.title !== 'string')
+            throw Error('对话归属无效');
+}
+function command(data, change) {
+    const d = (0, exports.copy)(data), now = Date.now();
+    const f = change.id ? d.folders[change.id] : undefined;
+    switch (change.type) {
+        case 'folder.create': {
+            if (change.parentId && !d.folders[change.parentId])
+                throw Error('父文件夹不存在');
+            const id = (0, exports.uid)();
+            d.folders[id] = { id, parentId: change.parentId ?? null, name: (change.name ?? '新建文件夹').trim() || '新建文件夹', color: '#6b7280', collapsed: false, createdAt: now, updatedAt: now };
+            break;
         }
-      });
-    };
-    compareMap('folder', a.folders || {}, b.folders || {});
-    compareMap('conversation', a.conversations || {}, b.conversations || {});
-    if (stableStringify(((a.settings || {}).ui || {})) !== stableStringify(((b.settings || {}).ui || {}))) {
-      ops.push(makeOperation('settings-update', 'ui', ((b.settings || {}).ui || {}), reason, opts));
-    }
-    return ops;
-  }
-
-  function operationSort(a, b) {
-    const ta = Date.parse(a && a.at || '') || 0;
-    const tb = Date.parse(b && b.at || '') || 0;
-    if (ta !== tb) return ta - tb;
-    return String((a && a.id) || '').localeCompare(String((b && b.id) || ''));
-  }
-
-  function mergeOperationLists(...lists) {
-    const map = new Map();
-    lists.flat().filter(Boolean).forEach(op => {
-      const normalized = Object.assign({}, op, { id: String(op.id || uid('op')) });
-      const old = map.get(normalized.id);
-      if (!old || operationSort(old, normalized) <= 0) map.set(normalized.id, normalized);
-    });
-    return Array.from(map.values()).sort(operationSort);
-  }
-
-  function applySyncOperation(snapshot, operation) {
-    const op = operation || {};
-    const id = String(op.entityId || '');
-    if (!id) return;
-    if (op.kind === 'folder-upsert' && op.value) snapshot.folders[id] = deepClone(op.value);
-    else if (op.kind === 'folder-delete' && id !== ROOT_ID) delete snapshot.folders[id];
-    else if (op.kind === 'conversation-upsert' && op.value) snapshot.conversations[id] = deepClone(op.value);
-    else if (op.kind === 'conversation-delete') delete snapshot.conversations[id];
-    else if (op.kind === 'settings-update') {
-      snapshot.settings = snapshot.settings || {};
-      snapshot.settings.ui = Object.assign({}, snapshot.settings.ui || {}, deepClone(op.value || {}));
-    }
-  }
-
-  function applyOperationsToProjection(base, operations) {
-    const result = deepClone(base && base.folders ? base : emptySyncProjection((state || {}).label));
-    mergeOperationLists(operations || []).forEach(op => applySyncOperation(result, op));
-    result.updatedAt = SYNC_EPOCH;
-    return syncProjection(normalizeProfile(result, result.id || CURRENT_PROFILE_ID, result.label || 'ChatGPT account'));
-  }
-
-  function updateTombstones(meta, operations) {
-    const syncMeta = meta || ensureSyncMeta(getProfile());
-    const tombstones = syncMeta.tombstones;
-    (operations || []).forEach(op => {
-      const id = String(op.entityId || '');
-      if (!id) return;
-      const isFolder = /^folder-/.test(op.kind || '');
-      const isConversation = /^conversation-/.test(op.kind || '');
-      if (!isFolder && !isConversation) return;
-      const bucket = isFolder ? tombstones.folders : tombstones.conversations;
-      if (/-delete$/.test(op.kind || '')) {
-        bucket[id] = { deletedAt: op.at || nowIso(), deviceId: op.deviceId || DEVICE_ID, operationId: op.id || '' };
-      } else if (/-upsert$/.test(op.kind || '')) {
-        const old = bucket[id];
-        if (!old || (Date.parse(op.at || '') || 0) >= (Date.parse(old.deletedAt || '') || 0)) delete bucket[id];
-      }
-    });
-    return tombstones;
-  }
-
-  function mergeTombstones(...values) {
-    const out = { folders: {}, conversations: {} };
-    values.filter(Boolean).forEach(value => {
-      ['folders', 'conversations'].forEach(kind => {
-        Object.entries(value[kind] || {}).forEach(([id, item]) => {
-          const old = out[kind][id];
-          if (!old || (Date.parse(item.deletedAt || '') || 0) >= (Date.parse(old.deletedAt || '') || 0)) out[kind][id] = deepClone(item);
-        });
-      });
-    });
-    return out;
-  }
-
-  function captureSyncOperations(reason) {
-    const p = getProfile();
-    const current = syncProjection(p);
-    if (!mutationBaseline) mutationBaseline = current;
-    const meta = ensureSyncMeta(p);
-    const ops = deriveOperations(mutationBaseline, current, reason || 'change', { baseRevision: meta.baseRevision, deviceId: DEVICE_ID });
-    if (ops.length) {
-      meta.operations = mergeOperationLists(meta.operations, ops).slice(-MAX_LOCAL_OPERATIONS);
-      updateTombstones(meta, ops);
-    }
-    mutationBaseline = current;
-    return ops;
-  }
-
-  function localHasSyncChanges(profile) {
-    const p = profile || getProfile();
-    const meta = ensureSyncMeta(p);
-    const w = p.settings.webdav || {};
-    if (w.pendingPush || dirtySincePush || meta.operations.length) return true;
-    if (!meta.baseProfile) return profileHasUserData(p);
-    return stableStringify(syncProjection(p)) !== stableStringify(meta.baseProfile);
-  }
-
-  function preserveLocalUiState(target, local) {
-    if (!target || !local) return target;
-    target.settings = target.settings || {};
-    target.settings.ui = Object.assign({}, target.settings.ui || {}, {
-      sectionCollapsed: !!(((local.settings || {}).ui || {}).sectionCollapsed)
-    });
-    Object.keys(target.folders || {}).forEach(id => {
-      if (local.folders && local.folders[id]) target.folders[id].collapsed = !!local.folders[id].collapsed;
-    });
-    return target;
-  }
-
-  function makeStorageRevision() {
-    storageWriteSeq += 1;
-    return Date.now() + ':' + TAB_ID + ':' + storageWriteSeq;
-  }
-
-  function getProfileStorageMeta(profile) {
-    return profile && profile.__cgfm && typeof profile.__cgfm === 'object' ? profile.__cgfm : {};
-  }
-
-  function getProfileStorageRevision(profile) {
-    return String(getProfileStorageMeta(profile).storageRevision || '');
-  }
-
-  function getProfileStorageWriter(profile) {
-    return String(getProfileStorageMeta(profile).writerTabId || '');
-  }
-
-  function revisionTime(revision) {
-    const n = Number(String(revision || '').split(':')[0]);
-    return Number.isFinite(n) ? n : 0;
-  }
-
-  function isRevisionNewer(candidate, base) {
-    if (!candidate) return false;
-    if (!base) return true;
-    const ca = revisionTime(candidate);
-    const ba = revisionTime(base);
-    if (ca !== ba) return ca > ba;
-    return String(candidate) > String(base);
-  }
-
-  function parseStoredProfileRaw(raw) {
-    if (!raw) return null;
-    try {
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return parsed && (parsed.profile || parsed);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function markStorageRevision(profile, revision) {
-    if (!profile || typeof profile !== 'object') return revision || '';
-    const rev = revision || makeStorageRevision();
-    profile.__cgfm = Object.assign({}, profile.__cgfm || {}, {
-      storageRevision: rev,
-      writerTabId: TAB_ID,
-      writtenAt: nowIso()
-    });
-    return rev;
-  }
-
-  function parseRevisionMeta(raw) {
-    if (!raw) return { revision: '', writer: '', writtenAt: '' };
-    try {
-      const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if (!obj || typeof obj !== 'object') return { revision: '', writer: '', writtenAt: '' };
-      return {
-        revision: String(obj.revision || obj.storageRevision || ''),
-        writer: String(obj.writerTabId || obj.writer || ''),
-        writtenAt: String(obj.writtenAt || '')
-      };
-    } catch (_) {
-      return { revision: '', writer: '', writtenAt: '' };
-    }
-  }
-
-  function writeRevisionMeta(revision) {
-    const meta = { revision: String(revision || ''), writerTabId: TAB_ID, writtenAt: nowIso() };
-    gmSet(activeRevisionStorageKey(), JSON.stringify(meta));
-    return meta;
-  }
-
-  function currentStorageRevisionInfo() {
-    const meta = parseRevisionMeta(gmGet(activeRevisionStorageKey(), ''));
-    if (meta.revision) return meta;
-
-    // Backward-compatible fallback for profiles written by v0.3.13 or earlier.
-    // This reads the large profile only when the small revision key is missing.
-    const stored = parseStoredProfileRaw(gmGet(activeProfileStorageKey(), ''));
-    if (!stored) return { revision: '', writer: '', writtenAt: '' };
-    return { revision: getProfileStorageRevision(stored), writer: getProfileStorageWriter(stored), writtenAt: '' };
-  }
-
-
-  function storageBusinessProjectionKey(profile) {
-    const projection = syncProjection(profile);
-    // The storage key already scopes data to one ChatGPT account. Profile id/label can
-    // be normalized differently while loading, so exclude that identity noise here.
-    projection.id = CURRENT_PROFILE_ID;
-    projection.label = '';
-    return stableStringify(projection);
-  }
-
-  function crossTabRenderProjectionKey(profile) {
-    const p = profile || {};
-    const collapsed = {};
-    Object.entries(p.folders || {}).forEach(([id, folder]) => { collapsed[id] = !!(folder && folder.collapsed); });
-    return stableStringify({
-      business: storageBusinessProjectionKey(p),
-      sectionCollapsed: !!((((p.settings || {}).ui || {}).sectionCollapsed)),
-      collapsed
-    });
-  }
-
-  function applyStoredProfileFromRaw(raw, reason) {
-    const incoming = parseStoredProfileRaw(raw);
-    if (!incoming || !incoming.folders || !incoming.conversations) return false;
-    const rev = getProfileStorageRevision(incoming);
-    if (rev && !isRevisionNewer(rev, lastSeenStorageRevision)) return false;
-
-    const previousBusinessProjection = lastSeenStorageProjection || storageBusinessProjectionKey(state);
-    const previousRenderProjection = crossTabRenderProjectionKey(state);
-    const oldWebdav = state && state.settings && state.settings.webdav ? JSON.parse(JSON.stringify(state.settings.webdav)) : null;
-    const normalized = normalizeProfile(incoming, CURRENT_PROFILE_ID, incoming.label || (state && state.label) || 'ChatGPT account');
-    if (oldWebdav && normalized.settings && normalized.settings.webdav) {
-      // WebDAV credentials are local-only. Do not replace this tab's credentials with
-      // the sanitized username/password from another tab or an exported payload.
-      normalized.settings.webdav.username = oldWebdav.username || normalized.settings.webdav.username || '';
-      normalized.settings.webdav.password = oldWebdav.password || normalized.settings.webdav.password || '';
-    }
-
-    const incomingBusinessProjection = storageBusinessProjectionKey(normalized);
-    const incomingRenderProjection = crossTabRenderProjectionKey(normalized);
-    const businessChanged = incomingBusinessProjection !== previousBusinessProjection;
-    const renderChanged = incomingRenderProjection !== previousRenderProjection;
-
-    state = normalized;
-    mutationBaseline = syncProjection(state);
-    if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
-    dirtySincePush = !!((state.settings.webdav || {}).pendingPush);
-    syncStatus = (state.settings.webdav || {}).conflict ? 'error' : 'off';
-    lastSeenStorageRevision = getProfileStorageRevision(state) || rev || lastSeenStorageRevision;
-    lastSeenStorageProjection = incomingBusinessProjection;
-    localUnsavedChanges = false;
-    if (pendingPersistTimer) {
-      clearTimeout(pendingPersistTimer);
-      pendingPersistTimer = null;
-    }
-    pendingPersistReason = '';
-    pendingPanelMove = null;
-    if (renderChanged) queueRender();
-    if (businessChanged) applySidebarWidth();
-    restartPeriodicBackup();
-    updateSyncStatusIcon();
-    if (reason === 'external-change' && businessChanged) toast('已同步另一个标签页的文件夹更新。');
-    return true;
-  }
-
-  function maybeApplyNewerStoredProfile(reason) {
-    const stored = currentStorageRevisionInfo();
-    if (!stored.revision || stored.writer === TAB_ID || !isRevisionNewer(stored.revision, lastSeenStorageRevision)) return false;
-    const raw = gmGet(activeProfileStorageKey(), '');
-    const incoming = parseStoredProfileRaw(raw);
-    const incomingProjection = incoming && incoming.folders && incoming.conversations ? storageBusinessProjectionKey(incoming) : '';
-    const knownProjection = lastSeenStorageProjection || storageBusinessProjectionKey(state);
-    const businessChanged = !incomingProjection || incomingProjection !== knownProjection;
-    if (localUnsavedChanges || editingFolderId || (modalEl && !modalEl.hidden)) {
-      // Metadata-only writes (for example lastRemoteCheckAt after a WebDAV verification)
-      // must not masquerade as folder changes or block this tab's pending business edit.
-      if (!businessChanged && incomingProjection) {
-        lastSeenStorageRevision = getProfileStorageRevision(incoming) || stored.revision || lastSeenStorageRevision;
-        return true;
-      }
-      if (reason === 'external-change') toast('另一个标签页有文件夹更新；完成当前编辑后会同步。');
-      return false;
-    }
-    return applyStoredProfileFromRaw(raw, reason || 'newer-storage');
-  }
-
-  function flushPendingPersist(webdav) {
-    if (pendingPersistTimer || localUnsavedChanges) persistNow({ webdav: !!webdav });
-  }
-
-  function schedulePersist(reason, opts) {
-    const options = Object.assign({ webdav: true, touch: true }, opts || {});
-    const p = getProfile();
-    if (options.touch) {
-      p.updatedAt = nowIso();
-
-    }
-    localUnsavedChanges = true;
-    pendingPersistReason = reason || pendingPersistReason || 'change';
-    if (options.webdav) {
-      captureSyncOperations(reason || 'change');
-      const w = p.settings.webdav || (p.settings.webdav = {});
-      w.pendingPush = true;
-      dirtySincePush = true;
-      updateSyncStatusIcon();
-    }
-    if (pendingPersistTimer) clearTimeout(pendingPersistTimer);
-    pendingPersistTimer = setTimeout(() => persistNow({ webdav: options.webdav }), 850);
-  }
-
-  function persistNow(opts) {
-    const options = Object.assign({ webdav: true }, opts || {});
-    if (pendingPersistTimer) {
-      clearTimeout(pendingPersistTimer);
-      pendingPersistTimer = null;
-    }
-
-    const stored = currentStorageRevisionInfo();
-    if (stored.revision && stored.writer !== TAB_ID && isRevisionNewer(stored.revision, lastSeenStorageRevision)) {
-      const raw = gmGet(activeProfileStorageKey(), '');
-      const incoming = parseStoredProfileRaw(raw);
-      const incomingProjection = incoming && incoming.folders && incoming.conversations ? storageBusinessProjectionKey(incoming) : '';
-      const knownProjection = lastSeenStorageProjection || storageBusinessProjectionKey(state);
-      if (incomingProjection && incomingProjection === knownProjection) {
-        // Another tab only persisted runtime/storage metadata. Acknowledge its revision
-        // and continue saving this tab's pending business change instead of discarding it.
-        lastSeenStorageRevision = getProfileStorageRevision(incoming) || stored.revision || lastSeenStorageRevision;
-      } else {
-        // Never silently drop a just-completed panel move when another tab wrote
-        // a newer business revision. Rebase that one move onto the fresh profile;
-        // do not overwrite the other tab's unrelated changes with stale state.
-        const move = pendingPanelMove;
-        if (move && panelMoveRebaseAttempts < 3 && incoming && applyStoredProfileFromRaw(raw, 'newer-before-write')) {
-          panelMoveRebaseAttempts++;
-          pendingPanelMove = null;
-          if (applyPanelMoveMutation(move, false)) {
-            schedulePersist('rebase-panel-move');
-            return persistNow({ webdav: true });
-          }
-          toast('其他标签页已更改目标或来源，移动未保存，请重试。');
-          panelMoveRebaseAttempts = 0;
-          return false;
-        }
-        applyStoredProfileFromRaw(raw, 'newer-before-write');
-        localUnsavedChanges = false;
-        updateSyncStatusIcon();
-        if (move) toast('其他标签页连续更新，移动未保存，请重试。');
-        panelMoveRebaseAttempts = 0;
-        return false;
-      }
-    }
-
-    state.version = VERSION;
-    const revision = markStorageRevision(state);
-    lastSeenStorageRevision = revision;
-    lastSeenStorageProjection = storageBusinessProjectionKey(state);
-    gmSet(activeProfileStorageKey(), JSON.stringify(state));
-    writeRevisionMeta(revision);
-    localUnsavedChanges = false;
-    pendingPanelMove = null;
-    panelMoveRebaseAttempts = 0;
-    if (options.webdav) scheduleAutoBackup(pendingPersistReason || 'change');
-    else updateSyncStatusIcon();
-    pendingPersistReason = '';
-    return true;
-  }
-
-  // ---------------------------------------------------------------------------
-  // 3. ChatGPT account detection; used only for WebDAV remote filename isolation
-  // ---------------------------------------------------------------------------
-
-  function getCurrentAccountInfo() {
-    const boot = getBootstrapAccountInfo();
-    if (boot && boot.id) return boot;
-
-    const themed = getThemeAccountInfo();
-    if (themed && themed.id) return themed;
-
-    const buttons = Array.from(document.querySelectorAll('[data-testid="accounts-profile-button"], button[aria-label*="个人资料菜单"], button[aria-label*="profile menu" i]'));
-    if (!buttons.length) return null;
-    let best = null;
-    for (const btn of buttons) {
-      const rawText = cleanText(btn.textContent || '');
-      const aria = cleanAccountLabel(btn.getAttribute('aria-label') || '');
-      const img = btn.querySelector('img') ? String(btn.querySelector('img').src || '').split('?')[0] : '';
-      const labelSource = rawText.length >= 3 ? rawText : aria;
-      if (!labelSource && !img) continue;
-      const label = (labelSource || 'ChatGPT account').slice(0, 100);
-      const score = (labelSource ? labelSource.length : 0) + (img ? 20 : 0) + (rawText ? 10 : 0);
-      if (!best || score > best.score) best = { label, img, score };
-    }
-    if (!best) return null;
-    const raw = location.host + '|' + best.label + '|' + best.img;
-    return { id: 'acct_' + fnv1a(raw), label: best.label, email: '', accountId: '' };
-  }
-
-  function getThemeAccountInfo() {
-    try {
-      const html = document.documentElement;
-      if (!html) return null;
-      const accountId = cleanText(html.getAttribute('data-theme-account-id') || '');
-      const userId = cleanText(html.getAttribute('data-theme-user-id') || '');
-      if (!accountId && !userId) return null;
-      const stable = accountId || userId;
-      const remembered = readLastAccountInfo();
-      const sameRememberedAccount = !!(remembered && cleanText(remembered.accountId || '') === stable);
-      return {
-        id: sameRememberedAccount && remembered.id ? remembered.id : 'acct_' + fnv1a(location.host + '|theme|' + stable),
-        label: sameRememberedAccount ? (remembered.label || 'ChatGPT account') : 'ChatGPT account',
-        email: sameRememberedAccount ? (remembered.email || '') : '',
-        accountId: stable
-      };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function getBootstrapAccountInfo() {
-    try {
-      const script = document.getElementById('client-bootstrap');
-      if (!script || !script.textContent) return null;
-      const data = JSON.parse(script.textContent);
-      const user = (data.session && data.session.user) || data.user || {};
-      const account = (data.session && data.session.account) || data.account || {};
-      const email = cleanText(user.email || '');
-      const name = cleanText(user.name || '');
-      const accountId = cleanText(account.id || '');
-      if (!email && !accountId && !name) return null;
-      const label = email || name || 'ChatGPT account';
-      const idSource = email || name || accountId || 'ChatGPT account';
-      return {
-        id: 'acct_' + fnv1a(location.host + '|' + idSource + '|' + accountId),
-        label,
-        email,
-        accountId
-      };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function cleanAccountLabel(text) {
-    return cleanText(text)
-      .replace(/open.*profile.*menu/ig, '')
-      .replace(/打开.*个人资料.*菜单/ig, '')
-      .replace(/profile menu/ig, '')
-      .replace(/personal profile/ig, '')
-      .replace(/，?\s*打开.*$/ig, '')
-      .replace(/,?\s*open.*$/ig, '')
-      .replace(/\s+/g, ' ')
-      .trim() || '';
-  }
-
-  function readLastAccountInfo() {
-    try {
-      const raw = gmGet(LAST_ACCOUNT_KEY, '');
-      const info = raw ? JSON.parse(raw) : null;
-      return info && info.id ? info : null;
-    } catch (_) { return null; }
-  }
-
-  function rememberAccountInfo(info) {
-    if (!info || !info.id) return;
-    try { gmSet(LAST_ACCOUNT_KEY, JSON.stringify({ id: info.id, label: info.label || 'ChatGPT account', email: info.email || '', accountId: info.accountId || '' })); } catch (_) {}
-  }
-
-  function isStrongAccountInfo(info) {
-    return !!(info && (info.accountId || info.email));
-  }
-
-  function teardownCrossTabStorageSync() {
-    if (storageSyncListenerId != null && typeof GM_removeValueChangeListener === 'function') {
-      try { GM_removeValueChangeListener(storageSyncListenerId); } catch (_) {}
-    }
-    storageSyncListenerId = null;
-    storageSyncListenerKey = '';
-    storageSyncBound = false;
-  }
-
-  function stopWebdavTimers() {
-    if (pendingWebdavTimer) clearTimeout(pendingWebdavTimer);
-    pendingWebdavTimer = null;
-    if (periodicWebdavTimer) clearInterval(periodicWebdavTimer);
-    periodicWebdavTimer = null;
-  }
-
-  function activateAccount(info, initial) {
-    if (!info || !info.id || accountSwitching) return state;
-    accountSwitching = true;
-    try {
-      if (!initial && state) {
-        if (localUnsavedChanges) persistNow({ webdav: false });
-        if (dirtySincePush) {
-          console.warn(APP_NAME, 'account switched with unsynchronized local changes; automatic upload paused');
-          toast('检测到 ChatGPT 账号切换；旧账号存在未同步修改，已保留待上传状态。');
-        }
-      }
-      stopWebdavTimers();
-      teardownCrossTabStorageSync();
-      accountGeneration += 1;
-      currentAccount = info;
-      if (capturedOfficialHistoryRequest?.accountId !== (info.accountId || '')) capturedOfficialHistoryRequest = null;
-      lockedAccountKey = accountStableKey(info);
-      rememberAccountInfo(info);
-      state = loadState(info);
-      state = normalizeProfile(state, lockedAccountKey, info.label || 'ChatGPT account');
-      state.id = lockedAccountKey;
-      state.label = info.label || state.label || 'ChatGPT account';
-      ensureSyncMeta(state);
-      mutationBaseline = syncProjection(state);
-      selectedFolderId = ROOT_ID;
-      dirtySincePush = !!((state.settings.webdav || {}).pendingPush);
-      localUnsavedChanges = false;
-      syncStatus = (state.settings.webdav || {}).conflict ? 'error' : 'off';
-      lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
-      lastSeenStorageProjection = storageBusinessProjectionKey(state);
-      setupCrossTabStorageSync();
-      restartPeriodicBackup();
-      if (!initial) {
-        queueRender();
-        applySidebarWidth();
-        setTimeout(() => checkRemoteUpdate(false, 'account-switch'), 800);
-      }
-      return state;
-    } finally {
-      accountSwitching = false;
-    }
-  }
-
-  function ensureActiveProfile() {
-    const detected = getCurrentAccountInfo();
-    if (!currentAccount) {
-      const first = detected || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account', email: '', accountId: '' };
-      return activateAccount(first, true);
-    }
-    if (detected && isStrongAccountInfo(detected)) {
-      const key = accountStableKey(detected);
-      if (key !== lockedAccountKey) {
-        if (pendingAccountKey === key) pendingAccountHits += 1;
-        else { pendingAccountKey = key; pendingAccountHits = 1; }
-        // Require two observations to avoid a transient hydration identity switching profiles.
-        if (pendingAccountHits >= 2) {
-          pendingAccountKey = '';
-          pendingAccountHits = 0;
-          return activateAccount(detected, false);
-        }
-      } else {
-        pendingAccountKey = '';
-        pendingAccountHits = 0;
-        currentAccount = detected;
-        rememberAccountInfo(detected);
-      }
-    }
-    if (!state) { state = normalizeProfile(loadState(currentAccount), accountStableKey(currentAccount), (currentAccount && currentAccount.label) || 'ChatGPT account'); mutationBaseline = syncProjection(state); lastSeenStorageProjection = storageBusinessProjectionKey(state); }
-    return state;
-  }
-
-  function getProfile() {
-    if (!state) return ensureActiveProfile();
-    return state;
-  }
-
-  // ---------------------------------------------------------------------------
-  // 4. UI styles and icons
-  // ---------------------------------------------------------------------------
-
-  function injectStyle() {
-    if (document.getElementById('cgfm-style')) return;
-    const style = document.createElement('style');
-    style.id = 'cgfm-style';
-    style.textContent = `
-      #cgfm-root { color: var(--text-primary, var(--token-text-primary, inherit)); font-size:14px; margin-bottom:12px; --cgfm-muted: var(--text-secondary, var(--token-text-tertiary, #6b7280)); --cgfm-text: var(--text-primary, var(--token-text-primary, #111827)); --cgfm-hover: var(--sidebar-surface-secondary, rgba(128,128,128,.12)); --cgfm-active: var(--sidebar-surface-secondary, rgba(128,128,128,.18)); --cgfm-danger:#ef4444; contain: layout paint style; }
-      /* The folder surface is owned by body, never by ChatGPT's React sidebar. */
-      #cgfm-root.cgfm-dual-pane { position:fixed; top:0; left:var(--cgfm-panel-left,52px); width:var(--cgfm-panel-width,300px); height:100dvh; margin:0; display:flex; flex-direction:column; overflow:hidden; z-index:60; border-right:1px solid rgba(128,128,128,.20); background:var(--sidebar-surface-primary,var(--main-surface-primary,#fff)); box-shadow:4px 0 16px rgba(0,0,0,.10); transition:opacity .15s ease, visibility .15s ease; }
-      #cgfm-root.cgfm-dual-pane[data-cgfm-visible="false"] { opacity:0; visibility:hidden; pointer-events:none; }
-      #cgfm-root.cgfm-dual-pane[data-cgfm-visible="true"] { opacity:1; visibility:visible; pointer-events:auto; }
-      #cgfm-root.cgfm-dual-pane .cgfm-header { flex:0 0 auto; padding-top:9px; padding-bottom:9px; border-bottom:1px solid rgba(128,128,128,.13); }
-      #cgfm-root.cgfm-dual-pane .cgfm-scroll-content { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; }
-      #cgfm-root.cgfm-dual-pane .cgfm-tree { min-height:0; flex:none; overflow:visible; }
-      #cgfm-root .cgfm-recent-section { display:block; min-height:0; border-top:1px solid rgba(128,128,128,.20); }
-      #cgfm-root .cgfm-recent-heading { display:flex; justify-content:space-between; align-items:center; padding:9px 12px 7px 16px; font-size:14px; line-height:20px; font-weight:600; flex:0 0 auto; }
-      #cgfm-root .cgfm-recent-list { overflow:visible; min-height:0; padding:0 6px 8px; }
-      #cgfm-root .cgfm-recent-chat { border-radius:7px; display:flex; align-items:center; gap:8px; height:36px; min-height:36px; padding:5px 9px; cursor:grab; }
-      #cgfm-root .cgfm-recent-chat:hover { background:var(--cgfm-hover); }
-      #cgfm-root .cgfm-recent-chat a { color:inherit; text-decoration:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; font-size:13px; }
-      #cgfm-root .cgfm-chat-rename { width:23px; height:23px; border:0; border-radius:6px; background:transparent; color:var(--cgfm-muted); flex:none; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; padding:3px; opacity:0; pointer-events:none; }
-      #cgfm-root .cgfm-chat-row:hover .cgfm-chat-rename,#cgfm-root .cgfm-recent-chat:hover .cgfm-chat-rename,#cgfm-root .cgfm-chat-rename:focus-visible { opacity:1; pointer-events:auto; }
-      #cgfm-root .cgfm-chat-rename:hover { background:var(--cgfm-hover); color:var(--cgfm-text); }
-      #cgfm-root .cgfm-chat-rename svg { width:15px; height:15px; }
-      #cgfm-root .cgfm-chat-inline-edit { display:flex; flex:1; min-width:0; align-items:center; gap:3px; }
-      #cgfm-root .cgfm-chat-edit { flex:1; width:1px; min-width:0; border:1px solid #3A83F7; border-radius:6px; height:26px; padding:2px 6px; background:var(--main-surface-primary,#fff); color:var(--cgfm-text); font:inherit; }
-      #cgfm-root .cgfm-chat-edit-action { width:23px; height:23px; padding:3px; display:inline-flex; justify-content:center; align-items:center; flex:none; border:0; border-radius:5px; background:transparent; color:var(--cgfm-text); cursor:pointer; }
-      #cgfm-root .cgfm-chat-edit-action:hover { background:var(--cgfm-hover); }
-      #cgfm-root .cgfm-chat-edit-action svg { width:15px; height:15px; }
-      #cgfm-root .cgfm-chat-edit-action:disabled { opacity:.45; cursor:default; }
-      #cgfm-root .cgfm-recent-chat svg { width:15px; height:15px; flex:none; }
-      #cgfm-root .cgfm-recent-empty { color:var(--cgfm-muted); padding:8px 12px; font-size:12px; line-height:1.5; }
-      #cgfm-rail-entry { display:flex; align-items:center; justify-content:center; width:100%; flex:none; }
-      #cgfm-rail-button { display:flex; align-items:center; justify-content:center; width:36px; height:36px; padding:8px; border:0; border-radius:10px; background:transparent; color:var(--text-secondary,var(--token-text-tertiary,currentColor)); cursor:pointer; }
-      #cgfm-rail-button:hover,#cgfm-rail-button[data-cgfm-open="true"] { background:var(--sidebar-surface-secondary,rgba(128,128,128,.14)); color:var(--text-primary,currentColor); }
-      #cgfm-rail-button svg { width:20px; height:20px; fill:rgba(58,131,247,.20); stroke:#3A83F7; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
-      #cgfm-rail-button:hover svg,#cgfm-rail-button[data-cgfm-open="true"] svg { stroke:#3A83F7; }
-      @media (max-width:750px) { #cgfm-root.cgfm-dual-pane { width:min(300px,calc(100vw - var(--cgfm-panel-left,52px) - 8px)); } }
-      /* Native peek may close when pointer enters the sibling pane. Keep its visual
-         column exposed while the pointer is still inside the two-column region.
-         This does not rewrite React component state or override inert. */
-      #cgfm-root * { box-sizing:border-box; }
-      #cgfm-root button { font:inherit; }
-      #cgfm-root .cgfm-header { display:flex; align-items:center; min-height:32px; padding:7px 10px 4px 16px; gap:6px; color:var(--cgfm-text); }
-      #cgfm-root .cgfm-header.cgfm-root-drop { outline:1.5px solid #3b82f6; background:rgba(59,130,246,.10); border-radius:10px; }
-      #cgfm-root .cgfm-title { flex:1; display:flex; align-items:center; gap:0; border:0; background:transparent; color:inherit; font-weight:600; font-size:14px; padding:0; cursor:pointer; min-width:0; }
-      #cgfm-root .cgfm-title-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      #cgfm-root .cgfm-actions { display:flex; align-items:center; gap:4px; }
-      #cgfm-root .cgfm-icon { border:0; background:transparent; color:var(--cgfm-muted); cursor:pointer; border-radius:8px; width:28px; height:28px; padding:0; display:inline-flex; align-items:center; justify-content:center; opacity:1; }
-      #cgfm-root .cgfm-icon:hover { background:var(--cgfm-hover); color:var(--cgfm-text); }
-      #cgfm-root .cgfm-icon svg { width:18px; height:18px; stroke-width:2; display:block; }
-      #cgfm-root .cgfm-sync-status { position:relative; }
-      #cgfm-root .cgfm-sync-status::before { content:''; width:17px; height:17px; border-radius:999px; border:2px solid currentColor; display:block; }
-      #cgfm-root .cgfm-sync-off { color:#9ca3af; opacity:.9; }
-      #cgfm-root .cgfm-sync-idle { color:#16a34a; }
-      #cgfm-root .cgfm-sync-dirty { color:#f59e0b; }
-      #cgfm-root .cgfm-sync-error { color:#ef4444; }
-      #cgfm-root .cgfm-sync-syncing { color:#2563eb; }
-      #cgfm-root .cgfm-sync-syncing::before { border-top-color:transparent; animation:cgfm-spin .75s linear infinite; }
-      @keyframes cgfm-spin { to { transform:rotate(360deg); } }
-      #cgfm-root .cgfm-tree { height:auto; max-height:none; overflow:visible; padding:2px 4px 6px 0; }
-      #cgfm-root .cgfm-folder-children[hidden] { display:none !important; }
-      #cgfm-root .cgfm-empty { color:var(--cgfm-muted); padding:7px 12px 11px 16px; font-size:12px; line-height:1.45; }
-      #cgfm-root .cgfm-folder-row, #cgfm-root .cgfm-chat-row { display:flex; align-items:center; min-height:32px; gap:4px; padding:2px 6px 2px calc(8px + var(--depth, 0) * 20px); border-radius:9px; margin:1px 8px; position:relative; color:var(--cgfm-text); }
-      #cgfm-root .cgfm-folder-row:hover, #cgfm-root .cgfm-chat-row:hover { background:var(--cgfm-hover); }
-      #cgfm-root .cgfm-folder-row { cursor:grab; }
-      #cgfm-root .cgfm-pointer-source { opacity:.48; }
-      #cgfm-root .cgfm-folder-row, #cgfm-root .cgfm-chat-row, #cgfm-root .cgfm-recent-chat { touch-action:pan-y; }
-      html.cgfm-pointer-select-lock, html.cgfm-pointer-select-lock * { user-select:none !important; -webkit-user-select:none !important; }
-      .cgfm-pointer-preview { position:fixed;left:0;top:0;z-index:2147483647;pointer-events:none;max-width:270px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:8px 12px;border-radius:9px;background:var(--main-surface-primary,#fff);color:var(--text-primary,#111827);border:1px solid rgba(128,128,128,.35);box-shadow:0 9px 24px rgba(0,0,0,.22);font:13px/18px system-ui,sans-serif;will-change:transform; }
-      #cgfm-root .cgfm-folder-row.cgfm-selected { background:var(--cgfm-active); }
-      #cgfm-root .cgfm-caret { width:18px; min-width:18px; height:22px; border:0; padding:0; background:transparent; display:flex; align-items:center; justify-content:center; color:var(--cgfm-muted); border-radius:6px; cursor:pointer; }
-      #cgfm-root .cgfm-caret:hover { background:rgba(128,128,128,.12); color:var(--cgfm-text); }
-      #cgfm-root .cgfm-caret svg { width:17px; height:17px; stroke-width:2; transition:transform .12s ease; }
-      #cgfm-root .cgfm-caret.cgfm-open svg { transform:rotate(90deg); }
-      #cgfm-root .cgfm-spacer { width:18px; min-width:18px; }
-      #cgfm-root .cgfm-folder-icon { width:20px; min-width:20px; height:20px; display:flex; align-items:center; justify-content:center; color:var(--folder-color); }
-      #cgfm-root .cgfm-folder-icon svg { width:20px; height:20px; stroke-width:2; }
-      #cgfm-root .cgfm-chat-icon { width:16px; min-width:16px; height:20px; display:flex; align-items:center; justify-content:center; color:var(--cgfm-muted); margin-right:1px; }
-      #cgfm-root .cgfm-chat-icon svg { width:16px; height:16px; stroke-width:1.9; }
-      #cgfm-root .cgfm-folder-name, #cgfm-root .cgfm-chat-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; line-height:20px; }
-      #cgfm-root .cgfm-folder-name { cursor:pointer; font-weight:500; }
-      #cgfm-root .cgfm-chat-title { color:inherit; text-decoration:none; }
-      #cgfm-root .cgfm-folder-more { flex:0 0 auto; color:var(--cgfm-muted); }
-      #cgfm-root .cgfm-row-actions { display:none; align-items:center; gap:1px; }
-      #cgfm-root .cgfm-chat-row:hover .cgfm-row-actions { display:flex; }
-      #cgfm-root .cgfm-row-actions .cgfm-icon { width:24px; height:24px; }
-      #cgfm-root .cgfm-row-actions .cgfm-icon svg { width:16px; height:16px; }
-      #cgfm-root .cgfm-folder-name-input { flex:1; min-width:0; height:26px; border-radius:7px; border:1px solid rgba(128,128,128,.35); background:var(--main-surface-primary,#fff); color:var(--cgfm-text); padding:0 7px; font:inherit; }
-      #cgfm-root .cgfm-folder-row.cgfm-drop-inside { outline:1.5px solid #3b82f6; background:rgba(59,130,246,.12); }
-      .cgfm-native-chat-drag-preview { position:fixed; left:0; top:0; z-index:2147483647; pointer-events:none; display:flex; align-items:center; gap:8px; min-width:160px; max-width:300px; height:36px; padding:0 11px; border-radius:10px; border:1px solid rgba(128,128,128,.28); background:var(--main-surface-primary,#fff); color:var(--text-primary,#111827); box-shadow:0 8px 24px rgba(0,0,0,.18); opacity:.92; font:13px/1.2 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; will-change:transform; transform:translate3d(-10000px,-10000px,0); }
-      .cgfm-native-chat-drag-preview .cgfm-native-chat-drag-preview-icon { width:16px; min-width:16px; height:16px; display:flex; align-items:center; justify-content:center; opacity:.72; }
-      .cgfm-native-chat-drag-preview .cgfm-native-chat-drag-preview-icon svg { width:16px; height:16px; stroke-width:1.9; }
-      .cgfm-native-chat-drag-preview .cgfm-native-chat-drag-preview-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .cgfm-menu, .cgfm-color-popover { position:fixed; z-index:2147483647; min-width:172px; padding:6px; border-radius:12px; background:var(--main-surface-primary,#fff); color:var(--text-primary,#111827); border:1px solid rgba(128,128,128,.25); box-shadow:0 12px 34px rgba(0,0,0,.22); font:13px/1.35 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; }
-      .cgfm-menu-item { width:100%; display:flex; align-items:center; gap:9px; height:32px; border:0; background:transparent; color:inherit; border-radius:8px; padding:0 9px; cursor:pointer; text-align:left; }
-      .cgfm-menu-item:hover { background:rgba(128,128,128,.12); }
-      .cgfm-menu-item svg { width:16px; height:16px; stroke-width:2; }
-      .cgfm-menu-item.cgfm-danger { color:var(--cgfm-danger,#ef4444); }
-      .cgfm-color-popover { min-width:224px; padding:10px; display:grid; grid-template-columns:repeat(4,44px); gap:10px; }
-      .cgfm-color-swatch { width:44px; height:44px; border:0; border-radius:10px; cursor:pointer; box-shadow:inset 0 0 0 1px rgba(0,0,0,.08); }
-      .cgfm-color-custom { display:flex; align-items:center; justify-content:center; background:linear-gradient(135deg,#fff,#eee); color:#111827; }
-      .cgfm-color-custom svg { width:20px; height:20px; }
-      .cgfm-confirm { min-width:220px; padding:10px; }
-      .cgfm-confirm p { margin:0 0 10px; line-height:1.45; }
-      .cgfm-confirm-actions { display:flex; justify-content:flex-end; gap:8px; }
-      .cgfm-confirm-actions button { border:0; border-radius:8px; height:30px; padding:0 10px; cursor:pointer; }
-      .cgfm-confirm-actions .cgfm-danger-btn { background:#ef4444; color:#fff; }
-      .cgfm-modal-backdrop { position:fixed; inset:0; z-index:2147483646; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; }
-      .cgfm-modal-backdrop[hidden] { display:none !important; }
-      .cgfm-modal { width:min(620px,calc(100vw - 32px)); max-height:calc(100vh - 48px); overflow:auto; border-radius:14px; padding:18px; background:var(--main-surface-primary,#fff); color:var(--text-primary,#111827); box-shadow:0 18px 50px rgba(0,0,0,.28); font:14px/1.4 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; }
-      .cgfm-modal h2 { font-size:16px; margin:0 0 12px; }
-      .cgfm-modal label { display:block; margin:10px 0 4px; color:var(--text-secondary,#666); font-size:12px; }
-      .cgfm-modal input[type="text"], .cgfm-modal input[type="password"], .cgfm-modal input[type="number"] { width:100%; height:34px; border-radius:8px; border:1px solid rgba(128,128,128,.32); background:var(--main-surface-primary,#fff); color:inherit; padding:0 9px; }
-      .cgfm-modal-row { display:flex; align-items:center; gap:8px; margin:8px 0; }
-      .cgfm-sidebar-width-grid { display:grid; grid-template-columns:1fr auto; align-items:center; gap:10px; }
-      .cgfm-sidebar-width-badge { min-width:52px; text-align:right; color:var(--text-secondary,#666); font-variant-numeric:tabular-nums; }
-      .cgfm-modal-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; margin-top:16px; }
-      .cgfm-modal-actions button { height:34px; border-radius:9px; border:1px solid rgba(128,128,128,.25); padding:0 12px; cursor:pointer; background:transparent; color:inherit; }
-      .cgfm-modal-actions .cgfm-primary-btn { background:#2563eb; border-color:#2563eb; color:#fff; }
-      .cgfm-modal-actions .cgfm-cancel-btn { background:rgba(128,128,128,.12); }
-      .cgfm-native-menu-item { user-select:none; }
-      .cgfm-native-menu-item[data-cgfm-native-add] { cursor:default; width:100%; }
-      .cgfm-native-menu-item[data-cgfm-native-add] > .cgfm-native-menu-leading { min-width:0; flex:1 1 auto; }
-      .cgfm-native-menu-item .cgfm-native-menu-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-      .cgfm-native-menu-item[data-cgfm-native-add] > svg { width:16px !important; height:16px !important; flex:0 0 16px !important; margin-inline-start:auto !important; transform:translateX(-12px) !important; }
-      .cgfm-native-folder-menu { position:fixed; z-index:2147483647; min-width:210px; max-width:320px; max-height:min(70vh,520px); overflow:auto; padding:6px; border-radius:14px; background:var(--main-surface-primary,#fff); color:var(--text-primary,#111827); border:1px solid rgba(128,128,128,.22); box-shadow:0 12px 34px rgba(0,0,0,.22); font:14px/1.35 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif; }
-      .cgfm-native-folder-item { width:100%; display:flex; align-items:center; gap:8px; min-height:34px; border:0; border-radius:9px; background:transparent; color:inherit; padding:0 8px; cursor:pointer; text-align:left; }
-      .cgfm-native-folder-item:hover, .cgfm-native-folder-item.cgfm-open { background:rgba(128,128,128,.12); }
-      .cgfm-native-folder-item svg { width:18px; height:18px; stroke-width:2; flex:0 0 auto; }
-      .cgfm-native-folder-item .cgfm-native-folder-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .cgfm-native-folder-item .cgfm-native-folder-arrow { width:14px; height:14px; opacity:.72; }
-      .cgfm-native-folder-empty { color:var(--text-secondary,#777); padding:8px 10px; white-space:nowrap; }
-      .cgfm-toast { position:fixed; left:50%; bottom:28px; transform:translateX(-50%); z-index:2147483647; background:rgba(17,24,39,.94); color:white; padding:8px 12px; border-radius:999px; font:13px/1.3 system-ui,sans-serif; box-shadow:0 10px 24px rgba(0,0,0,.25); max-width:70vw; }
-    `;
-    document.head.appendChild(style);
-  }
-
-  function icon(name) {
-    const icons = {
-      chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4.5 6.5A4.5 4.5 0 0 1 9 2h6a4.5 4.5 0 0 1 4.5 4.5v4A4.5 4.5 0 0 1 15 15H9l-4.5 4v-4.8A4.5 4.5 0 0 1 2 10.5v-4Z" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>',
-      plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>',
-      settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.05.05a2 2 0 0 1-2.83 2.83l-.05-.05A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 0 1-4 0v-.07A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.88.34l-.05.05a2 2 0 0 1-2.83-2.83l.05-.05A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 0 1 0-4h.07A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.05-.05a2 2 0 0 1 2.83-2.83l.05.05A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 0 1 4 0v.07A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.05-.05a2 2 0 0 1 2.83 2.83l-.05.05A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 0 1 0 4h-.07A1.7 1.7 0 0 0 19.4 15Z" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 15V3m0 0 4 4m-4-4-4 4M5 19h14" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      rename: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="m14 7 3 3" stroke-linecap="round"/></svg>',
-      palette: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3a9 9 0 0 0 0 18h1.2a1.8 1.8 0 0 0 1.3-3 1.8 1.8 0 0 1 1.3-3H17a4 4 0 0 0 4-4 8 8 0 0 0-9-8Z"/><circle cx="7.5" cy="10" r="1"/><circle cx="10.5" cy="7.5" r="1"/><circle cx="14" cy="7.5" r="1"/><circle cx="16.5" cy="10" r="1"/></svg>',
-      trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 12a8 8 0 0 1-14.9 4M4 12A8 8 0 0 1 18.9 8M19 4v4h-4M5 20v-4h4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 4 4L19 6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-      x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>',
-      custom: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>'
-    };
-    return icons[name] || '';
-  }
-
-  // ---------------------------------------------------------------------------
-  // 5. Mounting and folder tree rendering
-  // ---------------------------------------------------------------------------
-
-  function findNativeChatRow(scope) {
-    const searchRoot = scope && scope.querySelector ? scope : document;
-    const row = searchRoot.querySelector(NATIVE_CHAT_ROW_SELECTOR);
-    return row && !(rootEl && rootEl.contains(row)) ? row : null;
-  }
-
-  function getConversationIdFromRow(row) {
-    if (!(row instanceof Element)) return '';
-    const key = cleanText(row.getAttribute('data-sidebar-chatgpt-conversation-key') || '');
-    return key.startsWith(SIDEBAR_CONVERSATION_PREFIX)
-      ? key.slice(SIDEBAR_CONVERSATION_PREFIX.length)
-      : '';
-  }
-
-  function getNativeChatPrimaryAction(row) {
-    if (!(row instanceof Element)) return null;
-    return row.querySelector('a[data-interactive-row-link][href*="/c/"][aria-label]')
-      || row.querySelector('[role="button"][aria-label]:not([aria-haspopup="menu"])')
-      || row.querySelector('a[href*="/c/"][aria-label]')
-      || null;
-  }
-
-  function extractTitleFromRow(row) {
-    if (!(row instanceof Element)) return '';
-    const action = getNativeChatPrimaryAction(row);
-    const aria = cleanConversationTitle(action?.getAttribute('aria-label') || '');
-    if (aria) return aria;
-    const clone = row.cloneNode(true);
-    clone.querySelectorAll('button, svg, [aria-hidden="true"]').forEach(node => node.remove());
-    return cleanConversationTitle(clone.textContent || '');
-  }
-
-  function extractChatFromRow(row) {
-    const id = getConversationIdFromRow(row);
-    if (!id) return null;
-    return {
-      kind: 'chat',
-      id,
-      title: extractTitleFromRow(row) || 'Untitled chat',
-      url: '/c/' + id
-    };
-  }
-
-  function findNativeConversationRowById(id) {
-    if (!id) return null;
-    const key = SIDEBAR_CONVERSATION_PREFIX + id;
-    try {
-      const rows = document.querySelectorAll(NATIVE_CHAT_ROW_SELECTOR);
-      for (const row of rows) {
-        if (rootEl && rootEl.contains(row)) continue;
-        if (row.getAttribute('data-sidebar-chatgpt-conversation-key') === key) return row;
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  function findNativeChatLink(scope) {
-    const searchRoot = scope && scope.querySelector ? scope : document;
-    const selector = 'a[href^="/c/"]:not(.cgfm-chat-title), a[href*="/c/"]:not(.cgfm-chat-title)';
-    const link = searchRoot.querySelector(selector);
-    return link && !(rootEl && rootEl.contains(link)) ? link : null;
-  }
-
-
-
-
-
-  // The persistent pane is deliberately attached to body, outside React's sidebar.
-  // Position/state updates never rebuild its tree or fetch remote data.
-  function mount() {
-    ensureActiveProfile();
-    if (!document.body || !document.head) return false;
-    injectStyle();
-    applySidebarWidth();
-    if (!rootEl) {
-      document.querySelectorAll('#cgfm-root').forEach(el => el.remove());
-      rootEl = document.createElement('div');
-      rootEl.id = 'cgfm-root';
-      rootEl.classList.add('cgfm-dual-pane');
-      rootEl.setAttribute('data-cgfm-visible', 'false');
-      rootEl.setAttribute('data-cgfm-version', VERSION);
-      bindRootEvents(rootEl);
-      rootEl.addEventListener('pointerenter', event => {
-        lastPanelPointer = { x: event.clientX, y: event.clientY };
-        folderPointerInPane = true;
-        clearTimeout(folderCloseTimer);
-        syncSidebarVisibility();
-      });
-      rootEl.addEventListener('pointermove', event => {
-        lastPanelPointer = { x: event.clientX, y: event.clientY };
-      }, { passive: true });
-      rootEl.addEventListener('pointerleave', event => {
-        lastPanelPointer = { x: event.clientX, y: event.clientY };
-        folderPointerInPane = false;
-        scheduleFolderClose();
-      });
-    }
-    if (rootEl.parentElement !== document.body) document.body.appendChild(rootEl);
-    if (!mounted || !rootEl.firstElementChild) render();
-    mounted = true;
-    ensureFolderRailButton();
-    watchRecentListChanges();
-    syncSidebarVisibility();
-    setupNativeMenuHook();
-    return true;
-  }
-
-  function queueRender() {
-    if (hasActiveChatEditor()) { renderDeferredDuringChatEdit = true; return; }
-    if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
-    if (renderQueued) return;
-    renderQueued = true;
-    requestAnimationFrame(() => {
-      renderQueued = false;
-      if (hasActiveChatEditor()) { renderDeferredDuringChatEdit = true; return; }
-      if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
-      if (!rootEl || !document.body.contains(rootEl)) mount();
-      else render();
-    });
-  }
-
-  function render() {
-    if (!rootEl) return;
-    if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
-    if (hasActiveChatEditor()) { renderDeferredDuringChatEdit = true; return; }
-    const p = getProfile();
-    const collapsed = !!p.settings.ui.sectionCollapsed;
-    const oldScrollTop = rootEl.querySelector('[data-cgfm-scroll]')?.scrollTop || 0;
-    rootEl.innerHTML = `
-      <div class="cgfm-header" data-root-drop="1">
-        <button class="cgfm-title" data-action="toggle-section" title="折叠/展开文件夹">
-          <span class="cgfm-title-text">文件夹</span>
-        </button>
-        <div class="cgfm-actions">
-          <button class="cgfm-icon" data-action="export-json" title="导出 JSON">${icon('download')}</button>
-          <button class="cgfm-icon" data-action="import-json" title="导入 JSON">${icon('upload')}</button>
-          <button class="cgfm-icon cgfm-sync-status cgfm-sync-${computeSyncStatus()}" data-sync-status="1" data-action="sync-status" title="${escapeAttr(syncStatusTitle())}" aria-label="${escapeAttr(syncStatusTitle())}"></button>
-          <button class="cgfm-icon" data-action="settings" title="设置">${icon('settings')}</button>
-          <button class="cgfm-icon" data-action="new-folder" title="新建顶层文件夹">${icon('plus')}</button>
-        </div>
-      </div>
-      <div class="cgfm-scroll-content" data-cgfm-scroll="1">
-        ${collapsed ? '' : `<div class="cgfm-tree" data-folder-tree="1">${renderTree(p)}</div>`}
-        <section class="cgfm-recent-section" aria-label="最近对话">
-          <div class="cgfm-recent-heading"><span>最近对话</span><span style="color:var(--cgfm-muted);font-weight:400">已发现</span></div>
-          <div class="cgfm-recent-list" data-cgfm-recent-list="1">${renderRecentChats()}</div>
-        </section>
-      </div>
-    `;
-    treeEl = rootEl.querySelector('[data-folder-tree]');
-    const scroll = rootEl.querySelector('[data-cgfm-scroll]');
-    if (scroll) scroll.scrollTop = oldScrollTop;
-    focusInlineFolderEditor();
-  }
-
-  function renderTree(p) {
-    const root = p.folders[ROOT_ID];
-    const parts = [];
-    for (const fid of root.childFolderIds || []) parts.push(renderFolder(p, fid, 0));
-    for (const cid of root.chatIds || []) parts.push(renderChat(p, cid, ROOT_ID, 0));
-    return parts.length ? parts.join('') : '<div class="cgfm-empty">点击右上角 + 新建文件夹。直接把 ChatGPT 最近对话拖到文件夹。</div>';
-  }
-
-  function renderFolder(p, fid, depth) {
-    const f = p.folders[fid];
-    if (!f) return '';
-    const selected = selectedFolderId === fid ? ' cgfm-selected' : '';
-    const open = !f.collapsed;
-    const isEditing = editingFolderId === fid;
-    const nameHtml = isEditing
-      ? `<input class="cgfm-folder-name-input" data-folder-edit-id="${escapeAttr(fid)}" value="${escapeAttr(f.name)}" spellcheck="false" autocomplete="off">`
-      : `<span class="cgfm-folder-name" data-action="select-folder" data-folder-id="${escapeAttr(fid)}" title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>`;
-    const childHtml = [
-      ...(f.childFolderIds || []).map(child => renderFolder(p, child, depth + 1)),
-      ...(f.chatIds || []).map(cid => renderChat(p, cid, fid, depth))
-    ].join('');
-    return `
-      <div class="cgfm-folder-block" data-folder-block="${escapeAttr(fid)}">
-        <div class="cgfm-folder-row${selected}" data-folder-id="${escapeAttr(fid)}" data-depth="${depth}"  style="--depth:${depth};--folder-color:${escapeAttr(normalizeColor(f.color))}">
-          <button class="cgfm-caret ${open ? 'cgfm-open' : ''}" data-action="toggle-folder" data-folder-id="${escapeAttr(fid)}" title="折叠/展开">${icon('chevron')}</button>
-          <span class="cgfm-folder-icon">${icon('folder')}</span>
-          ${nameHtml}
-          <button class="cgfm-icon cgfm-folder-more" data-action="folder-menu" data-folder-id="${escapeAttr(fid)}" title="文件夹菜单">${icon('more')}</button>
-        </div>
-        <div class="cgfm-folder-children" data-folder-children="${escapeAttr(fid)}" ${open ? '' : 'hidden'}>${childHtml}</div>
-      </div>`;
-  }
-
-  function renderChat(p, cid, folderId, depth) {
-    const c = p.conversations[cid];
-    if (!c) return '';
-    const title = guardConversationTitle(cid, c.title || 'Untitled chat');
-    const url = normalizeStoredUrl(c.url || ('/c/' + cid));
-    return `
-      <div class="cgfm-chat-row" data-chat-id="${escapeAttr(cid)}" data-folder-id="${escapeAttr(folderId)}" data-depth="${depth}" style="--depth:${depth}">
-        <span class="cgfm-spacer"></span>
-        <span class="cgfm-chat-icon">${icon('chat')}</span>
-        <a class="cgfm-chat-title" draggable="false" href="${escapeAttr(url)}" title="${escapeAttr(title)}">${escapeHtml(title)}</a>
-        <button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(cid)}" title="重命名对话">${icon('rename')}</button>
-        <span class="cgfm-row-actions">
-          <button class="cgfm-icon" data-action="refresh-chat-title" data-chat-id="${escapeAttr(cid)}" title="刷新标题">${icon('refresh')}</button>
-          <button class="cgfm-icon" data-action="remove-chat" data-chat-id="${escapeAttr(cid)}" title="从管理器移除">${icon('x')}</button>
-        </span>
-      </div>`;
-  }
-
-  // ---------------------------------------------------------------------------
-  // 6. Folder tree actions and inline menus
-  // ---------------------------------------------------------------------------
-
-  function bindRootEvents(el) {
-    el.addEventListener('click', onRootClick);
-    el.addEventListener('pointerdown', onPanelPointerDown);
-    // Disable accidental browser-native image/link drags inside our own rows.
-    el.addEventListener('dragstart', event => {
-      if (event.target?.closest?.('.cgfm-folder-row,.cgfm-chat-row,.cgfm-recent-chat')) event.preventDefault();
-    });
-    el.addEventListener('keydown', onRootKeydown, true);
-    el.addEventListener('focusout', onRootFocusOut, true);
-    el.addEventListener('contextmenu', onChatRenameContextMenu);
-  }
-
-  function onRootClick(event) {
-    const chatLink = event.target.closest && event.target.closest('a.cgfm-chat-title[href]');
-    if (chatLink && rootEl.contains(chatLink)) {
-      event.preventDefault();
-      navigateToConversation(chatLink.getAttribute('href') || chatLink.href || '');
-      return;
-    }
-    const button = event.target.closest('[data-action]');
-    if (!button || !rootEl.contains(button)) return;
-    const action = button.getAttribute('data-action');
-    const fid = button.getAttribute('data-folder-id');
-    const cid = button.getAttribute('data-chat-id');
-    if (action !== 'select-folder') event.preventDefault();
-    if (action === 'toggle-section') toggleSection();
-    else if (action === 'new-folder') createFolder(ROOT_ID);
-    else if (action === 'export-json') exportJson();
-    else if (action === 'import-json') importJson();
-    else if (action === 'settings') showSettings();
-    else if (action === 'sync-status') webdavSync(true, 'status-button');
-    else if (action === 'toggle-folder') toggleFolder(fid);
-    else if (action === 'select-folder') selectFolder(fid);
-    else if (action === 'folder-menu') showFolderMenu(fid, button);
-    else if (action === 'rename-chat') beginChatRename(cid, button.closest('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]'));
-    else if (action === 'refresh-chat-title') refreshChatTitle(cid);
-    else if (action === 'remove-chat') removeChat(cid);
-  }
-
-  function toggleSection() {
-    const p = getProfile();
-    p.settings.ui.sectionCollapsed = !p.settings.ui.sectionCollapsed;
-    queueRender();
-    schedulePersist('toggle-section', { webdav: false });
-  }
-
-  function selectFolder(fid) {
-    const p = getProfile();
-    if (!p.folders[fid]) return;
-    selectedFolderId = selectedFolderId === fid ? ROOT_ID : fid;
-    queueRender();
-  }
-
-  function toggleFolder(fid) {
-    const p = getProfile();
-    const f = p.folders[fid];
-    if (!f) return;
-    f.collapsed = !f.collapsed;
-    updateFolderCollapseDom(fid, f.collapsed);
-    schedulePersist('toggle-folder', { webdav: false, touch: false });
-  }
-
-  function updateFolderCollapseDom(fid, collapsed) {
-    if (!rootEl) return;
-    const row = rootEl.querySelector('.cgfm-folder-row[data-folder-id="' + cssEscape(fid) + '"]');
-    const children = rootEl.querySelector('.cgfm-folder-children[data-folder-children="' + cssEscape(fid) + '"]');
-    const caret = row && row.querySelector('.cgfm-caret');
-    if (children) children.hidden = !!collapsed;
-    if (caret) caret.classList.toggle('cgfm-open', !collapsed);
-  }
-
-  function createFolder(parentId) {
-    const p = getProfile();
-    const parent = p.folders[parentId] || p.folders[ROOT_ID];
-    const id = uid('fld');
-    p.folders[id] = { id, name: '新建文件夹', parentId: parent.id, childFolderIds: [], chatIds: [], color: DEFAULT_FOLDER_COLOR, collapsed: false, createdAt: nowIso(), updatedAt: nowIso() };
-    parent.childFolderIds.push(id);
-    parent.collapsed = false;
-    sortFolderChildren(p, parent.id);
-    editingFolderId = id;
-    editingNewFolderId = id;
-    editingOriginalName = '新建文件夹';
-    selectedFolderId = id;
-    queueRender();
-    schedulePersist('new-folder');
-  }
-
-  function beginRename(fid) {
-    const p = getProfile();
-    const f = p.folders[fid];
-    if (!f || fid === ROOT_ID) return;
-    editingFolderId = fid;
-    editingNewFolderId = '';
-    editingOriginalName = f.name;
-    queueRender();
-  }
-
-  function onRootKeydown(event) {
-    const input = event.target.closest('[data-folder-edit-id]');
-    if (!input || !rootEl.contains(input)) return;
-    if (event.key === 'Enter') { event.preventDefault(); commitFolderEdit(input, false); }
-    else if (event.key === 'Escape') { event.preventDefault(); commitFolderEdit(input, true); }
-  }
-
-  function onRootFocusOut(event) {
-    const input = event.target.closest('[data-folder-edit-id]');
-    if (!input || !rootEl.contains(input)) return;
-    setTimeout(() => {
-      if (editingFolderId === input.getAttribute('data-folder-edit-id')) commitFolderEdit(input, false);
-    }, 0);
-  }
-
-  function focusInlineFolderEditor() {
-    if (!editingFolderId || !rootEl) return;
-    const input = rootEl.querySelector('[data-folder-edit-id="' + cssEscape(editingFolderId) + '"]');
-    if (!input) return;
-    requestAnimationFrame(() => { try { input.focus(); input.select(); } catch (_) {} });
-  }
-
-  function commitFolderEdit(input, cancel) {
-    const p = getProfile();
-    const fid = input ? input.getAttribute('data-folder-edit-id') : editingFolderId;
-    if (!fid || editingFolderId !== fid) return;
-    const f = p.folders[fid];
-    const isNew = editingNewFolderId === fid;
-    if (!f) { clearEdit(); return; }
-    const value = cleanText(input ? input.value : '');
-    if (cancel) {
-      if (isNew) deleteFolderImmediate(fid);
-      else f.name = editingOriginalName || f.name;
-      clearEdit();
-      sortFolderChildren(p, f.parentId || ROOT_ID);
-      queueRender();
-      schedulePersist('cancel-edit');
-      return;
-    }
-    if (!value) {
-      if (isNew) deleteFolderImmediate(fid);
-      else f.name = editingOriginalName || '新建文件夹';
-    } else {
-      f.name = value;
-      f.updatedAt = nowIso();
-      sortFolderChildren(p, f.parentId || ROOT_ID);
-    }
-    clearEdit();
-    queueRender();
-    schedulePersist('rename-folder');
-  }
-
-  function clearEdit() {
-    editingFolderId = '';
-    editingNewFolderId = '';
-    editingOriginalName = '';
-  }
-
-  function showFolderMenu(fid, anchor) {
-    const p = getProfile();
-    const f = p.folders[fid];
-    if (!f) return;
-    closeMenu();
-    const rect = anchor.getBoundingClientRect();
-    menuEl = document.createElement('div');
-    menuEl.className = 'cgfm-menu';
-    menuEl.style.left = Math.round(rect.left) + 'px';
-    menuEl.style.top = Math.round(rect.bottom + 4) + 'px';
-    menuEl.innerHTML = `
-      <button class="cgfm-menu-item" data-menu="child">${icon('plus')}<span>新建子文件夹</span></button>
-      <button class="cgfm-menu-item" data-menu="rename">${icon('rename')}<span>重命名</span></button>
-      <button class="cgfm-menu-item" data-menu="color">${icon('palette')}<span>设置颜色</span></button>
-      <button class="cgfm-menu-item cgfm-danger" data-menu="delete">${icon('trash')}<span>删除文件夹</span></button>
-    `;
-    document.body.appendChild(menuEl);
-    menuEl.addEventListener('click', event => {
-      const item = event.target.closest('[data-menu]');
-      if (!item) return;
-      const action = item.getAttribute('data-menu');
-      const left = parseInt(menuEl.style.left, 10) || rect.left;
-      const top = parseInt(menuEl.style.top, 10) || rect.top;
-      if (action === 'child') { closeMenu(); createFolder(fid); }
-      else if (action === 'rename') { closeMenu(); beginRename(fid); }
-      else if (action === 'color') showColorPopover(fid, left, top);
-      else if (action === 'delete') showDeleteConfirm(fid, left, top);
-    });
-    setTimeout(() => document.addEventListener('mousedown', closeMenuOnOutside, true), 0);
-  }
-
-  function closeMenuOnOutside(event) {
-    if (menuEl && !menuEl.contains(event.target)) closeMenu();
-  }
-
-  function closeMenu() {
-    document.removeEventListener('mousedown', closeMenuOnOutside, true);
-    if (menuEl) menuEl.remove();
-    menuEl = null;
-  }
-
-  function showColorPopover(fid, left, top) {
-    closeMenu();
-    const colors = ['#6b7280', '#ef4444', '#f97316', '#f59e0b', '#22c55e', '#14b8a6', '#3b82f6', '#8b5cf6', '#ec4899'];
-    menuEl = document.createElement('div');
-    menuEl.className = 'cgfm-color-popover';
-    menuEl.style.left = Math.round(left) + 'px';
-    menuEl.style.top = Math.round(top) + 'px';
-    menuEl.innerHTML = colors.map(c => `<button class="cgfm-color-swatch" data-color="${c}" style="background:${c}" title="${c}"></button>`).join('') +
-      `<button class="cgfm-color-swatch cgfm-color-custom" data-color="custom" title="自定义颜色">${icon('custom')}</button>`;
-    document.body.appendChild(menuEl);
-    menuEl.addEventListener('click', event => {
-      const swatch = event.target.closest('[data-color]');
-      if (!swatch) return;
-      const color = swatch.getAttribute('data-color');
-      if (color === 'custom') return showCustomColorInput(fid, left, top);
-      setFolderColor(fid, color);
-      closeMenu();
-    });
-    setTimeout(() => document.addEventListener('mousedown', closeMenuOnOutside, true), 0);
-  }
-
-  function showCustomColorInput(fid, left, top) {
-    const p = getProfile();
-    const current = normalizeColor((p.folders[fid] || {}).color);
-    closeMenu();
-    menuEl = document.createElement('div');
-    menuEl.className = 'cgfm-menu';
-    menuEl.style.left = Math.round(left) + 'px';
-    menuEl.style.top = Math.round(top) + 'px';
-    menuEl.innerHTML = `<input id="cgfm-custom-color" value="${escapeAttr(current)}" style="width:150px;height:32px;border-radius:8px;border:1px solid rgba(128,128,128,.3);padding:0 8px;background:var(--main-surface-primary,#fff);color:inherit">`;
-    document.body.appendChild(menuEl);
-    const input = menuEl.querySelector('input');
-    input.focus(); input.select();
-    input.addEventListener('keydown', event => {
-      if (event.key === 'Enter') {
-        const color = normalizeHex(input.value);
-        if (!color) return toast('请输入合法 HEX 颜色。');
-        setFolderColor(fid, color);
-        closeMenu();
-      } else if (event.key === 'Escape') closeMenu();
-    });
-    setTimeout(() => document.addEventListener('mousedown', closeMenuOnOutside, true), 0);
-  }
-
-  function normalizeHex(value) {
-    const s = String(value || '').trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(s)) return s;
-    if (/^#[0-9a-fA-F]{3}$/.test(s)) return '#' + s.slice(1).split('').map(ch => ch + ch).join('');
-    return '';
-  }
-
-  function setFolderColor(fid, color) {
-    const p = getProfile();
-    const f = p.folders[fid];
-    if (!f) return;
-    f.color = normalizeColor(color);
-    f.updatedAt = nowIso();
-    const row = rootEl && rootEl.querySelector('[data-folder-id="' + cssEscape(fid) + '"]');
-    if (row) row.style.setProperty('--folder-color', f.color);
-    schedulePersist('folder-color');
-  }
-
-  function showDeleteConfirm(fid, left, top) {
-    const p = getProfile();
-    const f = p.folders[fid];
-    if (!f || fid === ROOT_ID) return;
-    closeMenu();
-    menuEl = document.createElement('div');
-    menuEl.className = 'cgfm-menu cgfm-confirm';
-    menuEl.style.left = Math.round(left) + 'px';
-    menuEl.style.top = Math.round(top) + 'px';
-    menuEl.innerHTML = `<p>删除“${escapeHtml(f.name)}”？<br><span style="color:var(--text-secondary,#777)">只会删除文件夹索引，不会删除 ChatGPT 原聊天。</span></p><div class="cgfm-confirm-actions"><button data-confirm="cancel">取消</button><button class="cgfm-danger-btn" data-confirm="delete">删除</button></div>`;
-    document.body.appendChild(menuEl);
-    menuEl.addEventListener('click', event => {
-      const b = event.target.closest('[data-confirm]');
-      if (!b) return;
-      if (b.getAttribute('data-confirm') === 'delete') {
-        deleteFolderImmediate(fid);
-        queueRender();
-        schedulePersist('delete-folder');
-      }
-      closeMenu();
-    });
-    setTimeout(() => document.addEventListener('mousedown', closeMenuOnOutside, true), 0);
-  }
-
-  function deleteFolderImmediate(fid) {
-    const p = getProfile();
-    const f = p.folders[fid];
-    if (!f || fid === ROOT_ID) return;
-    const parent = p.folders[f.parentId] || p.folders[ROOT_ID];
-    parent.childFolderIds = parent.childFolderIds.filter(x => x !== fid);
-    const ids = collectFolderIds(fid, p);
-    for (const id of ids) {
-      const folder = p.folders[id];
-      if (folder) {
-        for (const cid of folder.chatIds || []) delete p.conversations[cid];
-      }
-      delete p.folders[id];
-    }
-    if (!p.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
-  }
-
-  function collectFolderIds(fid, p) {
-    const out = [];
-    const walk = id => {
-      out.push(id);
-      const f = p.folders[id];
-      for (const child of (f && f.childFolderIds) || []) walk(child);
-    };
-    walk(fid);
-    return out;
-  }
-
-  function removeChat(cid) {
-    const p = getProfile();
-    const c = p.conversations[cid];
-    if (!c) return;
-    const f = p.folders[c.folderId] || p.folders[ROOT_ID];
-    f.chatIds = f.chatIds.filter(x => x !== cid);
-    delete p.conversations[cid];
-    queueRender();
-    schedulePersist('remove-chat');
-  }
-
-  function refreshChatTitle(cid) {
-    const p = getProfile();
-    const c = p.conversations[cid];
-    if (!c) return;
-    const oldTitle = c.title || '';
-    const native = findNativeConversationAnchor(cid);
-    const nativeTitle = native ? extractTitleFromAnchor(native) : '';
-    const currentPageTitle = extractTitleFromCurrentPage(cid);
-    // If the user is currently viewing this conversation, document.title is often the
-    // freshest source after a rename. Otherwise prefer the native sidebar link, never
-    // the script's own folder link.
-    const title = guardConversationTitle(cid, cleanConversationTitle((currentPageTitle && currentPageTitle !== oldTitle) ? currentPageTitle : (nativeTitle || currentPageTitle)));
-    if (!title) {
-      toast('当前最近列表中找不到该对话。');
-      return;
-    }
-    if (title === oldTitle) {
-      toast('标题没有变化。');
-      return;
-    }
-    c.title = title;
-    c.updatedAt = nowIso();
-    queueRender();
-    schedulePersist('refresh-title');
-    toast('标题已刷新。');
-  }
-
-  // ---------------------------------------------------------------------------
-  // 7. Panel-owned Pointer Events drag/drop
-  // ---------------------------------------------------------------------------
-
-  function payloadKind(payload) {
-    if (!payload) return '';
-    if (payload.kind === 'folder' && payload.folderId) return 'folder';
-    if (payload.kind === 'chat' && payload.id) return 'chat';
-    if (payload.id) return 'chat';
-    return '';
-  }
-
-  // All three source types share one pointer session; no HTML5 DataTransfer.
-  function getPanelPointerPayload(target) {
-    if (!(target instanceof Element) || !rootEl?.contains(target)) return null;
-    if (target.closest('button,input,textarea,select,[contenteditable="true"]')) return null;
-    const row = target.closest('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id],.cgfm-folder-row[data-folder-id]');
-    if (!row || !rootEl.contains(row) || row.closest('[hidden]')) return null;
-    if (row.classList.contains('cgfm-folder-row')) {
-      const id = row.dataset.folderId;
-      const folder = getProfile().folders[id];
-      return folder && id !== ROOT_ID ? { payload: {kind:'folder',folderId:id}, title:folder.name, row } : null;
-    }
-    const id = row.dataset.chatId;
-    const chat = getProfile().conversations[id] || recentKnown.find(item => item.id === id);
-    if (!chat) return null;
-    return { payload:{kind:'chat',id,title:chat.title,url:chat.url || '/c/' + id}, title:chat.title || '未命名对话', row };
-  }
-
-  function onPanelPointerDown(event) {
-    if (event.button !== 0 || !event.isPrimary || pointerDragSession) return;
-    const source = getPanelPointerPayload(event.target);
-    if (!source || hasActiveChatEditor()) return;
-    pointerDragSession = {
-      pointerId:event.pointerId, startX:event.clientX, startY:event.clientY,
-      x:event.clientX,y:event.clientY, source, active:false, target:null,
-      account:currentAccount, preview:null, frame:0
-    };
-    // The selection may begin before the 5px drag threshold, so guard it from pointerdown.
-    // Only the folder row needs default prevention; chat links must remain clickable.
-    document.addEventListener('selectstart', preventPanelPointerSelection, true);
-    if (source.row.classList.contains('cgfm-folder-row')) event.preventDefault();
-    window.addEventListener('pointermove', onPanelPointerMove, true);
-    window.addEventListener('pointerup', onPanelPointerUp, true);
-    window.addEventListener('pointercancel', cancelPanelPointerDrag, true);
-    window.addEventListener('blur', cancelPanelPointerDrag);
-  }
-
-  function preventPanelPointerSelection(event) {
-    if (pointerDragSession && !event.target?.closest?.('input,textarea,[contenteditable="true"]')) event.preventDefault();
-  }
-
-  function onPanelPointerMove(event) {
-    const session = pointerDragSession;
-    if (!session || event.pointerId !== session.pointerId) return;
-    session.x = event.clientX; session.y = event.clientY;
-    if (!session.active) {
-      if (Math.hypot(session.x-session.startX,session.y-session.startY) < 5) return;
-      // No click interception until the pointer has actually moved beyond the threshold.
-      session.active = true;
-      document.documentElement.classList.add('cgfm-pointer-select-lock');
-      window.getSelection()?.removeAllRanges();
-      closeMenu();
-      beginOwnedPanelDrag();
-      const preview = document.createElement('div');
-      preview.className = 'cgfm-pointer-preview';
-      preview.textContent = session.source.title;
-      document.body.appendChild(preview);
-      session.preview = preview;
-      session.source.row.classList.add('cgfm-pointer-source');
-      document.addEventListener('click', suppressPanelDragClick, true);
-    }
-    event.preventDefault();
-    if (!session.frame) session.frame = requestAnimationFrame(() => {
-      session.frame = 0;
-      if (pointerDragSession !== session || !session.active) return;
-      session.preview.style.transform = `translate3d(${session.x+12}px,${session.y+12}px,0)`;
-      const element = document.elementFromPoint(session.x, session.y);
-      session.target = resolveFolderDropTargetFromElement(element, session.source.payload, false);
-      clearDropHighlight(session.target?.element);
-      if (session.target) session.target.element.classList.add(session.target.isRoot ? 'cgfm-root-drop' : 'cgfm-drop-inside');
-    });
-  }
-
-  function suppressPanelDragClick(event) {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    document.removeEventListener('click', suppressPanelDragClick, true);
-  }
-
-  function onPanelPointerUp(event) {
-    const session = pointerDragSession;
-    if (!session || session.pointerId !== event.pointerId) return;
-    if (!session.active) { finishPanelDrag(); return; }
-    event.preventDefault();
-    const element = document.elementFromPoint(event.clientX,event.clientY);
-    const target = resolveFolderDropTargetFromElement(element,session.source.payload,false);
-    const sameAccount = session.account === currentAccount;
-    const payload = session.source.payload;
-    finishPanelDrag(true);
-    // A completed pointer gesture must not activate a chat link or folder selector.
-    setTimeout(() => document.removeEventListener('click',suppressPanelDragClick,true),0);
-    if (!sameAccount) { toast('账号已切换，移动已取消。'); return; }
-    if (!target) { toast('未找到有效目标文件夹，移动已取消。'); return; }
-    commitDropPayload(payload,target.folderId);
-  }
-
-  function cancelPanelPointerDrag() { finishPanelDrag(); }
-
-  function resolveFolderDropTargetFromElement(element, payload, allowUnknownChat) {
-    if (!(element instanceof Element) || !rootEl) return null;
-    const kind = payloadKind(payload);
-    const header = element.closest('.cgfm-header[data-root-drop]');
-    if (header && rootEl.contains(header)) {
-      if (kind === 'folder' && canMoveFolderTo(payload.folderId, ROOT_ID)) return { folderId: ROOT_ID, element: header, isRoot: true };
-      return null;
-    }
-    const row = element.closest('.cgfm-folder-row[data-folder-id]');
-    // Descendant chat rows and empty children are not drop zones. Only the
-    // visible folder header row can accept a drop.
-    if (!row || !rootEl.contains(row)) return null;
-    const targetElement = row;
-    const fid = row.getAttribute('data-folder-id');
-    if (!fid || !getProfile().folders[fid]) return null;
-    if (kind === 'folder') return canMoveFolderTo(payload.folderId, fid) ? { folderId: fid, element: targetElement, isRoot: false } : null;
-    if (kind === 'chat' || allowUnknownChat) return { folderId: fid, element: targetElement, isRoot: false };
-    return null;
-  }
-
-  function clearDropHighlight(except) {
-    if (!rootEl) return;
-    rootEl.querySelectorAll('.cgfm-drop-inside,.cgfm-root-drop').forEach(el => { if (el !== except) el.classList.remove('cgfm-drop-inside', 'cgfm-root-drop'); });
-  }
-
-  function commitDropPayload(payload, folderId) {
-    const kind = payloadKind(payload);
-    if (kind !== 'folder' && kind !== 'chat') {
-      toast('没有识别到被拖动的聊天或文件夹。');
-      return false;
-    }
-    // Settle any earlier edits and accept a newer tab snapshot before mutating.
-    // A successful move then has a single immediate local commit boundary.
-    if (pendingPersistTimer || localUnsavedChanges) flushPendingPersist(true);
-    maybeApplyNewerStoredProfile('before-panel-move');
-    const move = kind === 'folder'
-      ? { kind, id: payload.folderId, folderId }
-      : { kind, id: payload.id, folderId, title: payload.title, url: payload.url };
-    if (!applyPanelMoveMutation(move, false)) return false;
-    pendingPanelMove = move;
-    panelMoveRebaseAttempts = 0;
-    schedulePersist(kind === 'folder' ? 'move-folder' : 'add-chat');
-    const saved = persistNow({ webdav: true });
-    if (saved) toast(kind === 'folder' ? '文件夹已移动。' : '聊天已加入文件夹。');
-    return !!saved;
-  }
-
-  function applyPanelMoveMutation(move, notify) {
-    if (!move) return false;
-    if (move.kind === 'folder') return moveFolderToFolder(move.id, move.folderId, { persist:false, notify });
-    if (move.kind === 'chat') return addChatToFolder({ id:move.id, title:move.title, url:move.url }, move.folderId, { persist:false, notify });
-    return false;
-  }
-
-  function extractChatFromNativeElement(element) {
-    if (!(element instanceof Element)) return null;
-    if (element.matches(NATIVE_CHAT_ROW_SELECTOR)) return extractChatFromRow(element);
-
-    const row = element.closest(NATIVE_CHAT_ROW_SELECTOR);
-    if (row) return extractChatFromRow(row);
-
-    const anchor = element.matches('a[href*="/c/"]') ? element : element.closest('a[href*="/c/"]');
-    return anchor ? extractChatFromAnchor(anchor) : null;
-  }
-
-  function canMoveFolderTo(sourceId, targetParentId) {
-    const p = getProfile();
-    if (!sourceId || sourceId === ROOT_ID || !p.folders[sourceId]) return false;
-    const targetId = targetParentId || ROOT_ID;
-    if (!p.folders[targetId]) return false;
-    if (sourceId === targetId) return false;
-    let cur = targetId;
-    while (cur && cur !== ROOT_ID) {
-      if (cur === sourceId) return false;
-      const f = p.folders[cur];
-      cur = f ? f.parentId : '';
-    }
-    return true;
-  }
-
-  function moveFolderToFolder(sourceId, targetParentId, options) {
-    const opts = options || {};
-    const p = getProfile();
-    const source = p.folders[sourceId];
-    const targetId = targetParentId || ROOT_ID;
-    const target = p.folders[targetId];
-    if (!source || !target) return false;
-    if (!canMoveFolderTo(sourceId, targetId)) {
-      toast('不能把文件夹移动到自己或自己的子文件夹中。');
-      return false;
-    }
-    if (source.parentId === targetId) {
-      sortFolderChildren(p, targetId);
-      queueRender();
-      return false;
-    }
-    const oldParent = p.folders[source.parentId] || p.folders[ROOT_ID];
-    oldParent.childFolderIds = oldParent.childFolderIds.filter(id => id !== sourceId);
-    source.parentId = targetId;
-    source.updatedAt = nowIso();
-    if (!target.childFolderIds.includes(sourceId)) target.childFolderIds.push(sourceId);
-    sortFolderChildren(p, oldParent.id);
-    sortFolderChildren(p, targetId);
-    // Moving a folder changes hierarchy only. Do not implicitly select it; preserve
-    // the user's existing page-local selection state across drag/drop moves.
-    queueRender();
-    if (opts.persist !== false) schedulePersist('move-folder');
-    if (opts.notify !== false) toast(targetId === ROOT_ID ? '文件夹已移动到顶层。' : '文件夹已移动。');
-    return true;
-  }
-
-  function addChatToFolder(chat, folderId, options) {
-    const opts = options || {};
-    const p = getProfile();
-    const f = p.folders[folderId];
-    if (!f || !chat || !chat.id) return false;
-    const existing = p.conversations[chat.id];
-    if (existing && existing.folderId && p.folders[existing.folderId]) {
-      p.folders[existing.folderId].chatIds = p.folders[existing.folderId].chatIds.filter(x => x !== chat.id);
-    }
-    p.conversations[chat.id] = Object.assign({}, existing || {}, {
-      id: chat.id,
-      title: guardConversationTitle(chat.id, chat.title || (existing && existing.title) || 'Untitled chat'),
-      url: normalizeStoredUrl(chat.url || ('/c/' + chat.id)),
-      folderId,
-      addedAt: existing && existing.addedAt || nowIso(),
-      updatedAt: nowIso()
-    });
-    if (!f.chatIds.includes(chat.id)) f.chatIds.push(chat.id);
-    queueRender();
-    if (opts.persist !== false) schedulePersist('add-chat');
-    if (opts.notify !== false) toast('聊天已加入文件夹。');
-    return true;
-  }
-
-
-  // ---------------------------------------------------------------------------
-  // 7b. Add-to-folder entry in ChatGPT's native Recent-chat options menu
-  // ---------------------------------------------------------------------------
-
-  function setupNativeMenuHook() {
-    if (document.__cgfmNativeMenuBound) return;
-    document.__cgfmNativeMenuBound = true;
-    document.addEventListener('pointerdown', onNativeConversationMenuPointer, true);
-    document.addEventListener('click', onNativeConversationMenuClick, true);
-  }
-
-  function onNativeConversationMenuPointer(event) {
-    rememberNativeConversationMenuTarget(event);
-  }
-
-  function onNativeConversationMenuClick(event) {
-    if (rememberNativeConversationMenuTarget(event)) armNativeMenuInjection();
-  }
-
-  function rememberNativeConversationMenuTarget(event) {
-    const target = event && event.target;
-    if (!(target instanceof Element)) return false;
-
-    const button = target.closest('button[aria-haspopup="menu"], [data-conversation-options-trigger]');
-    if (!button || !isNativeConversationOptionsButton(button)) return false;
-    if (rootEl && rootEl.contains(button)) return false;
-
-    const chat = extractChatFromOptionsButton(button);
-    if (!chat) return false;
-
-    chat.kind = 'chat';
-    nativeMenuChat = chat;
-    nativeMenuTriggerId = button.id || '';
-    return true;
-  }
-
-  function isNativeConversationOptionsButton(button) {
-    if (!(button instanceof Element)) return false;
-    if (button.hasAttribute('data-conversation-options-trigger')) return true;
-    if (!button.closest(NATIVE_CHAT_ROW_SELECTOR)) return false;
-
-    const aria = cleanText(button.getAttribute('aria-label') || '');
-    return aria === '聊天操作'
-      || /(?:chat|conversation).*options?/i.test(aria)
-      || /options?.*(?:chat|conversation)/i.test(aria);
-  }
-
-  function extractChatFromOptionsButton(button) {
-    if (!button) return null;
-
-    const row = button.closest(NATIVE_CHAT_ROW_SELECTOR);
-    if (row) {
-      const fromRow = extractChatFromRow(row);
-      if (fromRow) return fromRow;
-    }
-
-    const id = cleanText(button.getAttribute('data-conversation-options-trigger') || '');
-    const anchor = button.closest('a[href*="/c/"]') || (id ? document.querySelector('a[href*="/c/' + cssEscape(id) + '"]') : null);
-    const fromAnchor = anchor ? extractChatFromAnchor(anchor) : null;
-    if (fromAnchor) return fromAnchor;
-    if (!id) return null;
-
-    const aria = button.getAttribute('aria-label') || '';
-    const title = cleanConversationAriaLabel(aria) || 'Untitled chat';
-    return { id, title, url: '/c/' + id };
-  }
-
-  function armNativeMenuInjection() {
-    disconnectNativeMenuObserver();
-    closeNativeFolderMenus();
-    const tryNow = () => {
-      try {
-        if (injectNativeAddToFolderItem()) {
-          disconnectNativeMenuObserver();
-          startNativeMenuLivenessPoll();
-          return true;
-        }
-      } catch (err) {
-        console.warn(APP_NAME, 'native menu injection failed', err);
-      }
-      return false;
-    };
-    if (tryNow()) return;
-    nativeMenuObserver = new MutationObserver(() => tryNow());
-    try { nativeMenuObserver.observe(document.body, { childList: true, subtree: true }); } catch (_) {}
-    [40, 90, 180, 360, 700, 1200].forEach(delay => setTimeout(tryNow, delay));
-    nativeMenuObserveTimer = setTimeout(disconnectNativeMenuObserver, 1800);
-  }
-
-  function disconnectNativeMenuObserver() {
-    if (nativeMenuObserver) nativeMenuObserver.disconnect();
-    nativeMenuObserver = null;
-    if (nativeMenuObserveTimer) clearTimeout(nativeMenuObserveTimer);
-    nativeMenuObserveTimer = null;
-  }
-
-  function findVisibleNativeChatMenu() {
-    const menus = Array.from(document.querySelectorAll('[role="menu"][data-radix-menu-content]'));
-    const visible = menus.filter(isVisibleElement);
-    if (!visible.length) return null;
-
-    if (nativeMenuTriggerId) {
-      const byTrigger = visible.find(menu => menu.getAttribute('aria-labelledby') === nativeMenuTriggerId);
-      if (byTrigger) return byTrigger;
-    }
-
-    return visible.find(menu => {
-      const labels = Array.from(menu.querySelectorAll('[role="menuitem"]'))
-        .map(item => cleanText(item.textContent || ''))
-        .join(' | ');
-      return /分享|Share|重命名|Rename|归档|Archive|删除|Delete/.test(labels);
-    }) || null;
-  }
-
-  function injectNativeAddToFolderItem() {
-    if (!nativeMenuChat || !nativeMenuChat.id) return false;
-    const menu = findVisibleNativeChatMenu();
-    if (!menu) return false;
-    if (menu.querySelector('[data-cgfm-native-add="1"]')) return true;
-    const item = document.createElement('div');
-    const firstGroup = menu.querySelector('[role="group"]') || menu;
-    const projectItem = Array.from(firstGroup.querySelectorAll('[role="menuitem"]')).find(el => /移至项目|Move to project/i.test(cleanText(el.textContent || '')));
-    const projectArrow = projectItem && projectItem.querySelector(':scope > svg');
-    const arrowHtml = projectArrow
-      ? projectArrow.outerHTML
-      : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" aria-hidden="true" data-rtl-flip="" class="icon-sm -me-0.25" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    item.setAttribute('role', 'menuitem');
-    item.setAttribute('tabindex', '0');
-    item.setAttribute('data-cgfm-native-add', '1');
-    item.setAttribute('data-orientation', 'vertical');
-    item.setAttribute('data-has-submenu', '');
-    item.setAttribute('aria-haspopup', 'menu');
-    item.setAttribute('aria-expanded', 'false');
-    const templateItem = projectItem || firstGroup.querySelector('[role="menuitem"]');
-    item.className = templateItem && typeof templateItem.className === 'string'
-      ? templateItem.className
-      : 'group __menu-item';
-    item.classList.add('cgfm-native-menu-item');
-    item.innerHTML = '<div class="flex min-w-0 items-center gap-1.5 cgfm-native-menu-leading"><div class="flex items-center justify-center [opacity:var(--menu-item-icon-opacity,1)] icon">' + icon('folder') + '</div><div class="flex min-w-0 grow items-center gap-2.5 cgfm-native-menu-label">移至文件夹</div></div>' + arrowHtml;
-    item.addEventListener('mouseenter', () => showNativeFolderRootMenu(item));
-    item.addEventListener('focus', () => showNativeFolderRootMenu(item));
-    item.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); showNativeFolderRootMenu(item); });
-    item.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); });
-
-    if (projectItem && projectItem.parentElement === firstGroup) projectItem.insertAdjacentElement('afterend', item);
-    else firstGroup.appendChild(item);
-    return true;
-  }
-
-  function showNativeFolderRootMenu(anchor) {
-    if (!nativeMenuChat || !anchor) return;
-    const rect = anchor.getBoundingClientRect();
-    showNativeFolderSubmenu(ROOT_ID, rect.right + 4, rect.top, 0, nativeMenuChat);
-    startNativeMenuLivenessPoll();
-  }
-
-  function showNativeFolderSubmenu(parentId, left, top, level, chat) {
-    const p = getProfile();
-    const parent = p.folders[parentId] || p.folders[ROOT_ID];
-    closeNativeFolderMenusFrom(level);
-    const menu = document.createElement('div');
-    menu.className = 'cgfm-native-folder-menu';
-    menu.setAttribute('data-cgfm-folder-menu-level', String(level));
-    const ids = (parent.childFolderIds || []).filter(fid => p.folders[fid]);
-    if (!ids.length) {
-      menu.innerHTML = '<div class="cgfm-native-folder-empty">暂无文件夹</div>';
-    } else {
-      menu.innerHTML = ids.map(fid => {
-        const f = p.folders[fid];
-        const hasChildren = (f.childFolderIds || []).some(child => p.folders[child]);
-        return '<button type="button" class="cgfm-native-folder-item" data-folder-id="' + escapeAttr(fid) + '" data-has-children="' + (hasChildren ? '1' : '0') + '" style="--folder-color:' + escapeAttr(normalizeColor(f.color)) + '"><span style="color:var(--folder-color)">' + icon('folder') + '</span><span class="cgfm-native-folder-name">' + escapeHtml(f.name) + '</span>' + (hasChildren ? '<span class="cgfm-native-folder-arrow">' + icon('chevron') + '</span>' : '') + '</button>';
-      }).join('');
-    }
-    document.body.appendChild(menu);
-    positionFloatingMenu(menu, left, top);
-    nativeFolderSubmenus[level] = menu;
-    menu.addEventListener('mousemove', event => {
-      const item = event.target.closest && event.target.closest('.cgfm-native-folder-item[data-folder-id]');
-      if (!item || !menu.contains(item)) return;
-      menu.querySelectorAll('.cgfm-native-folder-item.cgfm-open').forEach(el => { if (el !== item) el.classList.remove('cgfm-open'); });
-      item.classList.add('cgfm-open');
-      const fid = item.getAttribute('data-folder-id');
-      if (item.getAttribute('data-has-children') === '1') {
-        const r = item.getBoundingClientRect();
-        showNativeFolderSubmenu(fid, r.right + 4, r.top, level + 1, chat);
-      } else {
-        closeNativeFolderMenusFrom(level + 1);
-      }
-    });
-    menu.addEventListener('mousedown', event => {
-      const item = event.target.closest && event.target.closest('.cgfm-native-folder-item[data-folder-id]');
-      if (!item || !menu.contains(item)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const fid = item.getAttribute('data-folder-id');
-      addChatToFolder(chat, fid);
-      closeNativeFolderMenus();
-      closeNativeChatMenu();
-    }, true);
-  }
-
-  function positionFloatingMenu(menu, left, top) {
-    const margin = 8;
-    menu.style.left = Math.round(left) + 'px';
-    menu.style.top = Math.round(top) + 'px';
-    const rect = menu.getBoundingClientRect();
-    let x = left;
-    let y = top;
-    if (x + rect.width > window.innerWidth - margin) x = Math.max(margin, left - rect.width - 8);
-    if (y + rect.height > window.innerHeight - margin) y = Math.max(margin, window.innerHeight - rect.height - margin);
-    menu.style.left = Math.round(x) + 'px';
-    menu.style.top = Math.round(y) + 'px';
-  }
-
-  function closeNativeFolderMenusFrom(level) {
-    for (let i = level; i < nativeFolderSubmenus.length; i++) {
-      const menu = nativeFolderSubmenus[i];
-      if (menu) menu.remove();
-    }
-    nativeFolderSubmenus.length = Math.max(0, level);
-  }
-
-  function closeNativeFolderMenus() {
-    closeNativeFolderMenusFrom(0);
-    stopNativeMenuLivenessPoll();
-  }
-
-  function closeNativeChatMenu() {
-    try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); } catch (_) {}
-  }
-
-  function startNativeMenuLivenessPoll() {
-    if (nativeMenuPollTimer) return;
-    const check = () => {
-      if (!findVisibleNativeChatMenu()) {
-        closeNativeFolderMenus();
-        nativeMenuChat = null;
-        nativeMenuTriggerId = '';
-      }
-    };
-    nativeMenuPollTimer = setInterval(check, 600);
-  }
-
-  function stopNativeMenuLivenessPoll() {
-    if (nativeMenuPollTimer) clearInterval(nativeMenuPollTimer);
-    nativeMenuPollTimer = null;
-  }
-
-  function navigateToConversation(url) {
-    const id = extractConversationId(url);
-    if (!id) return;
-    const targetPath = '/c/' + id;
-    const currentId = extractConversationId(location.pathname + location.search + location.hash);
-    if (currentId === id) return;
-
-    // Safest SPA-like path: reuse ChatGPT's own sidebar link if it is already present.
-    // Do not force history.pushState here; ChatGPT's router has extra state beyond the URL.
-    const native = findNativeConversationAnchor(id);
-    if (native) {
-      try {
-        native.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, button: 0 }));
-        return;
-      } catch (_) {
-        try { native.click(); return; } catch (__) {}
-      }
-    }
-
-    // Last resort only. This may reload, but it is safer than faking router state.
-    location.assign(targetPath);
-  }
-
-  function findNativeConversationAnchor(id) {
-    try {
-      const row = findNativeConversationRowById(id);
-      if (row) {
-        const action = getNativeChatPrimaryAction(row);
-        if (action && !(rootEl && rootEl.contains(action))) return action;
-      }
-
-      const selector = 'a[href*="/c/' + cssEscape(id) + '"]';
-      const anchors = Array.from(document.querySelectorAll(selector))
-        .filter(anchor => !(rootEl && rootEl.contains(anchor)));
-      if (!anchors.length) return null;
-      return anchors.find(isVisibleElement) || anchors[0] || null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function extractChatFromAnchor(anchor) {
-    if (!anchor) return null;
-    const href = anchor.getAttribute('href') || anchor.href || '';
-    const id = extractConversationId(href);
-    if (!id) return null;
-    const title = extractTitleFromAnchor(anchor) || 'Untitled chat';
-    return { kind: 'chat', id, title, url: '/c/' + id };
-  }
-
-  function extractConversationId(href) {
-    const m = String(href || '').match(/\/c\/([0-9a-fA-F-]{10,}|[^/?#]+)/);
-    return m ? decodeURIComponent(m[1]) : '';
-  }
-
-  function cleanConversationTitle(title) {
-    return cleanText(title || '').slice(0, 200);
-  }
-
-  function cleanConversationAriaLabel(label) {
-    const value = cleanText(label || '');
-    const chinese = value.match(/^打开[“"]?(.+?)[”"]?的对话选项(?:.*)?$/);
-    if (chinese) return cleanConversationTitle(chinese[1]);
-
-    const englishFor = value.match(/^Open\s+(?:(?:conversation|chat)\s+)?options\s+for\s+[“"]?(.+?)[”"]?(?:[.!])?$/i);
-    if (englishFor) return cleanConversationTitle(englishFor[1]);
-
-    const english = value.match(/^Open(?:\s+[“"]?|[“"])(.+?)[”"]?(?:['’]s)?\s+(?:(?:conversation|chat)\s+)?options(?:[.!])?$/i);
-    return english ? cleanConversationTitle(english[1]) : cleanConversationTitle(value);
-  }
-
-  function cleanDocumentConversationTitle(title) {
-    return cleanConversationTitle(title)
-      .replace(/\s*(?:[|｜·•]|[-–—])\s*ChatGPT\s*$/i, '')
-      .trim()
-      .slice(0, 200);
-  }
-
-  function extractTitleFromAnchor(anchor) {
-    if (!anchor) return '';
-    const clone = anchor.cloneNode(true);
-    clone.querySelectorAll('[data-cgfm], button, svg, [aria-hidden="true"]').forEach(n => n.remove());
-    const visibleText = cleanConversationTitle(clone.textContent || anchor.textContent || '');
-    const ariaText = cleanConversationAriaLabel(anchor.getAttribute('aria-label') || '');
-    // ChatGPT sometimes updates visible menu/sidebar text before aria-label, so prefer
-    // visible text and use aria-label only as a fallback.
-    return visibleText || ariaText;
-  }
-
-  function extractTitleFromCurrentPage(id) {
-    try {
-      const currentId = extractConversationId(location.pathname + location.search + location.hash);
-      if (currentId !== id) return '';
-      const title = cleanDocumentConversationTitle(document.title || '');
-      if (!title || /^ChatGPT$/i.test(title)) return '';
-      return title;
-    } catch (_) { return ''; }
-  }
-  function normalizeStoredUrl(url) {
-    const id = extractConversationId(url);
-    return id ? '/c/' + id : String(url || '');
-  }
-
-  // ---------------------------------------------------------------------------
-  // 8. Import / export and WebDAV remote-file helpers
-  // ---------------------------------------------------------------------------
-
-  function sanitizedRemoteProfile(p) {
-    const copy = JSON.parse(JSON.stringify(p));
-    delete copy.__cgfm;
-    delete copy.__cgfmSync;
-    Object.values(copy.folders || {}).forEach(folder => { if (folder) delete folder.collapsed; });
-    if (copy.settings) {
-      const ui = copy.settings.ui || {};
-      copy.settings = {
-        ui: {
-          sidebarWidthEnabled: !!ui.sidebarWidthEnabled,
-          sidebarWidthPx: clamp(Number(ui.sidebarWidthPx || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX)
-        }
-      };
-    }
-    return copy;
-  }
-
-  function exportPayload(p, revisionOverride, syncOverride) {
-    const acct = currentAccount || getCurrentAccountInfo() || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account', email: '', accountId: '' };
-    const revision = Math.max(1, Number(revisionOverride || 0) || (Number((p.settings.webdav || {}).remoteRevision || 0) + 1));
-    const meta = ensureSyncMeta(p);
-    const override = syncOverride || {};
-    const operations = mergeOperationLists(override.operations || meta.operations || []).slice(-MAX_REMOTE_OPERATIONS);
-    const tombstones = mergeTombstones(meta.tombstones, override.tombstones);
-    return {
-      app: APP_NAME,
-      version: VERSION,
-      schema: 3,
-      exportedAt: nowIso(),
-      account: {
-        id: acct.id,
-        accountId: acct.accountId || '',
-        email: acct.email || '',
-        key: accountStableKey(acct),
-        label: acct.label || 'ChatGPT account'
-      },
-      sync: {
-        model: 'operation-log-v1',
-        revision,
-        updatedAt: nowIso(),
-        deviceId: DEVICE_ID,
-        operations,
-        tombstones
-      },
-      profile: sanitizedRemoteProfile(p)
-    };
-  }
-
-  function exportJson() {
-    const p = getProfile();
-    const blob = new Blob([JSON.stringify(exportPayload(p), null, 2)], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'ChatGPT文件夹-' + (p.label || 'profile').replace(/[\\/:*?"<>|]+/g, '_') + '.json';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  function importJson() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'application/json,.json';
-    input.addEventListener('change', () => {
-      const file = input.files && input.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        try {
-          const data = JSON.parse(String(reader.result || '{}'));
-          const profile = data.profile || data;
-          if (!profile || !profile.folders || !profile.conversations) throw new Error('不是有效的文件夹配置。');
-          const p = getProfile();
-          const currentWebdav = JSON.parse(JSON.stringify(p.settings.webdav || {}));
-          const currentSyncMeta = deepClone(ensureSyncMeta(p));
-          const normalized = normalizeProfile(profile, p.id, p.label);
-          normalized.id = p.id;
-          normalized.label = p.label;
-          normalized.settings.webdav = Object.assign({}, normalized.settings.webdav || {}, currentWebdav);
-          normalized.__cgfmSync = currentSyncMeta;
-          state = normalized;
-          if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
-          queueRender();
-          schedulePersist('import-json');
-          toast('导入完成。');
-        } catch (err) {
-          toast('导入失败：' + safeError(err));
-        }
-      };
-      reader.readAsText(file);
-    });
-    input.click();
-  }
-
-
-  function sanitizeFilePart(value) {
-    const base = String(value || 'acct_default').trim() || 'acct_default';
-    return base.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 96) || 'acct_default';
-  }
-
-  function sanitizeEmailFilePart(email) {
-    const e = String(email || '').trim().toLowerCase();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return '';
-    return sanitizeFilePart(e.replace('@', '_at_').replace(/\./g, '_'));
-  }
-
-  function getWebdavAccountInfo() {
-    const detected = getCurrentAccountInfo();
-    if (detected && detected.id) {
-      currentAccount = detected;
-      rememberAccountInfo(detected);
-      return detected;
-    }
-    return currentAccount || readLastAccountInfo() || { id: 'acct_default', label: 'ChatGPT account', email: '', accountId: '' };
-  }
-
-  function readRemoteFileMap() {
-    try {
-      const raw = gmGet(ACCOUNT_FILE_MAP_KEY, '{}');
-      const map = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return map && typeof map === 'object' ? map : {};
-    } catch (_) { return {}; }
-  }
-
-  function defaultWebdavFileName(acct) {
-    const emailPart = sanitizeEmailFilePart(acct.email || '');
-    const accountPart = acct.accountId ? sanitizeFilePart(String(acct.accountId).slice(0, 8)) : '';
-    if (emailPart) return emailPart + (accountPart ? '-' + accountPart : '') + '.json';
-    return sanitizeFilePart(acct.id || 'acct_default') + '.json';
-  }
-
-  function currentWebdavFileName() {
-    const acct = currentAccount || getWebdavAccountInfo();
-    const key = accountStableKey(acct);
-    const map = readRemoteFileMap();
-    if (map[key] && /\.json$/i.test(map[key])) return map[key];
-    const fileName = defaultWebdavFileName(acct);
-    map[key] = fileName;
-    gmSet(ACCOUNT_FILE_MAP_KEY, JSON.stringify(map));
-    return fileName;
-  }
-
-  function normalizeWebdavFolderUrl(raw) {
-    let url = cleanText(raw || '');
-    if (!url) return '';
-    url = url.replace(/\\/g, '/');
-    try {
-      const u = new URL(url, location.href);
-      if (/\.json$/i.test(u.pathname)) u.pathname = u.pathname.replace(/\/[^/]*\.json$/i, '/');
-      u.search = '';
-      u.hash = '';
-      url = u.href;
-    } catch (_) {
-      url = url.replace(/\/[^/]*\.json(?:[?#].*)?$/i, '/');
-    }
-    return url.endsWith('/') ? url : url + '/';
-  }
-
-  function effectiveWebdavFileUrl(settings) {
-    const folder = normalizeWebdavFolderUrl(settings && settings.url);
-    return folder ? folder + currentWebdavFileName() : '';
-  }
-
-  function webdavFolderLabel(settings) {
-    return normalizeWebdavFolderUrl(settings && settings.url) || '';
-  }
-
-  function isIgnorableMkcolError(err) {
-    return err && (err.status === 405 || err.status === 409 || err.status === 301 || err.status === 302);
-  }
-
-  async function tryMkcol(folderUrl, settings) {
-    if (!folderUrl) return;
-    try { await davRequest('MKCOL', folderUrl, null, settings); }
-    catch (err) { if (!isIgnorableMkcolError(err)) throw err; }
-  }
-
-  function responseHeader(res, name) {
-    const raw = String((res && res.responseHeaders) || '');
-    const match = raw.match(new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ':\\s*(.+)$', 'im'));
-    return match ? match[1].trim() : '';
-  }
-
-  function captureWebdavContext(settings) {
-    const fileName = currentWebdavFileName();
-    const folder = normalizeWebdavFolderUrl(settings && settings.url);
-    return {
-      generation: accountGeneration,
-      accountKey: lockedAccountKey || accountStableKey(currentAccount),
-      accountId: currentAccount && currentAccount.id || '',
-      fileName,
-      fileUrl: folder ? folder + fileName : '',
-      target: folder ? folder + fileName : ''
-    };
-  }
-
-  function assertWebdavContext(ctx) {
-    if (!ctx || ctx.generation !== accountGeneration || ctx.accountKey !== lockedAccountKey) {
-      const err = new Error('ChatGPT 账号已切换，已忽略旧账号的 WebDAV 响应。');
-      err.isStaleAccount = true;
-      throw err;
-    }
-  }
-
-  function validateRemoteAccount(data, ctx) {
-    const remote = data && data.account;
-    if (!remote || typeof remote !== 'object') return;
-    if (remote.key && String(remote.key) !== String(ctx.accountKey)) {
-      throw new Error('远程 JSON 属于另一个 ChatGPT 账号，已停止同步。');
-    }
-    const live = currentAccount || {};
-    if (remote.accountId && live.accountId && String(remote.accountId) !== String(live.accountId)) {
-      throw new Error('远程 JSON 的 accountId 与当前 ChatGPT 账号不一致，已停止同步。');
-    }
-    if (!remote.key && remote.id && ctx.accountId && String(remote.id) !== String(ctx.accountId)) {
-      throw new Error('远程 JSON 的账号标识与当前 ChatGPT 账号不一致，已停止同步。');
-    }
-  }
-
-  function parseRemotePayload(res, ctx) {
-    const data = JSON.parse((res && res.responseText) || '{}');
-    validateRemoteAccount(data, ctx);
-    return data;
-  }
-
-  async function putDavJson(settings, body, options, ctx) {
-    const opts = Object.assign({ force: false, createOnly: false, ifMatch: '' }, options || {});
-    const fileUrl = ctx && ctx.fileUrl || effectiveWebdavFileUrl(settings);
-    if (!fileUrl) throw new Error('Missing WebDAV folder URL');
-    const headers = { 'Content-Type': 'application/json;charset=utf-8' };
-    if (opts.createOnly) headers['If-None-Match'] = '*';
-    else if (!opts.force && opts.ifMatch) headers['If-Match'] = opts.ifMatch;
-    try {
-      return await davRequest('PUT', fileUrl, body, settings, headers);
-    } catch (err) {
-      if (err && err.status === 409) {
-        await tryMkcol(webdavFolderLabel(settings), settings);
-        return await davRequest('PUT', fileUrl, body, settings, headers);
-      }
-      if (err && (err.status === 412 || err.status === 409)) err.isConflict = true;
-      throw err;
-    }
-  }
-
-  async function getDavJson(settings, ctx) {
-    const fileUrl = ctx && ctx.fileUrl || effectiveWebdavFileUrl(settings);
-    if (!fileUrl) throw new Error('Missing WebDAV folder URL');
-    return davRequest('GET', fileUrl, null, settings);
-  }
-
-
-
-  // ---------------------------------------------------------------------------
-  // 9. Sidebar width, sync status and settings modal
-  // ---------------------------------------------------------------------------
-
-  function sidebarIsPinnedNow() {
-    try {
-      const shellState = getAppShellSidebarState();
-      if (shellState) return shellState.mode === 'pinned';
-      return officialSidebarExpanded();
-    } catch (_) { return true; }
-  }
-
-  function syncSidebarWidthClass(pinnedOverride) {
-    const p = getProfile();
-    const enabled = !!((p.settings.ui || {}).sidebarWidthEnabled);
-    const shellState = getAppShellSidebarState();
-    const pinned = typeof pinnedOverride === 'boolean'
-      ? pinnedOverride
-      : (shellState ? shellState.mode === 'pinned' : sidebarIsPinnedNow());
-    const visible = shellState ? shellState.mode !== 'rail-only' : officialSidebarExpanded();
-    document.documentElement.classList.toggle('cgfm-sidebar-width-enabled', enabled);
-    document.documentElement.classList.toggle('cgfm-sidebar-width-active', enabled && pinned);
-    document.documentElement.classList.toggle('cgfm-official-sidebar-collapsed', !visible);
-  }
-  function ensureSidebarWidthStyle(cssPx) {
-    if (!sidebarWidthStyleEl) {
-      sidebarWidthStyleEl = document.getElementById('cgfm-sidebar-width-style') || document.createElement('style');
-      sidebarWidthStyleEl.id = 'cgfm-sidebar-width-style';
-      document.head.appendChild(sidebarWidthStyleEl);
-    }
-    // Legacy UI reads --sidebar-width. The 2026-09 app-shell reads the preferred
-    // conversation width from --codex-sidebar-preferred-width. Apply both only while the
-    // sidebar is pinned; peeking must stay overlay-only and must not change page layout width.
-    sidebarWidthStyleEl.textContent = `
-      html.cgfm-sidebar-width-active {
-        --codex-sidebar-preferred-width:${cssPx} !important;
-      }
-      html.cgfm-sidebar-width-active body {
-        --sidebar-width:${cssPx} !important;
-      }
-    `;
-  }
-
-  function applySidebarWidth(enabledOverride, pxOverride) {
-    try {
-      const p = getProfile();
-      const ui = p.settings.ui || {};
-      const hasOverride = arguments.length > 0;
-      const enabled = hasOverride ? !!enabledOverride : !!ui.sidebarWidthEnabled;
-      const px = clamp(Number(hasOverride ? pxOverride : (ui.sidebarWidthPx || DEFAULT_SIDEBAR_WIDTH_PX)), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX);
-      if (!sidebarWidthStyleEl) {
-        sidebarWidthStyleEl = document.getElementById('cgfm-sidebar-width-style') || document.createElement('style');
-        sidebarWidthStyleEl.id = 'cgfm-sidebar-width-style';
-        document.head.appendChild(sidebarWidthStyleEl);
-      }
-
-      // Clean up custom-property overrides left by older versions. Do not remove ChatGPT's native
-      // inline width: var(--sidebar-width) from #stage-slideover-sidebar.
-      document.documentElement.style.removeProperty('--sidebar-width');
-      const stage = document.getElementById('stage-slideover-sidebar');
-      if (stage) stage.style.removeProperty('--sidebar-width');
-
-      if (!enabled) {
-        sidebarWidthStyleEl.textContent = '';
-        document.documentElement.classList.remove('cgfm-sidebar-width-enabled', 'cgfm-sidebar-width-active');
-        return;
-      }
-      ensureSidebarWidthStyle(px + 'px');
-      syncSidebarWidthClass();
-    } catch (err) {
-      console.warn(APP_NAME, 'apply sidebar width failed', err);
-    }
-  }
-
-  function computeSyncStatus() {
-    const w = getProfile().settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) return 'off';
-    if (syncStatus === 'syncing') return syncStatus;
-    if (w.conflict || syncStatus === 'error' || /failed|conflict/i.test(String(w.lastStatus || ''))) return 'error';
-    if (dirtySincePush || w.pendingPush) return 'dirty';
-    return 'idle';
-  }
-
-  function syncStatusTitle() {
-    const w = getProfile().settings.webdav || {};
-    const st = computeSyncStatus();
-    if (st === 'off') return 'WebDAV：未启用；点击圆圈可在配置后立即同步';
-    if (st === 'syncing') return 'WebDAV：正在读取、合并并校验云端数据';
-    if (st === 'dirty') return 'WebDAV：有本地改动等待同步' + (webdavRetryNotBefore > Date.now() && Number.isFinite(webdavRetryNotBefore) ? '（重试已排队）' : '') + '；点击立即同步';
-    if (st === 'error') return 'WebDAV：同步失败' + (w.lastError ? '：' + w.lastError : '') + '；点击重试';
-    const checked = w.lastRemoteCheckAt ? '，上次云端核对 ' + shortTime(w.lastRemoteCheckAt) : '';
-    const merged = w.lastMergeAt ? '，上次合并 ' + shortTime(w.lastMergeAt) : '';
-    return 'WebDAV：已与云端核对' + checked + merged + '；点击立即同步';
-  }
-
-  function setSyncStatus(status) {
-    syncStatus = status || 'off';
-    updateSyncStatusIcon();
-  }
-
-  function updateSyncStatusIcon() {
-    const el = rootEl && rootEl.querySelector('[data-sync-status]');
-    if (!el) return;
-    const st = computeSyncStatus();
-    el.className = 'cgfm-icon cgfm-sync-status cgfm-sync-' + st;
-    const title = syncStatusTitle();
-    el.title = title;
-    el.setAttribute('aria-label', title);
-  }
-
-  function ensureSettingsModal() {
-    if (modalEl && document.body.contains(modalEl)) return modalEl;
-    modalEl = document.createElement('div');
-    modalEl.id = 'cgfm-modal-backdrop';
-    modalEl.className = 'cgfm-modal-backdrop';
-    modalEl.hidden = true;
-    modalEl.innerHTML = `
-      <div class="cgfm-modal" role="dialog" aria-modal="true">
-        <h2>WebDAV 多端同步</h2>
-        <div class="cgfm-modal-row"><input id="cgfm-dav-enabled" type="checkbox"><span>本地修改后自动同步</span></div>
-        <label for="cgfm-dav-url">WebDAV 文件夹地址</label><input id="cgfm-dav-url" type="text" placeholder="https://example.com/dav/chatgpt-folders">
-        <label for="cgfm-dav-file">当前账号远程 JSON 文件名</label><input id="cgfm-dav-file" type="text" placeholder="account-name.json"><div style="margin:6px 0 8px;color:var(--text-secondary,#777);font-size:12px">仅影响当前 ChatGPT 账号；切换账号后会使用该账号自己的映射。</div>
-        <label for="cgfm-dav-username">用户名</label><input id="cgfm-dav-username" type="text" autocomplete="username">
-        <label for="cgfm-dav-password">密码 / 应用密码</label><input id="cgfm-dav-password" type="password" autocomplete="current-password">
-        <label for="cgfm-dav-debounce">本地修改同步延迟（毫秒）</label><input id="cgfm-dav-debounce" type="number" min="1000" step="1000">
-        <label for="cgfm-dav-interval">前台云端检查间隔（秒）</label><input id="cgfm-dav-interval" type="number" min="15" max="300" step="5">
-        <hr style="border:0;border-top:1px solid rgba(128,128,128,.22);margin:14px 0">
-        <h2>界面</h2>
-        <div class="cgfm-modal-row"><input id="cgfm-sidebar-width-enabled" type="checkbox"><span>自定义左侧侧边栏宽度</span></div>
-        <div class="cgfm-sidebar-width-grid"><input id="cgfm-sidebar-width-range" type="range" min="240" max="520" step="1"><span id="cgfm-sidebar-width-label" class="cgfm-sidebar-width-badge">312px</span></div>
-        <p style="margin:10px 0 0;color:var(--text-secondary,#777)">多端同步：前台页面按设定间隔检查云端；点击状态圆圈或“立即同步”会立即读取、合并、上传并校验。折叠状态保留在各设备本地，避免无意义冲突。</p>
-        <div class="cgfm-modal-actions">
-          <button id="cgfm-dav-push" type="button">立即同步</button>
-          <button id="cgfm-dav-pull" type="button">强制拉取</button>
-          <button id="cgfm-dav-test" type="button">测试连接</button>
-          <button id="cgfm-dav-cancel" class="cgfm-cancel-btn" type="button">取消</button>
-          <button id="cgfm-dav-save" class="cgfm-primary-btn" type="button">保存</button>
-        </div>
-      </div>`;
-    document.body.appendChild(modalEl);
-    bindSettingsModalEvents();
-    return modalEl;
-  }
-
-  function modalById(id) { return modalEl && modalEl.querySelector('#' + id); }
-
-  function bindSettingsModalEvents() {
-    const byId = modalById;
-    const updateWidthLabel = () => {
-      const px = clamp(Number(byId('cgfm-sidebar-width-range').value || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX);
-      byId('cgfm-sidebar-width-label').textContent = px + 'px';
-      return px;
-    };
-    const applyWidthFromControls = () => {
-      const enabled = !!byId('cgfm-sidebar-width-enabled').checked;
-      const px = updateWidthLabel();
-      applySidebarWidth(enabled, px);
-      settingsWidthPreviewApplied = true;
-    };
-    byId('cgfm-sidebar-width-range').addEventListener('input', updateWidthLabel);
-    byId('cgfm-sidebar-width-range').addEventListener('change', applyWidthFromControls);
-    byId('cgfm-sidebar-width-range').addEventListener('pointerup', applyWidthFromControls);
-    byId('cgfm-sidebar-width-enabled').addEventListener('change', applyWidthFromControls);
-    byId('cgfm-dav-url').addEventListener('input', () => {});
-    byId('cgfm-dav-cancel').addEventListener('click', cancelSettingsModal);
-    byId('cgfm-dav-save').addEventListener('click', saveSettingsModal);
-    byId('cgfm-dav-push').addEventListener('click', () => runSettingsButton('cgfm-dav-push', () => webdavSync(true, 'settings-button')));
-    byId('cgfm-dav-pull').addEventListener('click', () => runSettingsButton('cgfm-dav-pull', () => webdavPull(true)));
-    byId('cgfm-dav-test').addEventListener('click', () => runSettingsButton('cgfm-dav-test', testWebdavFromModal));
-    modalEl.addEventListener('click', event => { if (event.target === modalEl) cancelSettingsModal(); });
-  }
-
-  function fillSettingsModal() {
-    ensureSettingsModal();
-    const p = getProfile();
-    const w = p.settings.webdav || {};
-    const byId = modalById;
-    byId('cgfm-dav-enabled').checked = !!w.enabled;
-    byId('cgfm-dav-url').value = w.url ? normalizeWebdavFolderUrl(w.url).replace(/\/$/, '') : '';
-    byId('cgfm-dav-file').value = currentWebdavFileName();
-    byId('cgfm-dav-username').value = w.username || '';
-    byId('cgfm-dav-password').value = w.password || '';
-    byId('cgfm-dav-debounce').value = String(w.debounceMs || DEFAULT_DEBOUNCE_MS);
-    byId('cgfm-dav-interval').value = String(Math.max(15, Math.round((w.remoteCheckMs || DEFAULT_REMOTE_CHECK_MS) / 1000)));
-    const enabled = !!p.settings.ui.sidebarWidthEnabled;
-    const px = clamp(Number(p.settings.ui.sidebarWidthPx || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX);
-    settingsModalSnapshot = { sidebarWidthEnabled: enabled, sidebarWidthPx: px };
-    settingsWidthPreviewApplied = false;
-    byId('cgfm-sidebar-width-enabled').checked = enabled;
-    byId('cgfm-sidebar-width-range').value = String(px);
-    byId('cgfm-sidebar-width-label').textContent = px + 'px';
-  }
-
-  function showSettings() {
-    fillSettingsModal();
-    modalEl.hidden = false;
-  }
-
-  function cancelSettingsModal() {
-    if (settingsWidthPreviewApplied && settingsModalSnapshot) applySidebarWidth(settingsModalSnapshot.sidebarWidthEnabled, settingsModalSnapshot.sidebarWidthPx);
-    closeModal();
-  }
-
-  function saveSettingsModal() {
-    const p = getProfile();
-    const byId = modalById;
-    const oldW = p.settings.webdav || {};
-    const oldTarget = normalizeWebdavFolderUrl(oldW.url) + currentWebdavFileName();
-    const w = Object.assign({}, oldW);
-    w.enabled = !!byId('cgfm-dav-enabled').checked;
-    w.url = byId('cgfm-dav-url').value.trim();
-    w.username = byId('cgfm-dav-username').value;
-    w.password = byId('cgfm-dav-password').value;
-    w.debounceMs = Math.max(1000, Number(byId('cgfm-dav-debounce').value || DEFAULT_DEBOUNCE_MS));
-    w.remoteCheckMs = clamp(Number(byId('cgfm-dav-interval').value || 30) * 1000, MIN_REMOTE_CHECK_MS, 5 * 60 * 1000);
-    const requestedFile = sanitizeFilePart(String(byId('cgfm-dav-file').value || '').replace(/\.json$/i, '')) + '.json';
-    const fileMap = readRemoteFileMap();
-    fileMap[accountStableKey(currentAccount)] = requestedFile;
-    gmSet(ACCOUNT_FILE_MAP_KEY, JSON.stringify(fileMap));
-    const newTarget = normalizeWebdavFolderUrl(w.url) + requestedFile;
-    const targetChanged = oldTarget !== newTarget;
-    if (targetChanged) {
-      w.remoteEtag = '';
-      w.remoteRevision = 0;
-      w.remoteInitialized = false;
-      w.syncTarget = '';
-      w.conflict = false;
-      w.lastError = '';
-      w.lastStatus = '';
-      w.lastRemoteCheckAt = '';
-      // A new/empty profile may safely initialize from remote. Existing local data must
-      // be reviewed rather than silently replaced when the target changes.
-      w.pendingPush = profileHasUserData(p);
-      const meta = ensureSyncMeta(p);
-      meta.baseRevision = 0;
-      meta.baseProfile = null;
-      meta.operations = [];
-      meta.tombstones = { folders: {}, conversations: {} };
-      mutationBaseline = syncProjection(p);
-    }
-    p.settings.webdav = w;
-    p.settings.ui.sidebarWidthEnabled = !!byId('cgfm-sidebar-width-enabled').checked;
-    p.settings.ui.sidebarWidthPx = clamp(Number(byId('cgfm-sidebar-width-range').value || DEFAULT_SIDEBAR_WIDTH_PX), MIN_SIDEBAR_WIDTH_PX, MAX_SIDEBAR_WIDTH_PX);
-    dirtySincePush = !!w.pendingPush;
-    applySidebarWidth();
-    // New/updated credentials explicitly allow trying again after an auth failure.
-    webdavPausedForAuth = false;
-    webdavRetryNotBefore = 0;
-    webdavRetryCount = 0;
-    restartPeriodicBackup();
-    closeModal();
-    updateSyncStatusIcon();
-    // Saving connection details must not upload an empty profile before the first pull.
-    setTimeout(() => {
-      const syncSettings = !!(w.remoteInitialized && !targetChanged);
-      schedulePersist('settings', { webdav: syncSettings, touch: true });
-      if (!syncSettings) persistNow({ webdav: false });
-      if (w.enabled && !w.pendingPush) setTimeout(() => checkRemoteUpdate(true, 'settings-save'), 300);
-    }, 0);
-    toast('设置已保存。');
-  }
-
-  async function runSettingsButton(buttonId, task) {
-    const btn = modalById(buttonId);
-    if (!btn || btn.disabled) return;
-    const oldText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '处理中…';
-    try { await task(); }
-    finally {
-      btn.disabled = false;
-      btn.textContent = oldText;
-    }
-  }
-
-  async function testWebdavFromModal() {
-    try {
-      setSyncStatus('syncing');
-      const tmp = { url: modalById('cgfm-dav-url').value.trim(), username: modalById('cgfm-dav-username').value, password: modalById('cgfm-dav-password').value };
-      if (!normalizeWebdavFolderUrl(tmp.url)) throw new Error('Missing WebDAV folder URL');
-      const requestedFile = sanitizeFilePart(String(modalById('cgfm-dav-file').value || '').replace(/\.json$/i, '')) + '.json';
-      const folder = normalizeWebdavFolderUrl(tmp.url);
-      const ctx = {
-        generation: accountGeneration,
-        accountKey: lockedAccountKey || accountStableKey(currentAccount),
-        accountId: currentAccount && currentAccount.id || '',
-        fileName: requestedFile,
-        fileUrl: folder + requestedFile,
-        target: folder + requestedFile
-      };
-      try {
-        const res = await getDavJson(tmp, ctx);
-        parseRemotePayload(res, ctx);
-        setSyncStatus('idle');
-        toast('测试成功：当前账号远程文件已存在且账号匹配。');
-      } catch (err) {
-        if (err && err.status === 404) {
-          setSyncStatus('dirty');
-          toast('连接成功，但当前账号远程文件尚未创建。');
-          return;
-        }
-        throw err;
-      }
-    } catch (err) {
-      setSyncStatus('error');
-      toast('测试连接失败：' + safeError(err));
-    }
-  }
-
-  function closeModal() {
-    if (modalEl) modalEl.hidden = true;
-    settingsModalSnapshot = null;
-    settingsWidthPreviewApplied = false;
-  }
-
-  async function withWebdavOperation(name, task) {
-    if (webdavOperation) throw new Error('另一个 WebDAV 操作正在进行：' + webdavOperation);
-    webdavOperation = name;
-    try { return await task(); }
-    finally { webdavOperation = null; }
-  }
-
-  function remoteOperations(data) {
-    return Array.isArray(((data || {}).sync || {}).operations) ? data.sync.operations.filter(Boolean) : [];
-  }
-
-  function prepareOperationsForRevision(operations, revision) {
-    return mergeOperationLists(operations || []).map(op => Object.assign({}, op, {
-      revision: Number(op.revision || 0) > 0 ? Number(op.revision) : Number(revision || 0)
-    })).slice(-MAX_REMOTE_OPERATIONS);
-  }
-
-  function buildMergeResult(localProfile, remoteData) {
-    const meta = ensureSyncMeta(localProfile);
-    const remoteProfile = normalizeProfile(deepClone(remoteData.profile || remoteData), localProfile.id, localProfile.label);
-    const remoteProjection = syncProjection(remoteProfile);
-    const localProjection = syncProjection(localProfile);
-    const remoteRevision = Number(((remoteData || {}).sync || {}).revision || 0);
-    const baseRevision = Number(meta.baseRevision || (localProfile.settings.webdav || {}).remoteRevision || 0);
-    const base = meta.baseProfile && meta.baseProfile.folders ? syncProjection(meta.baseProfile) : syncProjection(localProfile);
-
-    let remoteOps = remoteOperations(remoteData).filter(op => Number(op.revision || 0) > baseRevision);
-    const remoteFromOps = applyOperationsToProjection(base, remoteOps);
-    if (stableStringify(remoteFromOps) !== stableStringify(remoteProjection)) {
-      remoteOps = mergeOperationLists(remoteOps, deriveOperations(base, remoteProjection, 'remote-snapshot-diff', {
-        at: ((remoteData.sync || {}).updatedAt) || nowIso(),
-        deviceId: ((remoteData.sync || {}).deviceId) || 'remote',
-        baseRevision,
-        revision: remoteRevision
-      }));
-    }
-
-    let localOps = mergeOperationLists(meta.operations || []);
-    const localFromOps = applyOperationsToProjection(base, localOps);
-    if (stableStringify(localFromOps) !== stableStringify(localProjection)) {
-      localOps = mergeOperationLists(localOps, deriveOperations(base, localProjection, 'local-snapshot-diff', {
-        deviceId: DEVICE_ID,
-        baseRevision,
-        revision: 0
-      }));
-    }
-
-    const mergedOps = mergeOperationLists(remoteOps, localOps);
-    const mergedProjection = applyOperationsToProjection(base, mergedOps);
-    let mergedProfile = normalizeProfile(mergedProjection, localProfile.id, localProfile.label);
-    mergedProfile = preserveLocalUiState(mergedProfile, localProfile);
-    mergedProfile.settings.webdav = deepClone(localProfile.settings.webdav || {});
-    mergedProfile.__cgfmSync = deepClone(meta);
-
-    return {
-      profile: mergedProfile,
-      remoteRevision,
-      baseRevision,
-      localOperations: localOps,
-      remoteOperations: remoteOps,
-      allOperations: mergeOperationLists(remoteOperations(remoteData), localOps, remoteOps),
-      tombstones: mergeTombstones(meta.tombstones, (remoteData.sync || {}).tombstones),
-      summary: '本地操作 ' + localOps.length + ' 条，云端新操作 ' + remoteOps.length + ' 条'
-    };
-  }
-
-  function adoptRemotePayload(data, res, ctx, options) {
-    assertWebdavContext(ctx);
-    const opts = options || {};
-    const current = getProfile();
-    const currentWebdav = deepClone(current.settings.webdav || {});
-    let normalized = normalizeProfile(deepClone(data.profile || data), current.id, current.label);
-    normalized = preserveLocalUiState(normalized, current);
-    normalized.settings.webdav = Object.assign({}, currentWebdav, {
-      remoteEtag: responseHeader(res, 'ETag') || '',
-      remoteRevision: Number((data.sync || {}).revision || 0),
-      remoteInitialized: true,
-      syncTarget: ctx.target,
-      pendingPush: false,
-      lastPullAt: opts.wasPull ? nowIso() : (currentWebdav.lastPullAt || ''),
-      lastPushAt: opts.wasPush ? nowIso() : (currentWebdav.lastPushAt || ''),
-      lastRemoteCheckAt: nowIso(),
-      lastStatus: opts.status || 'sync OK at ' + shortTime(nowIso()),
-      lastError: '',
-      conflict: false,
-      lastMergeAt: opts.wasMerge ? nowIso() : (currentWebdav.lastMergeAt || ''),
-      lastMergeSummary: opts.mergeSummary || (currentWebdav.lastMergeSummary || '')
-    });
-    const meta = ensureSyncMeta(normalized);
-    meta.baseRevision = Number((data.sync || {}).revision || 0);
-    meta.baseProfile = syncProjection(normalized);
-    meta.operations = [];
-    meta.tombstones = mergeTombstones((data.sync || {}).tombstones);
-    state = normalized;
-    mutationBaseline = syncProjection(state);
-    if (!state.folders[selectedFolderId]) selectedFolderId = ROOT_ID;
-    dirtySincePush = false;
-    localUnsavedChanges = false;
-    setSyncStatus('idle');
-    queueRender();
-    applySidebarWidth();
-    restartPeriodicBackup();
-    schedulePersist('webdav-adopt-remote', { webdav: false, touch: false });
-    return true;
-  }
-
-  async function guardedPut(settings, ctx, beforeRes, body, attempt) {
-    const etag = responseHeader(beforeRes, 'ETag');
-    if (etag) {
-      try {
-        return await putDavJson(settings, body, { ifMatch: etag }, ctx);
-      } catch (err) {
-        if (!(err && err.status === 412)) throw err;
-        const recheck = await getDavJson(settings, ctx);
-        assertWebdavContext(ctx);
-        if (String(recheck.responseText || '') !== String(beforeRes.responseText || '')) throw err;
-        if (attempt < 2) throw err;
-        // Some Nextcloud/proxy combinations reject a freshly read ETag even when the
-        // file is byte-for-byte unchanged. Only after a confirming GET is an
-        // unconditional compatibility retry allowed.
-        return putDavJson(settings, body, { force: true }, ctx);
-      }
-    }
-    const recheck = await getDavJson(settings, ctx);
-    assertWebdavContext(ctx);
-    if (String(recheck.responseText || '') !== String(beforeRes.responseText || '')) {
-      const err = new Error('上传前云端文件发生变化，正在重新合并。');
-      err.status = 412;
-      err.isConflict = true;
-      throw err;
-    }
-    if (attempt < 2) {
-      const err = new Error('服务器 GET 响应缺少 ETag，重新读取后再尝试。');
-      err.status = 412;
-      err.isConflict = true;
-      throw err;
-    }
-    return putDavJson(settings, body, { force: true }, ctx);
-  }
-
-  async function webdavSync(manual, reason) {
-    const p = getProfile();
-    const w = p.settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) {
-      if (manual) toast('请先在设置中启用并配置 WebDAV。');
-      return;
-    }
-    if (webdavOperation) {
-      if (localHasSyncChanges(p)) webdavResyncRequested = true;
-      if (manual) toast('WebDAV 正在同步；本次请求已排队。');
-      return;
-    }
-    if (!manual && (webdavPausedForAuth || Date.now() < webdavRetryNotBefore)) return;
-    if (localUnsavedChanges || pendingPersistTimer) persistNow({ webdav: false });
-    captureSyncOperations(reason || 'sync');
-    const ctx = captureWebdavContext(w);
-    const syncBusinessAtStart = storageBusinessProjectionKey(p);
-    const assertSyncBusinessUnchanged = () => {
-      if (state !== p || storageBusinessProjectionKey(p) !== syncBusinessAtStart || localUnsavedChanges) {
-        const err = new Error('同步过程中本地文件夹发生变更；取消过期结果，等待下一轮同步。');
-        err.isConflict = true;
-        err.isStaleLocal = true;
-        throw err;
-      }
-    };
-    try {
-      await withWebdavOperation('sync', async () => {
-        setSyncStatus('syncing');
-        w.lastStatus = 'syncing';
-        for (let attempt = 0; attempt < 3; attempt++) {
-          assertWebdavContext(ctx);
-          let remoteRes;
-          let remoteData;
-          try {
-            remoteRes = await getDavJson(w, ctx);
-            assertWebdavContext(ctx);
-            remoteData = parseRemotePayload(remoteRes, ctx);
-          } catch (err) {
-            if (!(err && err.status === 404)) throw err;
-            const meta = ensureSyncMeta(p);
-            const initialOps = meta.operations.length ? meta.operations : deriveOperations(emptySyncProjection(p.label), syncProjection(p), 'initialize-remote', { baseRevision: 0, deviceId: DEVICE_ID });
-            const revision = 1;
-            const operations = prepareOperationsForRevision(initialOps, revision);
-            const payload = exportPayload(p, revision, { operations, tombstones: meta.tombstones });
-            await putDavJson(w, JSON.stringify(payload, null, 2), { createOnly: true }, ctx);
-            const verify = await getDavJson(w, ctx);
-            const verified = parseRemotePayload(verify, ctx);
-            assertSyncBusinessUnchanged();
-            adoptRemotePayload(verified, verify, ctx, { wasPush: true, status: 'created and synced at ' + shortTime(nowIso()) });
-            if (manual) toast('已创建远程文件并完成同步。');
-            return;
-          }
-
-          const remoteRevision = Number((remoteData.sync || {}).revision || 0);
-          const meta = ensureSyncMeta(p);
-          const baseRevision = Number(meta.baseRevision || w.remoteRevision || 0);
-          const remoteProjection = syncProjection(remoteData.profile || remoteData);
-          const baseProjection = meta.baseProfile && meta.baseProfile.folders ? syncProjection(meta.baseProfile) : null;
-          const remoteContentChanged = !baseProjection || stableStringify(remoteProjection) !== stableStringify(baseProjection);
-          const localDirty = localHasSyncChanges(p);
-
-          if (!w.remoteInitialized || w.syncTarget !== ctx.target || !meta.baseProfile) {
-            if (!profileHasUserData(p) && !localDirty) {
-              assertSyncBusinessUnchanged();
-              adoptRemotePayload(remoteData, remoteRes, ctx, { wasPull: true, status: 'initialized from remote at ' + shortTime(nowIso()) });
-              if (manual) toast('已从云端初始化当前设备。');
-              return;
+        case 'folder.rename':
+            if (!f)
+                throw Error('文件夹不存在');
+            f.name = (change.name ?? '').trim() || f.name;
+            f.updatedAt = now;
+            break;
+        case 'folder.color':
+            if (!f || !/^#[a-f0-9]{6}$/i.test(change.color ?? ''))
+                throw Error('无效颜色');
+            f.color = change.color;
+            f.updatedAt = now;
+            break;
+        case 'folder.collapse':
+            if (!f)
+                throw Error('文件夹不存在');
+            f.collapsed = !f.collapsed;
+            f.updatedAt = now;
+            break;
+        case 'folder.move':
+            if (!f)
+                throw Error('文件夹不存在');
+            if (change.parentId && !d.folders[change.parentId])
+                throw Error('目标文件夹不存在');
+            f.parentId = change.parentId ?? null;
+            f.updatedAt = now;
+            break;
+        case 'folder.delete': {
+            if (!f)
+                throw Error('文件夹不存在');
+            const ids = new Set([f.id]);
+            let old = 0;
+            while (ids.size !== old) {
+                old = ids.size;
+                for (const x of Object.values(d.folders))
+                    if (x.parentId && ids.has(x.parentId))
+                        ids.add(x.id);
             }
-            const err = new Error('本地已有数据但尚未建立当前远端基线；请先导出本地备份，再使用“强制拉取”或重新初始化。');
-            err.isConflict = true;
-            throw err;
-          }
-
-          if (!localDirty && remoteRevision === baseRevision && !remoteContentChanged) {
-            w.remoteEtag = responseHeader(remoteRes, 'ETag') || '';
-            w.lastRemoteCheckAt = nowIso();
-            w.lastStatus = 'verified at ' + shortTime(w.lastRemoteCheckAt);
-            w.lastError = '';
-            w.conflict = false;
-            setSyncStatus('idle');
-            schedulePersist('webdav-verified', { webdav: false, touch: false });
-            if (manual) toast('已与云端核对，内容一致。');
-            return;
-          }
-
-          if (!localDirty && (remoteRevision !== baseRevision || remoteContentChanged)) {
-            assertSyncBusinessUnchanged();
-            adoptRemotePayload(remoteData, remoteRes, ctx, { wasPull: true, status: 'auto pull at ' + shortTime(nowIso()) });
-            if (manual) toast('已下载并应用云端更新。');
-            return;
-          }
-
-          assertSyncBusinessUnchanged();
-          const merge = buildMergeResult(p, remoteData);
-          const nextRevision = Math.max(remoteRevision, baseRevision) + 1;
-          const operations = prepareOperationsForRevision(merge.allOperations, nextRevision);
-          const payload = exportPayload(merge.profile, nextRevision, { operations, tombstones: merge.tombstones });
-          const body = JSON.stringify(payload, null, 2);
-          try {
-            assertSyncBusinessUnchanged();
-            await guardedPut(w, ctx, remoteRes, body, attempt);
-          } catch (err) {
-            if (err && err.status === 412 && attempt < 2) continue;
-            throw err;
-          }
-
-          const verify = await getDavJson(w, ctx);
-          assertWebdavContext(ctx);
-          const verified = parseRemotePayload(verify, ctx);
-          const verifiedSync = verified.sync || {};
-          if (Number(verifiedSync.revision || 0) !== nextRevision || String(verifiedSync.deviceId || '') !== DEVICE_ID) {
-            if (attempt < 2) continue;
-            throw new Error('同步写入后的远程校验失败。');
-          }
-          assertSyncBusinessUnchanged();
-          adoptRemotePayload(verified, verify, ctx, {
-            wasPush: true,
-            wasMerge: remoteRevision !== baseRevision,
-            mergeSummary: merge.summary,
-            status: (remoteRevision !== baseRevision ? 'merged and synced at ' : 'pushed at ') + shortTime(nowIso())
-          });
-          if (manual) toast(remoteRevision !== baseRevision ? '已合并本地与云端修改并完成同步。' : '本地修改已同步到云端。');
-          return;
+            for (const id of ids)
+                delete d.folders[id];
+            for (const c of Object.values(d.conversations))
+                if (ids.has(c.folderId))
+                    delete d.conversations[c.id];
+            break;
         }
-        throw new Error('云端持续变化，三次合并重试仍未完成；请稍后再次同步。');
-      });
-      webdavRetryCount = 0;
-      webdavRetryNotBefore = 0;
-      webdavPausedForAuth = false;
-    } catch (err) {
-      if (err && err.isStaleAccount) return;
-      if (err && err.isStaleLocal) {
-        // This is an expected optimistic-concurrency cancellation, not a network error.
-        // Preserve the latest local projection; never apply the old network response.
-        const current = getProfile();
-        const currentW = current.settings.webdav || {};
-        currentW.pendingPush = localHasSyncChanges(current);
-        dirtySincePush = !!currentW.pendingPush;
-        currentW.lastError = '';
-        currentW.lastStatus = 'local changes queued';
-        currentW.conflict = false;
-        setSyncStatus(currentW.pendingPush ? 'dirty' : 'idle');
-        schedulePersist('webdav-stale-local', { webdav: false, touch: false });
-        webdavResyncRequested = true;
-        return;
-      }
-      const current = getProfile();
-      const currentW = current.settings.webdav || {};
-      currentW.lastError = safeError(err);
-      currentW.lastStatus = 'sync failed';
-      currentW.conflict = !!(err && err.isConflict);
-      currentW.pendingPush = localHasSyncChanges(current);
-      dirtySincePush = !!currentW.pendingPush;
-      setSyncStatus('error');
-      const httpStatus = Number(err && err.status || 0);
-      if (httpStatus === 401 || httpStatus === 403) {
-        webdavPausedForAuth = true;
-        webdavRetryNotBefore = Infinity;
-      } else if (err && err.isConflict) {
-        // Persistent merge conflicts require user intervention, not a hot retry loop.
-        webdavRetryNotBefore = Date.now() + 5 * 60 * 1000;
-      } else {
-        webdavRetryCount = Math.min(webdavRetryCount + 1, 6);
-        webdavRetryNotBefore = Date.now() + Math.min(5 * 60 * 1000, 30000 * Math.pow(2, webdavRetryCount - 1));
-      }
-      schedulePersist('webdav-sync-fail', { webdav: false, touch: false });
-      if (manual) toast('WebDAV 同步失败：' + currentW.lastError);
-      else console.warn(APP_NAME, 'WebDAV sync failed:', reason || '', err);
-    } finally {
-      if (webdavResyncRequested) {
-        webdavResyncRequested = false;
-        const current = getProfile();
-        if (localHasSyncChanges(current) && !webdavPausedForAuth) {
-          const wait = Math.max(1500, webdavRetryNotBefore - Date.now());
-          queueWebdavSync('queued-local-change', wait);
+        case 'conversation.assign': {
+            const id = change.id, folderId = change.folderId;
+            if (!d.folders[folderId])
+                throw Error('目标文件夹不存在');
+            const prev = d.conversations[id];
+            d.conversations[id] = { id, folderId, title: change.title || prev?.title || '未命名对话', addedAt: prev?.addedAt || now, updatedAt: now };
+            break;
         }
-      } else if (localHasSyncChanges(getProfile()) && webdavRetryNotBefore > Date.now() && !webdavPausedForAuth) {
-        queueWebdavSync('retry-after-failure', webdavRetryNotBefore - Date.now());
-      }
+        case 'conversation.remove':
+            delete d.conversations[change.id];
+            break;
+        case 'conversation.title':
+            if (d.conversations[change.id]) {
+                d.conversations[change.id].title = change.title ?? '';
+                d.conversations[change.id].updatedAt = now;
+            }
+            break;
+        default: throw Error('未知业务命令');
     }
-  }
+    validate(d);
+    return d;
+}
+function diff(before, after, device, sequence) {
+    const result = [];
+    for (const type of ['folder', 'conversation']) {
+        const a = type === 'folder' ? before.folders : before.conversations, b = type === 'folder' ? after.folders : after.conversations;
+        for (const key of new Set([...Object.keys(a), ...Object.keys(b)]))
+            if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) {
+                result.push({ id: (0, exports.uid)(), device, seq: ++sequence, time: Date.now(), type: `${type}.${b[key] ? 'upsert' : 'delete'}`, key, ...(b[key] ? { value: (0, exports.copy)(b[key]) } : {}) });
+            }
+    }
+    return result;
+}
 
-
-  async function webdavPull(manual) {
-    const p = getProfile();
-    const w = p.settings.webdav || {};
-    if (!normalizeWebdavFolderUrl(w.url)) { if (manual) toast('请先填写 WebDAV 文件夹地址。'); return; }
-    if (webdavOperation) { if (manual) toast('另一个 WebDAV 操作正在进行。'); return; }
-    if (localUnsavedChanges || pendingPersistTimer) persistNow({ webdav: false });
-    if (manual && localHasSyncChanges(p) && !confirm('强制拉取会放弃当前设备尚未同步的修改。确定继续吗？')) return;
-    const ctx = captureWebdavContext(w);
-    const syncBusinessAtStart = storageBusinessProjectionKey(p);
-    const assertSyncBusinessUnchanged = () => {
-      if (state !== p || storageBusinessProjectionKey(p) !== syncBusinessAtStart || localUnsavedChanges) {
-        const err = new Error('同步过程中本地文件夹发生变更；取消过期结果，等待下一轮同步。');
-        err.isConflict = true;
-        throw err;
-      }
+},
+"sync":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.merge = merge;
+exports.davRequest = davRequest;
+exports.decodeRemote = decodeRemote;
+exports.createRemote = createRemote;
+exports.addPending = addPending;
+const model_1 = require("./model");
+/* Merge each changed field against a shared snapshot, with deletion winning and
+   a deterministic tie-break on conflicting same-field values. */
+function merge(base, local, remote) {
+    (0, model_1.validate)(base);
+    (0, model_1.validate)(local);
+    (0, model_1.validate)(remote);
+    const result = (0, model_1.blank)(), conflicts = [];
+    const mergeSet = (kind, b, l, r) => {
+        const out = {};
+        for (const id of new Set([...Object.keys(b), ...Object.keys(l), ...Object.keys(r)])) {
+            const bv = b[id], lv = l[id], rv = r[id];
+            if (!bv) {
+                if (lv && rv) {
+                    if (JSON.stringify(lv) !== JSON.stringify(rv))
+                        conflicts.push(`${kind}:${id}:concurrent-create`);
+                    out[id] = (0, model_1.copy)(JSON.stringify(lv) < JSON.stringify(rv) ? lv : rv);
+                }
+                else if (lv || rv)
+                    out[id] = (0, model_1.copy)((lv || rv));
+                continue;
+            }
+            if (!lv || !rv) {
+                if (lv !== rv)
+                    conflicts.push(`${kind}:${id}:delete-vs-edit`);
+                continue;
+            }
+            const v = {};
+            for (const field of new Set([...Object.keys(bv), ...Object.keys(lv), ...Object.keys(rv)])) {
+                const old = bv[field], a = lv[field], z = rv[field];
+                if (JSON.stringify(a) === JSON.stringify(z))
+                    v[field] = a;
+                else if (JSON.stringify(a) === JSON.stringify(old))
+                    v[field] = z;
+                else if (JSON.stringify(z) === JSON.stringify(old))
+                    v[field] = a;
+                else {
+                    v[field] = JSON.stringify(a) < JSON.stringify(z) ? a : z;
+                    conflicts.push(`${kind}:${id}:${field}`);
+                }
+            }
+            out[id] = v;
+        }
+        return out;
     };
-    try {
-      await withWebdavOperation('pull', async () => {
-        setSyncStatus('syncing');
-        const res = await getDavJson(w, ctx);
-        const data = parseRemotePayload(res, ctx);
-        assertSyncBusinessUnchanged();
-        adoptRemotePayload(data, res, ctx, { wasPull: true, status: 'forced pull at ' + shortTime(nowIso()) });
-        if (manual) toast('已强制拉取云端数据。');
-      });
-    } catch (err) {
-      if (err && err.isStaleAccount) return;
-      w.lastError = safeError(err);
-      w.lastStatus = 'pull failed';
-      setSyncStatus('error');
-      schedulePersist('webdav-pull-fail', { webdav: false, touch: false });
-      if (manual) toast('WebDAV 拉取失败：' + w.lastError);
+    result.folders = mergeSet('folder', base.folders, local.folders, remote.folders);
+    result.conversations = mergeSet('conversation', base.conversations, local.conversations, remote.conversations);
+    // Concurrent moves may form a cycle; normalize to root deterministically.
+    for (const f of Object.values(result.folders))
+        if (f.parentId && !result.folders[f.parentId]) {
+            conflicts.push(`folder:${f.id}:missing-parent`);
+            f.parentId = null;
+        }
+    for (const id of Object.keys(result.folders).sort()) {
+        const f = result.folders[id], visited = new Set([id]);
+        let p = f.parentId;
+        while (p) {
+            if (visited.has(p)) {
+                conflicts.push(`folder:${id}:cycle`);
+                f.parentId = null;
+                break;
+            }
+            visited.add(p);
+            p = result.folders[p]?.parentId ?? null;
+        }
     }
-  }
-
-  async function checkRemoteUpdate(showToast, reason) {
-    const w = getProfile().settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url) || document.hidden) return;
-    if (webdavOperation) {
-      if (localHasSyncChanges(getProfile())) webdavResyncRequested = true;
-      return;
-    }
-    if (!showToast && (webdavPausedForAuth || Date.now() < webdavRetryNotBefore)) return;
-    if (Date.now() - lastRemoteCheckAt < 10000 && !localHasSyncChanges(getProfile())) return;
-    lastRemoteCheckAt = Date.now();
-    await webdavSync(!!showToast, reason || 'remote-check');
-  }
-
-  // Single pending auto-sync timer. It coalesces edits and retries without parallel requests.
-  function queueWebdavSync(reason, delay) {
-    const w = getProfile().settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) return;
-    if (pendingWebdavTimer) clearTimeout(pendingWebdavTimer);
-    pendingWebdavTimer = setTimeout(() => {
-      pendingWebdavTimer = null;
-      if (document.hidden || webdavPausedForAuth) return; // foreground recovery picks it up
-      if (webdavOperation) {
-        webdavResyncRequested = true;
-        return;
-      }
-      if (Date.now() < webdavRetryNotBefore) {
-        queueWebdavSync(reason, webdavRetryNotBefore - Date.now());
-        return;
-      }
-      if (localHasSyncChanges(getProfile())) webdavSync(false, reason);
-    }, Math.max(0, delay));
-  }
-
-  function scheduleAutoBackup(reason) {
-    const w = getProfile().settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) { updateSyncStatusIcon(); return; }
-    const delay = Math.max(3000, Number(w.debounceMs || DEFAULT_DEBOUNCE_MS));
-    queueWebdavSync(reason || 'auto-local-change', Math.max(delay, webdavRetryNotBefore - Date.now()));
-  }
-
-  function restartPeriodicBackup() {
-    if (periodicWebdavTimer) clearInterval(periodicWebdavTimer);
-    periodicWebdavTimer = null;
-    const w = getProfile().settings.webdav || {};
-    if (!w.enabled || !normalizeWebdavFolderUrl(w.url)) return;
-    const interval = clamp(Number(w.remoteCheckMs || DEFAULT_REMOTE_CHECK_MS), MIN_REMOTE_CHECK_MS, 5 * 60 * 1000);
-    periodicWebdavTimer = setInterval(() => {
-      if (!document.hidden) checkRemoteUpdate(false, 'foreground-interval');
-    }, interval);
-  }
-
-  function davRequest(method, url, body, settings, extraHeaders) {
+    for (const c of Object.values(result.conversations))
+        if (!result.folders[c.folderId]) {
+            conflicts.push(`conversation:${c.id}:orphan`);
+            delete result.conversations[c.id];
+        }
+    (0, model_1.validate)(result);
+    return { data: result, conflicts };
+}
+function davRequest(config, method, extra = {}, body) {
+    const path = config.url.replace(/\/+$/, '') + '/' + encodeURIComponent(config.file || 'chatgpt-folders-ts-v1.json');
+    if (!/^https:\/\//i.test(path))
+        return Promise.reject(Error('WebDAV 必须使用 HTTPS'));
     return new Promise((resolve, reject) => {
-      const headers = Object.assign({}, extraHeaders || {});
-      if (settings && settings.username) headers.Authorization = 'Basic ' + base64(settings.username + ':' + (settings.password || ''));
-      const details = {
-        method, url, data: body || undefined, headers, timeout: 30000,
-        user: settings && settings.username ? settings.username : undefined,
-        password: settings && settings.username ? (settings.password || '') : undefined,
-        onload: res => {
-          if (res.status >= 200 && res.status < 300) resolve(res);
-          else {
-            const err = new Error(method + ' failed with HTTP ' + res.status + ' ' + (res.statusText || ''));
-            err.status = res.status;
-            err.statusText = res.statusText || '';
-            err.responseText = res.responseText || '';
-            err.responseHeaders = res.responseHeaders || '';
-            reject(err);
-          }
-        },
-        onerror: err => reject(new Error('Network error' + (err && err.error ? ': ' + err.error : ''))),
-        ontimeout: () => reject(new Error('Request timed out'))
-      };
-      try {
-        if (typeof GM_xmlhttpRequest === 'function') GM_xmlhttpRequest(details);
-        else if (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function') GM.xmlHttpRequest(details).catch(reject);
-        else reject(new Error('当前油猴扩展不支持 GM_xmlhttpRequest'));
-      } catch (err) { reject(err); }
+        const headers = { Authorization: 'Basic ' + btoa(unescape(encodeURIComponent(`${config.username}:${config.password}`))), ...extra };
+        if (body !== undefined)
+            headers['Content-Type'] = 'application/json; charset=utf-8';
+        GM_xmlhttpRequest({ method, url: path, headers, data: body, timeout: 20000, onload: (r) => {
+                const etag = (r.responseHeaders || '').match(/^etag:\s*(.+)$/im)?.[1]?.trim() ?? null;
+                resolve({ status: r.status, text: String(r.responseText || ''), etag });
+            }, onerror: () => reject(Error('WebDAV 网络错误')), ontimeout: () => reject(Error('WebDAV 请求超时')) });
     });
-  }
+}
+function decodeRemote(raw, account) {
+    const e = JSON.parse(raw);
+    if (e.protocol !== 'cgfm-ts' || e.version !== 1 || e.account !== account || !Number.isSafeInteger(e.revision))
+        throw Error('云端文件版本或账号不匹配');
+    (0, model_1.validate)(e.data);
+    return e;
+}
+function createRemote(account, device, revision, data) {
+    return { protocol: 'cgfm-ts', version: 1, account, revision, writer: device, data: (0, model_1.copy)(data) };
+}
+function addPending(old, newItems) { return [...old, ...newItems].slice(-5000); }
 
-  function base64(str) { return btoa(unescape(encodeURIComponent(str))); }
-
-  // ---------------------------------------------------------------------------
-  // 10b. Same-browser multi-tab synchronization
-  // ---------------------------------------------------------------------------
-
-  function setupCrossTabStorageSync() {
-    const revisionKey = activeRevisionStorageKey();
-    if (storageSyncBound && storageSyncListenerKey === revisionKey) return;
-    teardownCrossTabStorageSync();
-    storageSyncBound = true;
-    storageSyncListenerKey = revisionKey;
-    const current = currentStorageRevisionInfo();
-    if (current.revision) lastSeenStorageRevision = current.revision;
-
-    if (typeof GM_addValueChangeListener !== 'function') {
-      console.info(APP_NAME, 'GM_addValueChangeListener is unavailable; multi-tab sync disabled.');
-      return;
-    }
-
-    try {
-      storageSyncListenerId = GM_addValueChangeListener(revisionKey, (_key, _oldValue, newValue, remote) => {
-        if (!remote || revisionKey !== activeRevisionStorageKey()) return;
-        const meta = parseRevisionMeta(newValue);
-        const rev = meta.revision;
-        const writer = meta.writer;
-        if (!rev || writer === TAB_ID || !isRevisionNewer(rev, lastSeenStorageRevision)) return;
-        if (crossTabApplyTimer) clearTimeout(crossTabApplyTimer);
-        crossTabApplyTimer = setTimeout(() => {
-          crossTabApplyTimer = null;
-          maybeApplyNewerStoredProfile('external-change');
-        }, 300);
-      });
-    } catch (err) {
-      storageSyncListenerId = null;
-      console.warn(APP_NAME, 'GM_addValueChangeListener failed; multi-tab sync disabled.', err);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // 11. Low-cost remount checks and boot
-  // ---------------------------------------------------------------------------
-
-  function toast(message) {
-    const old = document.querySelector('.cgfm-toast');
-    if (old) old.remove();
-    const el = document.createElement('div');
-    el.className = 'cgfm-toast';
-    el.textContent = String(message || '');
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 2200);
-  }
-
-  function fnv1a(str) {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
-    }
-    return (h >>> 0).toString(16).padStart(8, '0');
-  }
-
-  function isVisibleElement(el) {
-    if (!el || !(el instanceof Element)) return false;
-    try {
-      const cs = getComputedStyle(el);
-      return cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0' && el.getClientRects().length > 0;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  function getAppShellSidebarState() {
-    try {
-      const shell = document.getElementById('app-shell-sidebar');
-      const panel = document.querySelector('[data-app-shell-left-panel-appearance]');
-      if (!shell || !panel) return null;
-      const content = shell.querySelector('[data-slate-sidebar-content="true"]');
-      const rail = shell.querySelector('[data-app-navigation-rail="true"]');
-      const peeking = panel.getAttribute('data-slate-sidebar-peeking') === 'true';
-      if (!content) return { mode: 'rail-only', shell, panel, content: null, rail };
-      const inert = content.hasAttribute('inert') || !!content.closest('[inert]');
-      if (inert || !isVisibleElement(content)) return { mode: 'rail-only', shell, panel, content, rail };
-      return { mode: peeking ? 'peeking' : 'pinned', shell, panel, content, rail };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  function nativeSidebarContentVisible() {
-    try {
-      const shellState = getAppShellSidebarState();
-      if (shellState) return shellState.mode !== 'rail-only';
-
-      const sidebar = document.getElementById('stage-slideover-sidebar') || document;
-      const history = document.getElementById('history');
-      if (history && !history.closest('[inert]') && isVisibleElement(history)) return true;
-
-      // Keep this check intentionally narrow. Do not querySelectorAll() every chat link:
-      // sidebar open/close and sleep-resume checks should not scan the whole Recent list.
-      const closeBtn = sidebar.querySelector('[data-testid="close-sidebar-button"]');
-      if (closeBtn && !closeBtn.closest('[inert]') && isVisibleElement(closeBtn)) return true;
-
-      const oneNativeRow = sidebar.querySelector(NATIVE_CHAT_ROW_SELECTOR);
-      if (oneNativeRow && !(rootEl && rootEl.contains(oneNativeRow)) && !oneNativeRow.closest('[inert]') && isVisibleElement(oneNativeRow)) return true;
-
-      const oneNativeChat = sidebar.querySelector('a[href^="/c/"], a[href*="/c/"]');
-      if (oneNativeChat && !(rootEl && rootEl.contains(oneNativeChat)) && !oneNativeChat.closest('[inert]') && isVisibleElement(oneNativeChat)) return true;
-    } catch (_) {}
-    return false;
-  }
-
-  function officialSidebarExpanded() {
-    const shellState = getAppShellSidebarState();
-    const sidebar = document.getElementById('stage-slideover-sidebar');
-
-    // 2026-09 app-shell has three states. aria-expanded remains true in both peeking and
-    // pinned snapshots, so it is not a reliable discriminator. Treat peeking as visible.
-    if (shellState) return shellState.mode !== 'rail-only';
-
-    // After Windows/Firefox sleep restore, legacy ChatGPT can briefly show collapsed controls
-    // while the expanded history area is already visible. Prefer visible native content.
-    if (nativeSidebarContentVisible()) return true;
-
-    if (!sidebar) return true;
-
-    const closeBtn = sidebar.querySelector('[data-testid="close-sidebar-button"]');
-    if (closeBtn && closeBtn.getAttribute('aria-expanded') === 'true' && isVisibleElement(closeBtn)) return true;
-
-    const tiny = document.getElementById('stage-sidebar-tiny-bar');
-    if (tiny && !tiny.hasAttribute('inert') && isVisibleElement(tiny)) return false;
-
-    const openBtn = sidebar.querySelector('button[aria-label*="打开边栏"],button[aria-label*="Open sidebar"],button[aria-label*="open sidebar"]');
-    if (openBtn && !openBtn.closest('[inert]') && isVisibleElement(openBtn) && openBtn.getAttribute('aria-expanded') === 'false') return false;
-    return true;
-  }
-
-  // Keep credentials out of localStorage, WebDAV, exports, logs and page DOM.
-  // A GM cache is still sensitive: scoped to an observed account and capped at 24h.
-  function authCacheKey(accountId) {
-    return AUTH_CACHE_PREFIX + fnv1a(location.host + '|' + accountId);
-  }
-
-  function forgetAuthTemplate(accountId) {
-    if (!accountId) return;
-    gmSet(authCacheKey(accountId), null);
-    if (capturedOfficialHistoryRequest?.accountId === accountId) capturedOfficialHistoryRequest = null;
-  }
-
-  function cacheOfficialAuthHeaders(headers) {
-    const id = headers.get('chatgpt-account-id');
-    const auth = headers.get('authorization');
-    if (!id || !auth || !/^Bearer\s+\S+/i.test(auth)) return;
-    // Never cache an observed request from a different, known account.
-    if (currentAccount?.accountId && String(currentAccount.accountId) !== id) return;
-    const kept = {};
-    for (const name of AUTH_HEADER_ALLOWLIST) {
-      if (headers.has(name)) kept[name] = headers.get(name);
-    }
-    const capturedAt = Date.now();
-    capturedOfficialHistoryRequest = {
-      headers:new Headers(kept), accountId:id, capturedAt, fromCache:false
-    };
-    gmSet(authCacheKey(id), { accountId:id, capturedAt, headers:kept });
-  }
-
-  function restoreOfficialAuthHeaders() {
-    if (capturedOfficialHistoryRequest) return capturedOfficialHistoryRequest;
-    // A remembered account alone is insufficient to reuse a bearer credential.
-    const detected = getCurrentAccountInfo();
-    const id = detected?.accountId;
-    if (!id || (currentAccount?.accountId && currentAccount.accountId !== id)) return null;
-    const cached = gmGet(authCacheKey(id), null);
-    if (!cached || cached.accountId !== id) return null;
-    if (!Number.isFinite(cached.capturedAt) || Date.now() < cached.capturedAt ||
-        Date.now() - cached.capturedAt > AUTH_CACHE_TTL_MS) {
-      forgetAuthTemplate(id);
-      return null;
-    }
-    try {
-      const headers = new Headers(cached.headers);
-      if (headers.get('chatgpt-account-id') !== id ||
-          !/^Bearer\s+\S+/i.test(headers.get('authorization') || '')) {
-        forgetAuthTemplate(id);
-        return null;
-      }
-      capturedOfficialHistoryRequest = {
-        headers, accountId:id, capturedAt:cached.capturedAt, fromCache:true
-      };
-      return capturedOfficialHistoryRequest;
-    } catch (_) {
-      forgetAuthTemplate(id);
-      return null;
-    }
-  }
-
-  // Capture naturally occurring authenticated requests, without expanding the
-  // native sidebar or calling an undocumented login/session API.
-  function installOfficialHistoryCapture() {
-    try {
-      const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-      const previous = page.fetch;
-      if (typeof previous !== 'function' || previous.__cgfmHistoryCapture) return;
-      const wrapped = function(input, init) {
+},
+"runtime":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.FolderApplication = void 0;
+const model_1 = require("./model");
+const sync_1 = require("./sync");
+const style = `
+#cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--text-primary,#dedede);--cg-bg:var(--main-surface-primary,#202123);--cg-border:var(--border-light,#555)}
+#cgfm-next-root *{box-sizing:border-box}#cgfm-next-launch{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:12px;padding:10px;cursor:pointer}
+#cgfm-next-panel{position:absolute;top:0;left:45px;width:330px;max-height:78vh;display:none;flex-direction:column;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:14px;box-shadow:0 8px 36px #0005;overflow:hidden}
+#cgfm-next-root[data-open="yes"] #cgfm-next-panel{display:flex}.cgfm-head{display:flex;align-items:center;gap:6px;padding:11px;border-bottom:1px solid var(--cg-border)}
+.cgfm-scroll{overflow:auto;min-height:70px;padding:7px}.cgfm-row{min-height:32px;display:flex;align-items:center;gap:5px;border-radius:7px;padding:2px 5px;cursor:pointer;user-select:none}.cgfm-row:hover,.cgfm-row.cgfm-selected{background:var(--surface-hover,#6664)}.cgfm-row.cgfm-drop{outline:2px solid #70a6f0}
+.cgfm-row span.cgfm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.cgfm-row button,.cgfm-head button{border:0;color:inherit;background:transparent;cursor:pointer;border-radius:6px;padding:4px 6px}.cgfm-row button:hover,.cgfm-head button:hover{background:#8884}
+.cgfm-group{padding:9px 7px 4px;font-size:12px;opacity:.65}.cgfm-pop{background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:10px;padding:12px;box-shadow:0 8px 30px #0005;color:inherit}.cgfm-pop input,.cgfm-pop select{color:inherit;background:var(--cg-bg);border:1px solid var(--cg-border);padding:6px;border-radius:6px;width:100%}.cgfm-pop label{display:block;margin:7px 0}.cgfm-pop button{margin:3px;border:1px solid var(--cg-border);border-radius:6px;padding:6px;background:transparent;color:inherit;cursor:pointer}.cgfm-muted{opacity:.7;font-size:11px}.cgfm-foot{padding:7px 11px;border-top:1px solid var(--cg-border);font-size:11px;cursor:pointer}
+`;
+class FolderApplication {
+    account = '';
+    profile = (0, model_1.defaultLocal)();
+    device = '';
+    railButton = null;
+    root;
+    panel;
+    list;
+    status;
+    launch;
+    readOnly = false;
+    pinned = false;
+    hovered = false;
+    selected = null;
+    editId = null;
+    busy = false;
+    dirty = false;
+    recent = [];
+    apiAt = 0;
+    lastRefresh = 0;
+    syncFailures = 0;
+    syncRetryAt = 0;
+    authFailure = false;
+    timer = 0;
+    observer = null;
+    listener = 0;
+    generation = 0;
+    drag = null;
+    popup = null;
+    suppressClickUntil = 0;
+    ghost = null;
+    authHeaders = {};
+    authInstalled = false;
+    start() { this.device = GM_getValue('cgfm.next.device', '') || (0, model_1.uid)(); GM_setValue('cgfm.next.device', this.device); this.account = this.detectAccount(); this.load(); this.loadTitleGuards(); this.restoreAuth(); this.build(); this.installAuthCapture(); this.bindGlobal(); this.scanRecents(); this.render(); this.timer = window.setInterval(() => { this.checkAccount(); if (Date.now() - this.lastRefresh > 30000) {
+        this.lastRefresh = Date.now();
+        if (this.isOpen())
+            this.scanRecents();
+    } if (this.profile.dav.url && document.visibilityState === 'visible')
+        void this.sync(false); }, 30000); window.setTimeout(() => { this.checkAccount(); this.mountRail(); }, 1500); }
+    key() { return `cgfm.next.account.${this.account}`; }
+    detectAccount() {
         try {
-          const url = new URL(typeof input === 'string' ? input : input.url, page.location.href);
-          if (url.origin === page.location.origin && url.pathname.startsWith('/backend-api/')) {
+            const boot = document.getElementById('client-bootstrap')?.textContent;
+            if (boot) {
+                const value = JSON.parse(boot);
+                const user = value.session?.user || value.user, account = value.session?.account || value.account;
+                const id = account?.id || user?.email || user?.id;
+                if (id) {
+                    const key = `acct:${id}`;
+                    GM_setValue('cgfm.next.lastAccount', key);
+                    return key;
+                }
+            }
+        }
+        catch { }
+        const html = document.documentElement;
+        const themed = html?.getAttribute('data-theme-account-id') || html?.getAttribute('data-theme-user-id');
+        if (themed) {
+            const key = `acct:${themed}`;
+            GM_setValue('cgfm.next.lastAccount', key);
+            return key;
+        }
+        const w = unsafeWindow;
+        const id = w.__NEXT_DATA__?.props?.pageProps?.user?.id || document.querySelector('[data-account-id]')?.dataset.accountId;
+        if (id) {
+            const key = `acct:${id}`;
+            GM_setValue('cgfm.next.lastAccount', key);
+            return key;
+        }
+        return GM_getValue('cgfm.next.lastAccount', 'local');
+    }
+    checkAccount() { const next = this.detectAccount(); if (next === this.account)
+        return; this.account = next; this.generation++; this.load(); this.loadTitleGuards(); this.restoreAuth(); this.render(); }
+    load() {
+        this.readOnly = false;
+        if (this.listener)
+            GM_removeValueChangeListener(this.listener);
+        const raw = GM_getValue(this.key(), null);
+        const fresh = (0, model_1.defaultLocal)();
+        if (raw && typeof raw === 'object') {
+            const v = raw;
+            try {
+                if (v.data)
+                    (0, model_1.validate)(v.data);
+                if (v.base)
+                    (0, model_1.validate)(v.base);
+                this.profile = { ...fresh, ...v, preferences: { ...fresh.preferences, ...v.preferences }, dav: { ...fresh.dav, ...v.dav } };
+            }
+            catch (e) {
+                console.error('[CGFM] local validation failed', e);
+                this.profile = fresh;
+                this.notice('本地数据损坏：已暂停本地写入，请先备份并修复存储');
+                this.readOnly = true;
+            }
+        }
+        else
+            this.profile = fresh;
+        if (this.profile.dav.file === 'chatgpt-folders-ts-v1.json') {
+            let h = 2166136261;
+            for (const char of this.account) {
+                h ^= char.charCodeAt(0);
+                h = Math.imul(h, 16777619);
+            }
+            this.profile.dav.file = `chatgpt-folders-ts-${(h >>> 0).toString(16)}.json`;
+        }
+        this.listener = GM_addValueChangeListener(this.key(), (_k, _a, value, remote) => { if (!remote || !value)
+            return; try {
+            const other = value;
+            (0, model_1.validate)(other.data);
+            const m = (0, sync_1.merge)(this.profile.base, this.profile.data, other.data);
+            const pending = [...(other.pending || []), ...this.profile.pending].filter((x, i, a) => a.findIndex(y => y.id === x.id) === i);
+            const differs = JSON.stringify(other.data) !== JSON.stringify(m.data);
+            this.profile = { ...other, data: m.data, pending, conflicts: [...new Set([...(other.conflicts || []), ...m.conflicts])] };
+            if (differs) {
+                this.profile.pending.push(...(0, model_1.diff)(other.data, m.data, this.device, this.profile.pending.length));
+                this.persist();
+                this.scheduleSync();
+            }
+            this.render();
+        }
+        catch (e) {
+            console.error('[CGFM] cross tab merge', e);
+        } });
+    }
+    persist() { if (this.readOnly)
+        throw Error('本地数据损坏，写入被保护'); GM_setValue(this.key(), this.profile); this.dirty = this.profile.pending.length > 0; this.renderStatus(); }
+    apply(c) { try {
+        if (this.readOnly)
+            throw Error('本地数据损坏，写入被保护');
+        const before = this.profile.data;
+        const next = (0, model_1.command)(before, c);
+        this.profile.data = next;
+        this.profile.pending.push(...(0, model_1.diff)(before, next, this.device, this.profile.pending.length));
+        this.persist();
+        this.render();
+        this.scheduleSync();
+    }
+    catch (e) {
+        this.notice(String(e));
+    } }
+    scheduleSync() { if (!this.profile.dav.url)
+        return; window.clearTimeout(this.syncDelay); this.syncDelay = window.setTimeout(() => void this.sync(false), 12000); }
+    syncDelay = 0;
+    build() {
+        const s = document.createElement('style');
+        s.textContent = style;
+        document.head.append(s);
+        this.root = document.createElement('div');
+        this.root.id = 'cgfm-next-root';
+        this.root.dataset.cgfmNextRoot = '1';
+        this.root.innerHTML = '<button id="cgfm-next-launch" title="ChatGPT 文件夹">📁</button><section id="cgfm-next-panel"><div class="cgfm-head"><b style="flex:1">ChatGPT 文件夹</b><button data-act="create" title="新建文件夹">＋</button><button data-act="sync" title="立即同步">⟳</button><button data-act="settings" title="设置">⚙</button><button data-act="pin" title="固定">📌</button></div><div class="cgfm-scroll"></div><div class="cgfm-foot"></div></section>';
+        document.body.append(this.root);
+        this.panel = this.root.querySelector('#cgfm-next-panel');
+        this.list = this.root.querySelector('.cgfm-scroll');
+        this.status = this.root.querySelector('.cgfm-foot');
+        this.launch = this.root.querySelector('#cgfm-next-launch');
+        this.launch.addEventListener('click', () => { this.pinned = !this.pinned; this.updateOpen(); });
+        this.launch.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
+        this.launch.addEventListener('mouseleave', () => { this.hovered = false; window.setTimeout(() => this.updateOpen(), 280); });
+        this.root.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
+        this.root.addEventListener('mouseleave', () => { this.hovered = false; window.setTimeout(() => this.updateOpen(), 250); });
+        this.panel.addEventListener('click', e => this.click(e));
+        this.panel.addEventListener('contextmenu', e => this.context(e));
+        this.panel.addEventListener('pointerdown', e => this.dragStart(e));
+        this.panel.addEventListener('pointermove', e => this.dragMove(e));
+        this.panel.addEventListener('pointerup', e => this.dragEnd(e));
+        this.panel.addEventListener('pointercancel', () => { this.drag = null; this.removeGhost(); });
+        this.mountRail();
+    }
+    mountRail() {
+        const rail = document.querySelector('nav[aria-label],aside nav,[data-testid="sidebar"] nav');
+        if (!rail || !rail.getBoundingClientRect().width) {
+            this.launch.style.display = '';
+            this.root.style.left = '8px';
+            return;
+        }
+        if (!this.railButton) {
+            const btn = document.createElement('button');
+            btn.textContent = '📁';
+            btn.title = 'ChatGPT 文件夹';
+            btn.type = 'button';
+            btn.setAttribute('aria-label', 'ChatGPT 文件夹');
+            btn.id = 'cgfm-next-rail';
+            btn.style.cssText = 'display:block;background:transparent;border:0;color:inherit;padding:9px;margin:4px;border-radius:9px;cursor:pointer';
+            btn.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
+            btn.addEventListener('mouseleave', () => { this.hovered = false; setTimeout(() => this.updateOpen(), 280); });
+            btn.addEventListener('click', () => { this.pinned = !this.pinned; this.updateOpen(); });
+            this.railButton = btn;
+        }
+        if (this.railButton.parentElement !== rail)
+            rail.append(this.railButton);
+        this.launch.style.display = 'none';
+        const r = this.railButton.getBoundingClientRect();
+        if (r.width) {
+            this.root.style.left = `${Math.max(8, Math.round(r.right - 12))}px`;
+            this.root.style.top = `${Math.max(8, Math.round(r.top))}px`;
+        }
+        this.panel.style.left = '0';
+    }
+    bindGlobal() { document.addEventListener('keydown', e => { if (e.key === 'Escape') {
+        this.drag = null;
+        this.removeGhost();
+        this.dismissPopup();
+        if (!this.editId) {
+            this.pinned = false;
+            this.updateOpen();
+        }
+    } }); document.addEventListener('click', e => { if (this.popup && !this.popup.contains(e.target) && !e.target.closest('#cgfm-next-panel'))
+        this.dismissPopup(); }); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') {
+        this.checkAccount();
+        this.mountRail();
+        this.scanRecents();
+    } }); window.addEventListener('popstate', () => { this.checkAccount(); this.scanRecents(); }); window.addEventListener('online', () => this.scheduleSync()); this.observer = new MutationObserver(() => { if (!this.launch.isConnected)
+        this.root.prepend(this.launch); this.mountRail(); }); this.observer.observe(document.body, { childList: true }); window.setInterval(() => { this.mountRail(); this.width(); }, 10000); this.width(); }
+    updateOpen() { this.root.dataset.open = this.pinned || this.hovered || !!this.editId || !!this.popup || !!this.drag ? 'yes' : 'no'; if (this.isOpen())
+        this.scanRecents(); }
+    isOpen() { return this.root.dataset.open === 'yes'; }
+    renderStatus() { this.status.textContent = `${this.busy ? '正在同步' : this.dirty ? '待同步' : '已保存'} · ${this.profile.pending.length} 条待同步 · ${this.profile.conflicts.length} 条冲突`; this.status.title = this.profile.conflicts.slice(-8).join('\n'); }
+    render() { if (!this.list || this.editId || this.drag?.started)
+        return; this.list.replaceChildren(); const add = (text, cls = 'cgfm-group') => { const x = document.createElement('div'); x.className = cls; x.textContent = text; this.list.append(x); }; add('文件夹'); const folders = Object.values(this.profile.data.folders); const walk = (parent, depth) => { if (depth > 100)
+        return; for (const f of folders.filter(x => x.parentId === parent).sort((a, b) => model_1.natural.compare(a.name, b.name))) {
+        const row = this.row('folder', f.id, f.name, depth, f.color);
+        const toggle = document.createElement('button');
+        toggle.textContent = f.collapsed ? '▸' : '▾';
+        toggle.title = '折叠 / 展开';
+        toggle.dataset.act = 'collapse';
+        row.prepend(toggle);
+        this.list.append(row);
+        if (!f.collapsed) {
+            for (const c of Object.values(this.profile.data.conversations).filter(x => x.folderId === f.id).sort((a, b) => b.addedAt - a.addedAt))
+                this.list.append(this.row('chat', c.id, c.title, depth + 1));
+            walk(f.id, depth + 1);
+        }
+    } }; walk(null, 0); add('最近对话'); for (const c of this.recent.slice(0, 100))
+        this.list.append(this.row('recent', c.id, c.title, 0)); this.renderStatus(); }
+    row(type, id, name, depth, color) { const el = document.createElement('div'); el.className = 'cgfm-row' + (type === 'folder' && id === this.selected ? ' cgfm-selected' : ''); el.dataset.type = type; el.dataset.id = id; el.style.paddingLeft = `${Math.min(depth, 20) * 14 + 5}px`; const ico = document.createElement('span'); ico.textContent = type === 'folder' ? '📁' : '▤'; if (color)
+        ico.style.color = color; const span = document.createElement('span'); span.className = 'cgfm-name'; span.textContent = name; el.append(ico, span); if (type === 'folder') {
+        const btn = document.createElement('button');
+        btn.dataset.act = 'menu';
+        btn.textContent = '⋯';
+        el.append(btn);
+    } return el; }
+    click(e) {
+        if (Date.now() < this.suppressClickUntil) {
+            e.preventDefault();
+            return;
+        }
+        const target = e.target;
+        const row = target.closest('.cgfm-row');
+        const act = target.closest('[data-act]')?.dataset.act;
+        if (act) {
+            if (act === 'create')
+                this.editFolder(null);
+            if (act === 'sync')
+                void this.sync(true);
+            if (act === 'settings')
+                this.settings();
+            if (act === 'pin') {
+                this.pinned = !this.pinned;
+                this.updateOpen();
+            }
+            if (act === 'collapse' && row)
+                this.apply({ type: 'folder.collapse', id: row.dataset.id });
+            if (act === 'menu' && row)
+                this.folderMenu(row.dataset.id, target);
+            return;
+        }
+        if (!row || this.drag?.started)
+            return;
+        const type = row.dataset.type, id = row.dataset.id;
+        if (type === 'folder') {
+            this.selected = this.selected === id ? null : id;
+            this.render();
+        }
+        else
+            this.navigate(id);
+    }
+    context(e) { const row = e.target.closest('.cgfm-row'); if (!row)
+        return; e.preventDefault(); if (row.dataset.type === 'folder')
+        this.folderMenu(row.dataset.id, e.target);
+    else
+        this.chatMenu(row.dataset.id, row.dataset.type === 'recent', e.target); }
+    navigate(id) { location.assign('/c/' + encodeURIComponent(id)); }
+    dismissPopup() { this.popup?.remove(); this.popup = null; this.updateOpen(); }
+    showPopup(el, anchor) { this.dismissPopup(); this.popup = el; el.classList.add('cgfm-pop'); el.style.cssText = 'position:fixed;z-index:2147483001;max-width:300px;min-width:200px'; document.body.append(el); const r = anchor?.getBoundingClientRect(); el.style.left = Math.min(innerWidth - 310, Math.max(5, r?.left ?? innerWidth / 3)) + 'px'; el.style.top = Math.min(innerHeight - 350, Math.max(5, r?.bottom ?? 100)) + 'px'; this.updateOpen(); }
+    menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { this.dismissPopup(); fn(); }); box.append(b); }
+    folderMenu(id, anchor) { const f = this.profile.data.folders[id]; if (!f)
+        return; const box = document.createElement('div'); for (const [name, fn] of [['创建子文件夹', () => this.editFolder(id)], ['重命名', () => this.editFolder(f.parentId, id)], ['颜色', () => this.colorDialog(id)], ['刷新对话标题', () => { this.scanRecents(); this.apiAt = 0; void this.refreshApi(); }], ['移动至...', () => this.folderPicker('folder', id)], ['删除文件夹', () => { if (confirm(`删除「${f.name}」及其子文件夹和分类引用？不会删除 ChatGPT 对话。`))
+                this.apply({ type: 'folder.delete', id }); }]])
+        this.menuButton(box, name, fn); this.showPopup(box, anchor); }
+    chatMenu(id, recent, anchor) { const box = document.createElement('div'); this.menuButton(box, '移动 / 加入文件夹', () => this.folderPicker('chat', id)); this.menuButton(box, '重命名对话', () => this.renameChat(id)); if (!recent)
+        this.menuButton(box, '从文件夹移除', () => this.apply({ type: 'conversation.remove', id })); this.showPopup(box, anchor); }
+    promptInput(title, value, onSave) { const box = document.createElement('div'); const label = document.createElement('label'); label.textContent = title; const input = document.createElement('input'); input.value = value; label.append(input); box.append(label); const save = document.createElement('button'); save.textContent = '保存'; const close = () => { this.editId = null; this.dismissPopup(); this.render(); }; save.addEventListener('click', () => { const v = input.value.trim(); if (v) {
+        close();
+        onSave(v);
+    } }); input.addEventListener('keydown', e => { if (e.key === 'Enter')
+        save.click(); if (e.key === 'Escape')
+        close(); }); this.menuButton(box, '取消', close); box.append(save); this.editId = 'editor'; this.showPopup(box); input.focus(); input.select(); }
+    inlineEdit(row, initial, onSave) {
+        if (this.editId)
+            return;
+        const span = row.querySelector('.cgfm-name');
+        if (!span)
+            return;
+        const input = document.createElement('input');
+        input.value = initial;
+        input.style.cssText = 'flex:1;min-width:0;background:transparent;color:inherit;border:1px solid #888;border-radius:5px;padding:3px';
+        span.replaceWith(input);
+        this.editId = row.dataset.id || 'editor';
+        input.focus();
+        input.select();
+        let done = false;
+        const finish = (save) => { if (done)
+            return; done = true; const v = input.value.trim(); input.replaceWith(span); this.editId = null; if (save && v && v !== initial)
+            onSave(v); this.render(); this.updateOpen(); };
+        input.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter')
+            finish(true); if (e.key === 'Escape')
+            finish(false); });
+        input.addEventListener('blur', () => finish(true));
+    }
+    editFolder(parent, id) {
+        const f = id ? this.profile.data.folders[id] : null;
+        if (f) {
+            const row = [...this.list.querySelectorAll('.cgfm-row[data-type="folder"]')].find(x => x.dataset.id === id);
+            if (row) {
+                this.inlineEdit(row, f.name, name => this.apply({ type: 'folder.rename', id, name }));
+                return;
+            }
+        }
+        this.promptInput('新建文件夹', '', name => this.apply({ type: 'folder.create', parentId: parent, name }));
+    }
+    colorDialog(id) { const box = document.createElement('div'); const input = document.createElement('input'); input.type = 'color'; input.value = this.profile.data.folders[id]?.color || '#6b7280'; box.append(input); this.menuButton(box, '确定', () => this.apply({ type: 'folder.color', id, color: input.value })); this.showPopup(box); }
+    folderPicker(type, id) { const box = document.createElement('div'); const title = document.createElement('div'); title.textContent = '选择目标文件夹'; box.append(title); const select = document.createElement('select'); if (type === 'folder') {
+        const o = document.createElement('option');
+        o.value = '';
+        o.textContent = '根目录';
+        select.append(o);
+    } for (const f of Object.values(this.profile.data.folders).sort((a, b) => model_1.natural.compare(a.name, b.name))) {
+        const o = document.createElement('option');
+        o.value = f.id;
+        o.textContent = f.name;
+        select.append(o);
+    } box.append(select); this.menuButton(box, '确定', () => this.apply(type === 'folder' ? { type: 'folder.move', id, parentId: select.value || null } : { type: 'conversation.assign', id, folderId: select.value, title: this.title(id) })); this.showPopup(box); }
+    title(id) { return this.recent.find(c => c.id === id)?.title || this.profile.data.conversations[id]?.title || '未命名对话'; }
+    async renameChat(id) { const row = [...this.list.querySelectorAll('.cgfm-row')].find(x => x.dataset.id === id); if (row)
+        this.inlineEdit(row, this.title(id), name => void this.saveChatTitle(id, name));
+    else
+        this.promptInput('修改 ChatGPT 对话标题', this.title(id), name => void this.saveChatTitle(id, name)); }
+    async saveChatTitle(id, name) { const generation = this.generation; try {
+        const headers = { ...this.authHeaders, 'Content-Type': 'application/json' };
+        const r = await fetch(`/backend-api/conversation/id/${encodeURIComponent(id)}/rename`, { method: 'POST', credentials: 'include', headers, body: JSON.stringify({ title: name }) });
+        if (!r.ok)
+            throw Error(`HTTP ${r.status}`);
+        if (generation !== this.generation)
+            return;
+        const item = this.recent.find(c => c.id === id);
+        if (item)
+            item.title = name;
+        this.apply({ type: 'conversation.title', id, title: name });
+        this.titleGuards.set(id, { title: name, time: Date.now() });
+        this.persistTitleGuards();
+        this.render();
+    }
+    catch (e) {
+        this.notice('重命名失败：' + String(e));
+    } }
+    titleGuards = new Map();
+    loadTitleGuards() { const val = GM_getValue(`cgfm.next.titles.${this.account}`, {}); this.titleGuards = new Map(Object.entries(val).filter(([, v]) => v && Date.now() - v.time < 30 * 24 * 3600000)); }
+    persistTitleGuards() { GM_setValue(`cgfm.next.titles.${this.account}`, Object.fromEntries(this.titleGuards)); }
+    scanRecents() { const rows = new Map(); for (const a of document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"],a[href^="/c/"]')) {
+        const key = a.getAttribute('data-sidebar-chatgpt-conversation-key');
+        const id = key?.replace('chatgpt:conversation:', '') || a.getAttribute('href')?.match(/\/c\/([^/?#]+)/)?.[1];
+        const title = (a.innerText || a.getAttribute('title') || a.getAttribute('aria-label') || '').trim();
+        if (id && title) {
+            const guard = this.titleGuards.get(id);
+            rows.set(id, { id, title: guard && Date.now() - guard.time < 60 * 60 * 1000 ? guard.title : title });
+        }
+    } if (rows.size)
+        this.recent = [...rows.values()].slice(0, 100); if (this.isOpen())
+        this.render(); if (this.isOpen() && Date.now() - this.apiAt > 30 * 60 * 1000)
+        void this.refreshApi(); }
+    async refreshApi() {
+        this.apiAt = Date.now();
+        const generation = this.generation;
+        try {
+            const r = await fetch('/backend-api/conversations?offset=0&limit=20', { credentials: 'include', headers: this.authHeaders });
+            if (!r.ok)
+                throw Error(`HTTP ${r.status}`);
+            const json = await r.json();
+            if (generation !== this.generation)
+                return;
+            const merged = new Map(this.recent.map(x => [x.id, x]));
+            for (const x of json.items || [])
+                if (x.id) {
+                    const guard = this.titleGuards.get(x.id);
+                    merged.set(x.id, { id: x.id, title: guard && Date.now() - guard.time < 3600000 ? guard.title : x.title || '未命名对话' });
+                }
+            this.recent = [...merged.values()].slice(0, 100);
+            const before = this.profile.data;
+            let latest = before;
+            for (const item of this.recent) {
+                const c = latest.conversations[item.id];
+                const guard = this.titleGuards.get(item.id);
+                if (c && item.title && c.title !== item.title && !(guard && Date.now() - guard.time < 3600000)) {
+                    latest = (0, model_1.command)(latest, { type: 'conversation.title', id: item.id, title: item.title });
+                }
+            }
+            if (latest !== before) {
+                this.profile.data = latest;
+                this.profile.pending.push(...(0, model_1.diff)(before, latest, this.device, this.profile.pending.length));
+                this.persist();
+                this.scheduleSync();
+            }
+            this.render();
+        }
+        catch {
+            this.apiAt = Date.now() - 20 * 60 * 1000;
+        }
+    }
+    restoreAuth() {
+        this.authHeaders = {};
+        const cached = GM_getValue(`cgfm.next.auth.${this.account}`, { headers: {}, savedAt: 0 });
+        if (cached && Date.now() - cached.savedAt < 24 * 3600000 && cached.headers && typeof cached.headers === 'object') {
+            for (const key of ['authorization', 'chatgpt-account-id'])
+                if (typeof cached.headers[key] === 'string')
+                    this.authHeaders[key] = cached.headers[key];
+        }
+    }
+    saveAuth() { if (this.account === 'local')
+        return; GM_setValue(`cgfm.next.auth.${this.account}`, { headers: this.authHeaders, savedAt: Date.now() }); }
+    installAuthCapture() { if (this.authInstalled)
+        return; this.authInstalled = true; const w = unsafeWindow; const original = w.fetch; const self = this; w.fetch = function (input, init) { try {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/backend-api/')) {
             const h = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
-            if (h.has('authorization') && h.has('chatgpt-account-id')) cacheOfficialAuthHeaders(h);
-          }
-        } catch (_) {}
-        return Reflect.apply(previous, this, arguments);
-      };
-      Object.defineProperty(wrapped, '__cgfmHistoryCapture', { value: true });
-      page.fetch = wrapped;
-    } catch (_) {}
-  }
-
-  const OFFICIAL_HISTORY_PARAMS = {
-    exclude_conversation_origin: 'tpp', expand: 'false', hide_snorlax: 'false',
-    is_archived: 'false', is_starred: 'false', order: 'updated'
-  };
-
-  // Only request the first 20 chats, and never treat an empty response as an
-  // instruction to erase previously discovered conversations.
-  function recentRefreshKeys(accountId) {
-    const prefix = RECENT_REFRESH_PREFIX + encodeURIComponent(accountId) + '.';
-    return { state:prefix + 'state', lock:prefix + 'lock' };
-  }
-
-  function recentRefreshState(key) {
-    const saved = gmGet(key, null);
-    return saved && typeof saved === 'object' ? saved : {};
-  }
-
-  function retryAfterMillis(header, at) {
-    if (!header) return 0;
-    const seconds = Number(header);
-    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 24 * 60 * 60 * 1000);
-    const date = Date.parse(header);
-    return Number.isFinite(date) ? Math.min(Math.max(0, date - at), 24 * 60 * 60 * 1000) : 0;
-  }
-
-  async function refreshRecentFromOfficialApi() {
-    // Panel-opening is the only trigger. A cached list is displayed immediately;
-    // 30-minute freshness, failures, and 429 cooldowns survive reloads/tabs.
-    const template = capturedOfficialHistoryRequest || restoreOfficialAuthHeaders();
-    if (!template || Date.now() - template.capturedAt > AUTH_CACHE_TTL_MS) return;
-    if (historyRefreshPromise) return historyRefreshPromise;
-    const expectedAccount = template.accountId;
-    if (!expectedAccount || (currentAccount?.accountId && String(currentAccount.accountId) !== expectedAccount)) return;
-    const keys = recentRefreshKeys(expectedAccount);
-    const startedAt = Date.now();
-    if (Number(recentRefreshState(keys.state).nextAllowedAt) > startedAt) return;
-    const existingLock = recentRefreshState(keys.lock);
-    if (Number(existingLock.expiresAt) > startedAt) return;
-
-    // GM storage does not implement an atomic compare-and-swap. A short lease
-    // plus a delayed ownership check reduces duplicate requests across tabs.
-    const lease = { owner:TAB_ID, expiresAt:startedAt + RECENT_REFRESH_LOCK_MS };
-    gmSet(keys.lock, lease);
-    historyRefreshPromise = (async () => {
-      try {
-        await new Promise(resolve => setTimeout(resolve, 120 + Math.floor(Math.random() * 100)));
-        const liveLock = recentRefreshState(keys.lock);
-        if (liveLock.owner !== TAB_ID || Number(liveLock.expiresAt) !== lease.expiresAt) return;
-        if (Number(recentRefreshState(keys.state).nextAllowedAt) > Date.now()) return;
-        const url = new URL('/backend-api/conversations', location.origin);
-        url.search = new URLSearchParams({ ...OFFICIAL_HISTORY_PARAMS, limit:'20', offset:'0' });
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 8000);
-        try {
-          const response = await fetch(url.href, {
-            method:'GET', credentials:'include', headers:new Headers(template.headers), signal:controller.signal
-          });
-          const now = Date.now();
-          const previous = recentRefreshState(keys.state);
-          if (response.status === 401 || response.status === 403) {
-            forgetAuthTemplate(expectedAccount);
-            gmSet(keys.state, { nextAllowedAt:now + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
-            return;
-          }
-          if (response.status === 429) {
-            const streak = Math.min(4, Math.max(0, Number(previous.rateLimitStreak) || 0) + 1);
-            const backoff = Math.min(RECENT_REFRESH_MAX_BACKOFF_MS, 30 * 60 * 1000 * (2 ** (streak - 1)));
-            const retryAfter = retryAfterMillis(response.headers.get('Retry-After'), now);
-            gmSet(keys.state, { nextAllowedAt:now + Math.max(backoff, retryAfter), rateLimitStreak:streak });
-            return;
-          }
-          if (!response.ok) {
-            gmSet(keys.state, { nextAllowedAt:now + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
-            return;
-          }
-          const data = await response.json();
-          if (!data || !Array.isArray(data.items)) {
-            gmSet(keys.state, { nextAllowedAt:Date.now() + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
-            return;
-          }
-          gmSet(keys.state, { nextAllowedAt:Date.now() + RECENT_REFRESH_INTERVAL_MS, rateLimitStreak:0 });
-          const found = [];
-          const seen = new Set();
-          for (const item of data.items) {
-            const id = String(item?.id || item?.conversation_id || '');
-            if (!/^[a-zA-Z0-9_-]{12,80}$/.test(id) || seen.has(id)) continue;
-            seen.add(id);
-            const title = cleanConversationTitle(item.title);
-            if (title) found.push({ id, title });
-          }
-          if (found.length && capturedOfficialHistoryRequest?.accountId === expectedAccount &&
-              currentAccount?.accountId === expectedAccount) {
-            mergeRecentItems(found, 'server', startedAt);
-          }
-        } catch (_) {
-          gmSet(keys.state, { nextAllowedAt:Date.now() + RECENT_REFRESH_ERROR_MS, rateLimitStreak:0 });
-        } finally { clearTimeout(timeout); }
-      } finally {
-        // Never release a lease another tab may already have acquired.
-        const live = recentRefreshState(keys.lock);
-        if (live.owner === TAB_ID && Number(live.expiresAt) === lease.expiresAt) gmSet(keys.lock, null);
-      }
-    })().finally(() => { historyRefreshPromise = null; });
-    return historyRefreshPromise;
-  }
-
-  function reconcileConversationTitles(items, source = 'display', requestStartedAt = 0) {
-    return items.map(item => ({ ...item, title:guardConversationTitle(item.id, item.title, source, requestStartedAt) }));
-  }
-
-  function mergeRecentItems(found, source = 'dom', requestStartedAt = 0) {
-    readRecentCache();
-    if (!found.length) return;
-    // Native React DOM is a possibly stale display snapshot, not server truth.
-    found = reconcileConversationTitles(found, source, requestStartedAt);
-    const seen = new Set(found.map(item => item.id));
-    recentKnown = found.concat(recentKnown.filter(c => !seen.has(c.id))).slice(0, 100);
-    persistRecentCache();
-    const p = getProfile();
-    let changed = false;
-    for (const chat of found) {
-      const stored = p.conversations[chat.id];
-      if (stored && stored.title !== chat.title) { stored.title = chat.title; changed = true; }
-    }
-    if (changed) { queueRender(); schedulePersist('official-title-refresh', { webdav: false }); }
-    else updateRecentDom();
-  }
-
-  // DOM replacement after rename can transiently invalidate :hover. Re-check the
-  // last pointer location against the panel rectangle only when visibility is reconciled.
-  function reconcileFolderHover() {
-    folderPointerInButton = !!(folderButton?.querySelector('button')?.matches(':hover'));
-    if (rootEl?.isConnected && lastPanelPointer && rootEl.getAttribute('data-cgfm-visible') === 'true') {
-      const rect = rootEl.getBoundingClientRect();
-      folderPointerInPane = lastPanelPointer.x >= rect.left && lastPanelPointer.x < rect.right &&
-        lastPanelPointer.y >= rect.top && lastPanelPointer.y < rect.bottom;
-    } else {
-      folderPointerInPane = !!(rootEl?.matches(':hover'));
-    }
-  }
-
-  // A single DOM-local edit session; never re-render its owning row until it ends.
-  function hasActiveChatEditor() {
-    if (!chatRenameDialog) return false;
-    if (chatRenameDialog.edit?.isConnected && chatRenameDialog.input?.isConnected) return true;
-    // If another render or a native interaction removed the editor unexpectedly,
-    // release the row/visibility lock rather than leaving an invisible edit session.
-    const stale = chatRenameDialog;
-    chatRenameDialog = null;
-    if (stale.row?.isConnected) {
-      stale.row.draggable = true;
-      if (stale.edit?.isConnected && stale.link) stale.edit.replaceWith(stale.link);
-      if (stale.renameButton?.isConnected) stale.renameButton.hidden = false;
-    }
-    const needsRender = renderDeferredDuringChatEdit;
-    renderDeferredDuringChatEdit = false;
-    if (needsRender) queueMicrotask(queueRender);
-    return false;
-  }
-
-  function titleGuardKey() {
-    const k = recentStorageKey();
-    return k ? k + '.confirmedTitles' : '';
-  }
-
-  function loadConfirmedTitles() {
-    const key = titleGuardKey();
-    if (key === confirmedTitlesAccount) return;
-    confirmedTitlesAccount = key;
-    confirmedTitles = new Map();
-    if (!key) return;
-    try {
-      const records = JSON.parse(localStorage.getItem(key) || '[]');
-      for (const item of Array.isArray(records) ? records : []) {
-        if (item && /^[a-zA-Z0-9_-]{12,80}$/.test(item.id) &&
-            typeof item.title === 'string' && Number.isFinite(item.at) && item.at > 0) {
-          // Retain older v1.3.1 entries instead of dropping them at 24 hours.
-          confirmedTitles.set(item.id, { title:item.title, at:item.at,
-            confirmed: item.confirmed === true, confirmedAt: Number(item.confirmedAt) || 0 });
+            for (const key of ['authorization', 'chatgpt-account-id']) {
+                const v = h.get(key);
+                if (v && self.authHeaders[key] !== v) {
+                    self.authHeaders[key] = v;
+                    self.saveAuth();
+                }
+            }
         }
-      }
-    } catch (_) {}
-  }
-
-  function persistConfirmedTitles() {
-    const key = titleGuardKey();
-    if (!key) return;
-    try {
-      localStorage.setItem(key, JSON.stringify([...confirmedTitles].map(([id, value]) => ({id, ...value}))));
-    } catch (_) {}
-  }
-
-  function guardConversationTitle(id, proposed, source = 'display', requestStartedAt = 0) {
-    loadConfirmedTitles();
-    const override = confirmedTitles.get(id);
-    if (!override) return proposed;
-    // Only a server request started AFTER our successful rename can reconcile it.
-    // Server confirmation does not remove the DOM guard: native React may still
-    // render its old title until a page reload.
-    if (source === 'server' && requestStartedAt >= override.at) {
-      if (proposed === override.title) {
-        if (!override.confirmed) {
-          override.confirmed = true;
-          override.confirmedAt = Date.now();
-          persistConfirmedTitles();
+    }
+    catch { } return original.call(this, input, init); }; }
+    removeGhost() { this.ghost?.remove(); this.ghost = null; }
+    dragStart(e) { if (e.button !== 0 || e.target.closest('button,input,select'))
+        return; const row = e.target.closest('.cgfm-row'); if (!row)
+        return; this.drag = { type: row.dataset.type === 'folder' ? 'folder' : 'chat', id: row.dataset.id, startX: e.clientX, startY: e.clientY, started: false }; }
+    dragMove(e) { if (!this.drag)
+        return; if (!this.drag.started && Math.hypot(e.clientX - this.drag.startX, e.clientY - this.drag.startY) < 5)
+        return; this.drag.started = true; if (!this.ghost) {
+        this.ghost = document.createElement('div');
+        this.ghost.textContent = this.drag.type === 'folder' ? '📁 移动文件夹' : '▤ 移动对话';
+        this.ghost.style.cssText = 'position:fixed;z-index:2147483003;pointer-events:none;background:var(--cg-bg);border:1px solid var(--cg-border);border-radius:8px;padding:7px 12px;box-shadow:0 5px 20px #0005';
+        document.body.append(this.ghost);
+    } this.ghost.style.left = e.clientX + 12 + 'px'; this.ghost.style.top = e.clientY + 12 + 'px'; this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cgfm-row[data-type="folder"]'); target?.classList.add('cgfm-drop'); }
+    dragEnd(e) { const d = this.drag; this.drag = null; this.removeGhost(); this.panel.querySelectorAll('.cgfm-drop').forEach(x => x.classList.remove('cgfm-drop')); if (!d?.started)
+        return; this.suppressClickUntil = Date.now() + 300; const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.cgfm-row[data-type="folder"]'); if (target?.dataset.id) {
+        this.apply(d.type === 'folder' ? { type: 'folder.move', id: d.id, parentId: target.dataset.id } : { type: 'conversation.assign', id: d.id, folderId: target.dataset.id, title: this.title(d.id) });
+    } this.updateOpen(); }
+    settings() { const box = document.createElement('div'); box.style.width = '290px'; const fields = [['WebDAV HTTPS 目录', 'url', this.profile.dav.url], ['用户名', 'username', this.profile.dav.username], ['密码', 'password', ''], ['远端文件名', 'file', this.profile.dav.file], ['侧栏宽度(px)', 'width', String(this.profile.preferences.sidebarWidth)]]; const inputs = {}; for (const [name, key, val] of fields) {
+        const label = document.createElement('label');
+        label.textContent = name;
+        const input = document.createElement('input');
+        input.value = val;
+        input.type = key === 'password' ? 'password' : 'text';
+        label.append(input);
+        box.append(label);
+        inputs[key] = input;
+    } const toggle = document.createElement('label'); const widthCheckbox = document.createElement('input'); widthCheckbox.type = 'checkbox'; widthCheckbox.checked = this.profile.preferences.customWidth; toggle.append(widthCheckbox, document.createTextNode(' 自定义官方侧栏宽度')); box.append(toggle); this.menuButton(box, '保存设置', () => { this.profile.dav.url = inputs.url.value.trim(); this.profile.dav.username = inputs.username.value.trim(); if (inputs.password.value)
+        this.profile.dav.password = inputs.password.value; this.profile.dav.file = inputs.file.value.trim() || this.profile.dav.file; this.authFailure = false; this.syncRetryAt = 0; this.profile.preferences.sidebarWidth = Math.max(240, Math.min(520, Number(inputs.width.value) || 312)); this.profile.preferences.customWidth = widthCheckbox.checked; this.persist(); this.width(); }); this.menuButton(box, '测试连接', () => void this.testConnection()); this.menuButton(box, '立即同步', () => void this.sync(true)); this.menuButton(box, '从云端强制拉取', () => void this.pull()); this.menuButton(box, '导出 JSON', () => this.exportData()); this.menuButton(box, '导入 JSON', () => this.importData()); this.showPopup(box); }
+    width() {
+        let el = document.getElementById('cgfm-next-width');
+        if (!el) {
+            el = document.createElement('style');
+            el.id = 'cgfm-next-width';
+            document.head.append(el);
         }
-      } else if (override.confirmed && requestStartedAt > override.confirmedAt) {
-        // A subsequent authoritative read can observe an external rename.
-        // Keep the new server title guarded against stale native DOM too.
-        confirmedTitles.set(id, { title:proposed, at:Date.now(), confirmed:true,
-          confirmedAt:Date.now() });
-        persistConfirmedTitles();
-        return proposed;
-      }
+        const px = `${this.profile.preferences.sidebarWidth}px`;
+        const pinned = !!document.querySelector('#stage-slideover-sidebar') && !!document.querySelector('[data-testid="sidebar"]');
+        el.textContent = this.profile.preferences.customWidth && pinned ? `html{--codex-sidebar-preferred-width:${px}!important}html body{--sidebar-width:${px}!important}` : '';
     }
-    return override.title;
-  }
-
-  function finishInlineChatRename(session) {
-    if (!session || chatRenameDialog !== session) return;
-    chatRenameDialog = null;
-    if (session.row?.isConnected) {
-      session.row.draggable = true;
-      session.edit.replaceWith(session.link);
-      session.renameButton.hidden = false;
+    exportData() { const content = JSON.stringify({ format: 'cgfm-ts-data', version: 1, account: this.account, data: this.profile.data }, null, 2); const url = URL.createObjectURL(new Blob([content], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = 'chatgpt-folders-ts.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 3000); }
+    importData() { const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json'; input.onchange = async () => { const file = input.files?.[0]; if (!file)
+        return; try {
+        const parsed = JSON.parse(await file.text());
+        if (parsed.format !== 'cgfm-ts-data' || parsed.version !== 1)
+            throw Error('只接受新版数据格式');
+        (0, model_1.validate)(parsed.data);
+        if (parsed.account !== this.account && !confirm('导入数据账号与当前账号不匹配，仍然导入吗？'))
+            return;
+        if (!confirm('确认用导入数据替换当前分类？本地 WebDAV 配置会保留。'))
+            return;
+        const before = this.profile.data;
+        this.readOnly = false;
+        this.profile.data = (0, model_1.copy)(parsed.data);
+        this.profile.pending.push(...(0, model_1.diff)(before, this.profile.data, this.device, this.profile.pending.length));
+        this.persist();
+        this.render();
+        this.scheduleSync();
     }
-    const needsRender = renderDeferredDuringChatEdit;
-    renderDeferredDuringChatEdit = false;
-    if (needsRender) queueRender();
-    requestAnimationFrame(() => {
-      reconcileFolderHover();
-      syncSidebarVisibility();
-      if (!folderButtonPinned && !folderPointerInButton && !folderPointerInPane) scheduleFolderClose();
-    });
-  }
-
-  function dismissChatRename() {
-    const session = chatRenameDialog;
-    if (!session || session.busy) return;
-    finishInlineChatRename(session);
-  }
-
-  function beginChatRename(id, row) {
-    if (!/^[a-zA-Z0-9_-]{12,80}$/.test(String(id || ''))) return;
-    // Conversation IDs are intentionally repeated in folder entries and Recents.
-    // Never search by ID for the edit target: it may select a hidden folder row.
-    if (!row || !rootEl?.contains(row) || !row.isConnected ||
-        row.getAttribute('data-chat-id') !== id ||
-        row.closest('[hidden]') || !row.getClientRects().length) {
-      toast('当前对话行不可编辑，请重新打开后再试。');
-      return;
+    catch (e) {
+        this.notice('导入失败：' + String(e));
+    } }; input.click(); }
+    async testConnection() { try {
+        const r = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
+        this.notice(r.status === 404 ? '连接成功，远端文件尚不存在' : r.status >= 200 && r.status < 300 ? '连接成功' : 'HTTP ' + r.status);
     }
-    if (!(capturedOfficialHistoryRequest || restoreOfficialAuthHeaders())) {
-      toast('认证尚未就绪，请先正常展开一次官方侧边栏。');
-      return;
+    catch (e) {
+        this.notice(String(e));
+    } }
+    async pull() { if (!confirm('使用云端快照完全替换本地分类及未同步修改？'))
+        return; try {
+        const r = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
+        if (r.status !== 200)
+            throw Error(`HTTP ${r.status}`);
+        const e = (0, sync_1.decodeRemote)(r.text, this.account);
+        this.profile.data = (0, model_1.copy)(e.data);
+        this.profile.base = (0, model_1.copy)(e.data);
+        this.profile.baseRevision = e.revision;
+        this.profile.etag = r.etag;
+        this.profile.pending = [];
+        this.profile.conflicts = [];
+        this.persist();
+        this.render();
+        this.notice('云端拉取成功');
     }
-    if (chatRenameDialog?.busy) return;
-    if (chatRenameDialog?.id === id && hasActiveChatEditor()) {
-      chatRenameDialog.input.focus(); return;
-    }
-    if (chatRenameDialog) dismissChatRename();
-    const p = getProfile();
-    const known = p.conversations[id] || recentKnown.find(c => c.id === id);
-    // Use the exact visible row that received the user's interaction.
-    const link = row.querySelector('a.cgfm-chat-title');
-    const renameButton = row?.querySelector('.cgfm-chat-rename');
-    const title = guardConversationTitle(id, known?.title || link?.textContent || '');
-    if (!row || !link || !renameButton || !title) {
-      toast('暂时无法编辑这条对话。'); return;
-    }
-    const edit = document.createElement('span');
-    edit.className = 'cgfm-chat-inline-edit';
-    edit.innerHTML = '<input class="cgfm-chat-edit" data-chat-edit-id="' + escapeAttr(id) + '" maxlength="200" autocomplete="off" spellcheck="false" draggable="false">' +
-      '<button type="button" class="cgfm-chat-edit-action" data-save aria-label="保存重命名" title="保存">' + icon('check') + '</button>' +
-      '<button type="button" class="cgfm-chat-edit-action" data-cancel aria-label="取消重命名" title="取消">' + icon('x') + '</button>';
-    const input = edit.querySelector('input');
-    input.value = title;
-    const session = { id, row, link, renameButton, edit, input, busy:false };
-    edit.addEventListener('click', event => {
-      event.stopPropagation();
-      if (event.target.closest('[data-cancel]')) dismissChatRename();
-      else if (event.target.closest('[data-save]')) void commitChatRename();
-    });
-    edit.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
-        event.preventDefault(); event.stopPropagation(); dismissChatRename();
-      } else if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) {
-        event.preventDefault(); event.stopPropagation(); void commitChatRename();
-      }
-    });
-    link.replaceWith(edit);
-    row.draggable = false;
-    renameButton.hidden = true;
-    // Publish the visibility lock only when the actual inline editor is mounted.
-    if (!edit.isConnected || !input.isConnected) {
-      row.draggable = true;
-      renameButton.hidden = false;
-      if (edit.isConnected) edit.replaceWith(link);
-      toast('编辑框未能打开，请重试。');
-      return;
-    }
-    chatRenameDialog = session;
-    clearTimeout(folderCloseTimer);
-    syncSidebarVisibility();
-    input.focus(); input.select();
-  }
-
-  function onChatRenameContextMenu(event) {
-    const row = event.target.closest?.('.cgfm-chat-row[data-chat-id],.cgfm-recent-chat[data-chat-id]');
-    if (!row || !rootEl.contains(row)) return;
-    event.preventDefault();
-    beginChatRename(row.getAttribute('data-chat-id'), row);
-  }
-
-  async function commitChatRename() {
-    const session = chatRenameDialog;
-    if (!session || session.busy) return;
-    const {id, input} = session;
-    const title = String(input.value || '').trim();
-    if (!title || title.length > 200) { toast('标题不能为空，且不能超过 200 字符。'); input.focus(); return; }
-    const template = capturedOfficialHistoryRequest || restoreOfficialAuthHeaders();
-    if (!template || Date.now() - template.capturedAt > AUTH_CACHE_TTL_MS ||
-        (currentAccount?.accountId && String(currentAccount.accountId) !== template.accountId)) {
-      toast('当前账号的官方会话上下文不可用。'); return;
-    }
-    session.busy = true;
-    input.disabled = true;
-    const save = session.edit.querySelector('[data-save]');
-    const cancel = session.edit.querySelector('[data-cancel]');
-    save.disabled = true;
-    cancel.disabled = true;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    try {
-      const headers = new Headers(template.headers);
-      headers.set('content-type', 'application/json');
-      const response = await fetch('/backend-api/conversation/id/' + encodeURIComponent(id) + '/rename', {
-        method:'POST', credentials:'include', headers, body:JSON.stringify({ title }), signal:controller.signal
-      });
-      if (response.status === 401 || response.status === 403) {
-        forgetAuthTemplate(template.accountId);
-        throw new Error('Authentication expired');
-      }
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      loadConfirmedTitles();
-      confirmedTitles.set(id, { title, at:Date.now(), confirmed:false, confirmedAt:0 });
-      persistConfirmedTitles();
-      const p = getProfile();
-      if (p.conversations[id]) {
-        p.conversations[id].title = title;
-        p.conversations[id].updatedAt = nowIso();
-        schedulePersist('rename-chat');
-      }
-      const cached = recentKnown.find(c => c.id === id);
-      if (cached) cached.title = title;
-      persistRecentCache();
-      finishInlineChatRename(session);
-      queueRender();
-      toast('对话已重命名。');
-    } catch (_) {
-      input.disabled = false;
-      save.disabled = false;
-      cancel.disabled = false;
-      toast(capturedOfficialHistoryRequest ? '重命名失败，请重试。' : '认证已失效，请展开一次官方侧边栏后重试。');
-    } finally {
-      clearTimeout(timeout);
-      session.busy = false;
-    }
-  }
-
-  function recentStorageKey() {
-    const account = currentAccount && currentAccount.id;
-    return account ? 'cgfm.v1.recentCache.' + encodeURIComponent(String(account)) : '';
-  }
-
-  function persistRecentCache() {
-    const key = recentStorageKey();
-    if (!key) return;
-    try { localStorage.setItem(key, JSON.stringify({ timestamp:Date.now(), chats:recentKnown })); } catch (_) {}
-  }
-
-  function readRecentCache() {
-    const key = recentStorageKey();
-    if (recentCacheAccount === key) return;
-    recentCacheAccount = key;
-    recentKnown = [];
-    if (!key) return;
-    try {
-      const saved = JSON.parse(localStorage.getItem(key) || 'null');
-      if (!saved || !Array.isArray(saved.chats) || Date.now() - saved.timestamp > 7 * 86400000) return;
-      recentKnown = saved.chats.filter(c => c && /^[a-zA-Z0-9_-]{12,80}$/.test(c.id) && typeof c.title === 'string').slice(0, 100);
-      recentKnown = reconcileConversationTitles(recentKnown);
-    } catch (_) {}
-  }
-
-  function watchRecentListChanges() {
-    const shell = document.getElementById('app-shell-sidebar');
-    const host = shell?.querySelector(RECENTS_SECTION_SELECTOR) ||
-      shell?.querySelector('[data-app-action-sidebar-section-heading="Recents"]') ||
-      shell?.querySelector('[data-app-action-sidebar-scroll]');
-    // The official sidebar can detach and reattach its Recents host after a
-    // React transition. A disconnected host must never suppress rebinding.
-    if (host === recentObserverHost && (!host || host.isConnected)) return;
-    recentMutationObserver?.disconnect();
-    recentObserverHost = host || null;
-    if (!host) return;
-    recentMutationObserver = new MutationObserver(() => {
-      clearTimeout(recentRefreshTimer);
-      recentRefreshTimer = setTimeout(() => collectRecentChats(true), 250);
-    });
-    recentMutationObserver.observe(host, { childList:true, subtree:true, characterData:true });
-  }
-
-  function collectRecentChats(force = false) {
-    readRecentCache();
-    if (!force && Date.now() - lastRecentScan < 1800) return;
-    lastRecentScan = Date.now();
-    const shell = document.getElementById('app-shell-sidebar');
-    if (!shell) return;
-    // Read only the native loaded Recents section. Never treat cached chats as
-    // complete account history, and never fetch private APIs or chat bodies.
-    const section = shell.querySelector(RECENTS_SECTION_SELECTOR) ||
-      shell.querySelector('[data-app-action-sidebar-section-heading="Recents"]');
-    const scope = section || shell.querySelector('[data-app-action-sidebar-scroll]');
-    if (!scope) return;
-    const found = [];
-    const seen = new Set();
-    for (const row of scope.querySelectorAll(NATIVE_CHAT_ROW_SELECTOR + ',a[href*="/c/"]')) {
-      if (rootEl && rootEl.contains(row)) continue;
-      const chat = extractChatFromNativeElement(row);
-      if (!chat || seen.has(chat.id)) continue;
-      seen.add(chat.id);
-      found.push({ id: chat.id, title: chat.title || '未命名对话' });
-      if (found.length >= 100) break;
-    }
-    if (!found.length) return;
-    mergeRecentItems(found);
-  }
-
-  function renderRecentChats() {
-    readRecentCache();
-    if (!recentKnown.length) return '<div class="cgfm-recent-empty">暂无最近对话。若官方历史尚未加载，将在正常展开官方侧栏后补充。</div>';
-    return reconcileConversationTitles(recentKnown).map(chat => `<div class="cgfm-recent-chat" data-chat-id="${escapeAttr(chat.id)}">${icon('chat')}<a class="cgfm-chat-title" draggable="false" href="/c/${escapeAttr(chat.id)}" title="${escapeAttr(chat.title)}">${escapeHtml(chat.title)}</a><button class="cgfm-chat-rename" data-action="rename-chat" data-chat-id="${escapeAttr(chat.id)}" title="重命名对话">${icon('rename')}</button></div>`).join('');
-  }
-
-  function updateRecentDom() {
-    const list = rootEl?.querySelector('[data-cgfm-recent-list]');
-    if (!list) return;
-    const active = document.activeElement;
-    if (hasActiveChatEditor() && list.contains(chatRenameDialog.row)) {
-      renderDeferredDuringChatEdit = true;
-      return;
-    }
-    // Never replace a drag source node while the browser owns its DnD gesture.
-    if (ownedDragActive) { renderDeferredDuringPanelDrag = true; return; }
-    if (active && list.contains(active)) return;
-    const nextHtml = renderRecentChats();
-    // Reobserving the official sidebar may re-deliver unchanged titles. Avoid
-    // replacing identical interactive rows and their drag/focus state.
-    if (list.innerHTML !== nextHtml) list.innerHTML = nextHtml;
-  }
-
-  function finishPanelDrag(keepClickSuppression = false) {
-    const session = pointerDragSession;
-    if (!keepClickSuppression) document.removeEventListener('click',suppressPanelDragClick,true);
-    pointerDragSession = null;
-    document.documentElement.classList.remove('cgfm-pointer-select-lock');
-    document.removeEventListener('selectstart',preventPanelPointerSelection,true);
-    window.removeEventListener('pointermove',onPanelPointerMove,true);
-    window.removeEventListener('pointerup',onPanelPointerUp,true);
-    window.removeEventListener('pointercancel',cancelPanelPointerDrag,true);
-    window.removeEventListener('blur',cancelPanelPointerDrag);
-    if (session?.frame) cancelAnimationFrame(session.frame);
-    session?.preview?.remove();
-    session?.source?.row?.classList.remove('cgfm-pointer-source');
-    clearDropHighlight();
-    finishOwnedPanelDrag();
-  }
-
-  function beginOwnedPanelDrag() {
-    ownedDragActive = true;
-    clearTimeout(folderCloseTimer);
-    clearTimeout(ownedDragSafetyTimer);
-    ownedDragSafetyTimer = setTimeout(finishPanelDrag, 30000);
-    syncSidebarVisibility();
-  }
-
-  function finishOwnedPanelDrag() {
-    if (!ownedDragActive) return;
-    ownedDragActive = false;
-    const needsRender = renderDeferredDuringPanelDrag;
-    renderDeferredDuringPanelDrag = false;
-    clearTimeout(ownedDragSafetyTimer);
-    ownedDragSafetyTimer = null;
-    // Reconcile pointer hover after the overlay is removed.
-    reconcileFolderHover();
-    syncSidebarVisibility();
-    if (!folderPointerInPane) scheduleFolderClose();
-    if (needsRender) queueRender();
-  }
-
-  // Only this predicate decides which interactions keep the independent pane open.
-  function panelHasVisibilityHold() {
-    return ownedDragActive || hasActiveChatEditor() || folderButtonPinned;
-  }
-
-  function shouldShowFolderPanel() {
-    return panelHasVisibilityHold() || folderPointerInButton || folderPointerInPane;
-  }
-
-  function scheduleFolderClose() {
-    clearTimeout(folderCloseTimer);
-    if (panelHasVisibilityHold()) return;
-    folderCloseTimer = setTimeout(() => {
-      if (panelHasVisibilityHold()) return;
-      reconcileFolderHover();
-      syncSidebarVisibility();
-    }, 220);
-  }
-
-  function folderRailMountTarget() {
-    return document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"] [data-appearance="plain"]');
-  }
-
-  function ensureFolderRailButton() {
-    const host = folderRailMountTarget();
-    if (!host) return;
-    if (!folderButton || !folderButton.isConnected || folderButton.parentElement !== host) {
-      const old = document.getElementById('cgfm-rail-entry');
-      if (old && old !== folderButton) old.remove();
-      const entry = document.createElement('div');
-      entry.id = 'cgfm-rail-entry';
-      const button = document.createElement('button');
-      button.id = 'cgfm-rail-button';
-      button.type = 'button';
-      button.setAttribute('aria-label', '文件夹');
-      button.setAttribute('title', '文件夹（悬停打开，点击固定）');
-      button.setAttribute('aria-expanded', 'false');
-      button.innerHTML = icon('folder');
-      entry.appendChild(button);
-      host.appendChild(entry);
-      button.addEventListener('pointerenter', () => {
-        folderPointerInButton = true;
-        clearTimeout(folderCloseTimer);
-        collectRecentChats(true);
-        syncSidebarVisibility();
-      });
-      button.addEventListener('pointerleave', () => {
-        folderPointerInButton = false;
-        scheduleFolderClose();
-      });
-      button.addEventListener('click', event => {
-        event.preventDefault(); event.stopPropagation();
-        folderButtonPinned = !folderButtonPinned;
-        collectRecentChats(true);
-        syncSidebarVisibility();
-        if (!folderButtonPinned) scheduleFolderClose();
-      });
-      folderButton = entry;
-    }
-    if (host !== folderButtonHost) {
-      folderRailObserver?.disconnect();
-      folderButtonHost = host;
-      folderRailObserver = new MutationObserver(() => {
-        if (!folderButton || folderButton.parentElement !== host) scheduleAppShellStateRefresh();
-      });
-      folderRailObserver.observe(host, { childList:true });
-    }
-    syncSidebarVisibility();
-  }
-
-  function syncSidebarVisibility() {
-    dualSidebarOpen = shouldShowFolderPanel();
-    const rail = document.querySelector('#app-shell-sidebar nav[data-app-navigation-rail="true"]');
-    // The navigation rail is always 52px, even when the native conversation
-    // sidebar is pinned. Position relative to the actual rail, never the native panel.
-    const railRect = rail?.getBoundingClientRect();
-    const left = railRect ? Math.round(railRect.right) : 52;
-    if (rootEl) {
-      rootEl.style.setProperty('--cgfm-panel-left', left + 'px');
-      rootEl.style.setProperty('--cgfm-panel-width', '300px');
-      rootEl.setAttribute('data-cgfm-visible', dualSidebarOpen ? 'true' : 'false');
-    }
-    const button = folderButton?.querySelector('button');
-    if (button) {
-      button.setAttribute('aria-expanded', dualSidebarOpen ? 'true' : 'false');
-      button.setAttribute('data-cgfm-open', dualSidebarOpen ? 'true' : 'false');
-    }
-    if (dualSidebarOpen) collectRecentChats();
-    if (dualSidebarOpen && !recentLastOpenState) void refreshRecentFromOfficialApi();
-    recentLastOpenState = dualSidebarOpen;
-  }
-
-  function scheduleAppShellStateRefresh() {
-    if (appShellStateRaf) return;
-    appShellStateRaf = requestAnimationFrame(() => {
-      appShellStateRaf = 0;
-      ensureMountedLight();
-    });
-  }
-
-
-
-  function scheduleResumeRecovery(reason) {
-    // Sleep / tab restore is not a full page load, so Tampermonkey does not rerun boot().
-    // Run a short, sparse self-healing window after focus/pageshow/visibilitychange.
-    // No long-running observer, no interval, and each check is the same lightweight mount check.
-    resumeRecoveryTimers.forEach(timer => clearTimeout(timer));
-    resumeRecoveryTimers = [];
-    [0, 200, 800, 2000, 5000, 10000, 15000].forEach(delay => {
-      const timer = setTimeout(() => {
+    catch (e) {
+        this.notice(String(e));
+    } }
+    async sync(manual) {
+        if (this.busy || !this.profile.dav.url)
+            return;
+        if (!manual && (Date.now() < this.syncRetryAt || this.authFailure || !navigator.onLine))
+            return;
+        if (this.account === 'local') {
+            if (manual)
+                this.notice('尚未识别 ChatGPT 账号，不能同步');
+            return;
+        }
+        this.busy = true;
+        const generation = this.generation, account = this.account;
+        this.renderStatus();
         try {
-          maybeApplyNewerStoredProfile('resume-' + reason);
-          ensureMountedLight();
+            let finished = false;
+            for (let attempt = 0; attempt < 4; attempt++) {
+                const read = await (0, sync_1.davRequest)(this.profile.dav, 'GET');
+                if (generation !== this.generation)
+                    return;
+                if (read.status !== 200 && read.status !== 404)
+                    throw Error(`云端读取失败 HTTP ${read.status}`);
+                const remote = read.status === 404 ? null : (0, sync_1.decodeRemote)(read.text, account);
+                const baseline = this.profile.base;
+                const before = (0, model_1.copy)(this.profile.data);
+                const merged = remote ? (0, sync_1.merge)(baseline, before, remote.data) : { data: before, conflicts: [] };
+                const mergedData = merged.data;
+                const changed = JSON.stringify(mergedData) !== JSON.stringify(remote?.data ?? (0, model_1.blank)());
+                if (!changed && remote) {
+                    const after = this.profile.data;
+                    const updated = (0, sync_1.merge)(before, after, mergedData);
+                    this.profile.data = updated.data;
+                    this.profile.base = (0, model_1.copy)(mergedData);
+                    this.profile.baseRevision = remote.revision;
+                    this.profile.etag = read.etag;
+                    this.profile.pending = (0, model_1.diff)(mergedData, this.profile.data, this.device, 0);
+                    this.profile.conflicts.push(...merged.conflicts, ...updated.conflicts);
+                    this.persist();
+                    this.render();
+                    if (this.profile.pending.length)
+                        this.scheduleSync();
+                    finished = true;
+                    break;
+                }
+                if (remote && !read.etag)
+                    throw Error('服务器未提供 ETag，无法安全并发写入');
+                const envelope = (0, sync_1.createRemote)(account, this.device, (remote?.revision ?? 0) + 1, mergedData);
+                const result = await (0, sync_1.davRequest)(this.profile.dav, 'PUT', remote ? { 'If-Match': read.etag } : { 'If-None-Match': '*' }, JSON.stringify(envelope));
+                if (generation !== this.generation)
+                    return;
+                if (result.status === 412 || result.status === 409)
+                    continue;
+                if (result.status < 200 || result.status >= 300)
+                    throw Error(`云端写入失败 HTTP ${result.status}`);
+                // Never replace edits performed while the request was in flight.
+                const after = this.profile.data;
+                const newMerge = (0, sync_1.merge)(before, after, mergedData);
+                this.profile.data = newMerge.data;
+                this.profile.base = (0, model_1.copy)(mergedData);
+                this.profile.baseRevision = envelope.revision;
+                this.profile.etag = result.etag;
+                this.profile.conflicts.push(...merged.conflicts, ...newMerge.conflicts);
+                this.profile.pending = (0, model_1.diff)(mergedData, this.profile.data, this.device, 0);
+                this.persist();
+                this.render();
+                if (this.profile.pending.length)
+                    this.scheduleSync();
+                finished = true;
+                break;
+            }
+            if (!finished)
+                throw Error('多次并发冲突，未能提交，请稍后重试');
+            this.syncFailures = 0;
+            this.syncRetryAt = 0;
+            this.authFailure = false;
+            if (manual)
+                this.notice('同步请求完成');
+        }
+        catch (e) {
+            this.syncFailures++;
+            this.syncRetryAt = Date.now() + Math.min(4 * 3600000, 15000 * 2 ** Math.min(this.syncFailures, 8));
+            this.authFailure = /HTTP 40[13]/.test(String(e));
+            if (manual)
+                this.notice('同步失败：' + String(e));
+            console.warn('[CGFM] sync', e);
         }
         finally {
-          resumeRecoveryTimers = resumeRecoveryTimers.filter(t => t !== timer);
+            this.busy = false;
+            this.renderStatus();
         }
-      }, delay);
-      resumeRecoveryTimers.push(timer);
-    });
-  }
-
-
-  function ensureMountedLight() {
-    try {
-      const beforeAccount = currentAccount && currentAccount.id;
-      ensureActiveProfile();
-      const afterAccount = currentAccount && currentAccount.id;
-      if (!rootEl || rootEl.parentElement !== document.body) mount();
-      else {
-        ensureFolderRailButton();
-        watchRecentListChanges();
-            setupNativeMenuHook();
-        applySidebarWidth();
-        syncSidebarVisibility();
-        if (beforeAccount && afterAccount && beforeAccount !== afterAccount) queueRender();
-      }
-    } catch (err) {
-      console.warn(APP_NAME, 'ensure mount failed', err);
     }
-  }
-
-  function boot() {
-    try {
-      ensureActiveProfile();
-      restoreOfficialAuthHeaders();
-      ensureSyncMeta(state);
-      mutationBaseline = syncProjection(state);
-      dirtySincePush = !!(((state || {}).settings || {}).webdav || {}).pendingPush;
-      lastSeenStorageRevision = currentStorageRevisionInfo().revision || getProfileStorageRevision(state);
-      lastSeenStorageProjection = storageBusinessProjectionKey(state);
-      setupCrossTabStorageSync();
-      document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && pointerDragSession) finishPanelDrag();
-        if (event.key === 'Escape' && !menuEl && !modalEl && !editingFolderId && !hasActiveChatEditor()) {
-          folderButtonPinned = false;
-          folderPointerInButton = false;
-          folderPointerInPane = false;
-          syncSidebarVisibility();
-        }
-      });
-      // Panel drag/drop is scoped to the script-owned root.
-      // Mount once outside the React tree; sparse recovery handles body replacement only.
-      [0, 700, 2800, 8000, 21000, 55000].forEach(delay => setTimeout(ensureMountedLight, delay));
-      const idle = window.requestIdleCallback || (fn => setTimeout(fn, 3500));
-      idle(() => { try { if (mounted) ensureSettingsModal(); } catch (_) {} });
-      restartPeriodicBackup();
-      setTimeout(() => checkRemoteUpdate(false, 'boot'), 1800);
-      window.addEventListener('beforeunload', () => { flushPendingPersist(false); teardownCrossTabStorageSync(); });
-      window.addEventListener('pagehide', () => flushPendingPersist(false));
-      window.addEventListener('focus', () => { scheduleResumeRecovery('focus'); setTimeout(() => checkRemoteUpdate(false, 'focus'), 500); }, { passive: true });
-      window.addEventListener('pageshow', () => { scheduleResumeRecovery('pageshow'); setTimeout(() => checkRemoteUpdate(false, 'pageshow'), 700); }, { passive: true });
-      document.addEventListener('visibilitychange', () => {
-        if (document.hidden) flushPendingPersist(false);
-        else { scheduleResumeRecovery('visibilitychange'); setTimeout(() => checkRemoteUpdate(false, 'visibilitychange'), 700); }
-      }, { passive: true });
-    } catch (err) {
-      console.error(APP_NAME, 'boot failed', err);
+    notice(message) { console.info('[CGFM]', message); if (this.status) {
+        this.status.textContent = message;
+        setTimeout(() => this.renderStatus(), 3500);
     }
-  }
+    else
+        alert(message); }
+}
+exports.FolderApplication = FolderApplication;
 
-  // Capture only official authenticated history request metadata, in memory.
-  installOfficialHistoryCapture();
+},
+"main":function(require,module,exports){
+"use strict";
+// ==UserScript==
+// @name         ChatGPT文件夹
+// @namespace    https://chatgpt.com/
+// @homepageURL  https://github.com/Ember-Dawn/userscript-cyan
+// @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
+// @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
+// @version      2.0.0
+// @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
+// @author       ChatGPT
+// @match        https://chatgpt.com/*
+// @match        https://chat.openai.com/*
+// @run-at       document-start
+// @noframes
+// @grant        unsafeWindow
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// ==/UserScript==
+Object.defineProperty(exports, "__esModule", { value: true });
+const runtime_1 = require("./runtime");
+function run() {
+    if (!document.body) {
+        document.addEventListener('DOMContentLoaded', run, { once: true });
+        return;
+    }
+    if (document.querySelector('[data-cgfm-next-root]'))
+        return;
+    new runtime_1.FolderApplication().start();
+}
+run();
 
-
-  // Keep DOM/state boot deferred until document structure is ready.
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot, { once: true });
-  } else {
-    boot();
-  }
-})();
+}};const cache={};function get(name){const key=(name.startsWith('./')?name.slice(2):name);if(cache[key])return cache[key].exports;const fn=registry[key];if(!fn)throw Error('Missing bundled module '+key);const m={exports:{}};cache[key]=m;fn(get,m,m.exports);return m.exports;}get('main');})();
