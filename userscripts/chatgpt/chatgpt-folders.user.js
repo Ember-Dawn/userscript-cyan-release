@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.8
+// @version      2.0.9
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
@@ -335,7 +335,9 @@ const style = `
 #cgfm-next-root .cgfm-settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 #cgfm-next-root .cgfm-settings-grid>*{min-width:0}
 #cgfm-next-root .cgfm-settings-actions{display:flex;gap:8px;flex-wrap:wrap}
-#cgfm-next-root .cgfm-settings-actions button{margin:0;padding:8px 10px;display:inline-flex;align-items:center;gap:6px}
+#cgfm-next-root .cgfm-settings-actions button{margin:0;padding:7px 14px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--cg-border);border-radius:7px;background:var(--cg-hover);color:var(--cg-text);font-size:13px;font-weight:500;cursor:pointer;transition:all .15s ease}
+#cgfm-next-root .cgfm-settings-actions button:hover{background:var(--cg-input);border-color:var(--cg-muted)}
+#cgfm-next-root .cgfm-settings-actions button:disabled{opacity:.5;cursor:not-allowed}
 #cgfm-next-root .cgfm-settings-actions button svg{width:15px;height:15px}
 #cgfm-next-root .cgfm-settings-actions.cgfm-data-actions{display:flex;flex-wrap:nowrap;gap:8px}
 #cgfm-next-root .cgfm-settings-actions.cgfm-data-actions button{padding:8px 10px;white-space:nowrap;font-size:13px;font-weight:500;flex:1;justify-content:center;border:1px solid var(--cg-border);border-radius:7px}
@@ -369,6 +371,13 @@ const style = `
 #cgfm-next-root .cgfm-menu-icon svg{width:15px;height:15px}
 #cgfm-next-root .cgfm-menu-divider{height:1px;margin:4px 0;background:var(--cg-border)}
 #cgfm-next-root .cgfm-menu-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cgfm-next-root .cgfm-menu-arrow{display:inline-flex;align-items:center;opacity:.5;margin-left:auto}
+#cgfm-next-root .cgfm-menu-arrow svg{width:14px;height:14px}
+#cgfm-next-root .cgfm-pop.cgfm-submenu{position:fixed;z-index:2147483002;padding:6px;min-width:auto;border-radius:10px;box-shadow:0 12px 32px var(--cg-shadow);border:1px solid var(--cg-border);background:var(--cg-bg)}
+#cgfm-next-root .cgfm-color-grid{display:grid;grid-template-columns:repeat(5,22px);gap:6px;padding:2px}
+#cgfm-next-root .cgfm-color-dot{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0;outline:none;transition:transform .12s ease,border-color .12s ease}
+#cgfm-next-root .cgfm-color-dot:hover{transform:scale(1.18);border-color:var(--cg-text)}
+#cgfm-next-root .cgfm-color-dot.cgfm-color-active{border-color:var(--cg-text);box-shadow:0 0 0 1.5px var(--cg-bg)}
 
 #cgfm-next-root{position:fixed;z-index:2147483000;top:72px;left:64px;font:13px/1.45 system-ui;color:var(--cg-text);--cg-bg:#f4f4f2;--cg-text:#0d0d0d;--cg-muted:#656565;--cg-border:#d4d4d2;--cg-hover:#e8e8e6;--cg-input:#fff;--cg-shadow:#0002}
 html[data-cgfm-theme="dark"] #cgfm-next-root{--cg-bg:#212121;--cg-text:#ececec;--cg-muted:#b4b4b4;--cg-border:#424242;--cg-hover:#343434;--cg-input:#2b2b2b;--cg-shadow:#0007}
@@ -548,6 +557,7 @@ class FolderApplication {
         this.list = this.root.querySelector('.cgfm-scroll');
         this.status = this.root.querySelector('.cgfm-foot');
         this.launch = this.root.querySelector('#cgfm-next-launch');
+        this.panel.style.width = (this.profile.preferences.sidebarWidth || 330) + 'px';
         this.launch.addEventListener('click', () => { this.ensureMounted(); this.pinned = !this.pinned; this.updateOpen(); });
         this.launch.addEventListener('mouseenter', () => { this.hovered = true; this.updateOpen(); });
         this.launch.addEventListener('mouseleave', () => { this.hovered = false; window.setTimeout(() => this.updateOpen(), 280); });
@@ -668,7 +678,7 @@ class FolderApplication {
         this.railButton.setAttribute('aria-expanded', String(this.isOpen()));
     } }
     isOpen() { return this.root.dataset.open === 'yes'; }
-    renderStatus() { const state = !this.profile.dav.url ? 'unconfigured' : this.busy ? 'syncing' : this.authFailure || this.syncRetryAt > Date.now() || this.profile.conflicts.length ? 'error' : this.profile.pending.length ? 'pending' : 'synced'; const btn = this.panel?.querySelector('[data-act="sync"]'); if (btn) {
+    renderStatus() { const state = !this.profile.dav.url ? 'unconfigured' : this.busy ? 'syncing' : (this.authFailure || (this.syncFailures > 0 && this.syncRetryAt > Date.now())) ? 'error' : this.profile.pending.length ? 'pending' : 'synced'; const btn = this.panel?.querySelector('[data-act="sync"]'); if (btn) {
         btn.dataset.syncState = state;
         btn.title = { unconfigured: '未配置 WebDAV', syncing: '同步中', error: '同步失败或存在冲突', pending: '有待同步的本地修改', synced: '已同步' }[state];
     } this.status.textContent = `${this.busy ? '正在同步' : this.dirty ? '待同步' : '已保存'} · ${this.profile.pending.length} 条待同步 · ${this.profile.conflicts.length} 条冲突`; this.status.title = this.profile.conflicts.slice(-8).join('\n'); }
@@ -738,8 +748,9 @@ class FolderApplication {
     else
         this.chatMenu(row.dataset.id, row.dataset.type === 'recent', e.target); }
     navigate(id) { location.assign('/c/' + encodeURIComponent(id)); }
-    dismissPopup() { this.popup?.remove(); this.popup = null; this.width(); this.updateOpen(); }
+    dismissPopup() { this.root.querySelectorAll('.cgfm-submenu').forEach(e => e.remove()); this.popup?.remove(); this.popup = null; this.width(); this.updateOpen(); }
     showPopup(el, anchor) {
+        this.root.querySelectorAll('.cgfm-submenu').forEach(e => e.remove());
         const anchorRect = anchor?.getBoundingClientRect();
         this.popup?.remove();
         this.popup = el;
@@ -784,6 +795,60 @@ class FolderApplication {
         box.append(d);
     }
     menuButton(box, label, fn) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { this.dismissPopup(); fn(); }); box.append(b); }
+    colorMenuItem(box, id) {
+        const item = document.createElement('div');
+        item.className = 'cgfm-menu-item cgfm-menu-has-sub';
+        item.innerHTML = `<span class="cgfm-menu-icon">${(0, icons_1.icon)('palette')}</span><span class="cgfm-menu-label">设置颜色</span><span class="cgfm-menu-arrow">${(0, icons_1.icon)('chevron-right')}</span>`;
+        let sub = null;
+        const colors = ['#6b7280', '#ef4444', '#f97316', '#f59e0b', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#ec4899'];
+        const openSub = () => {
+            if (sub)
+                return;
+            sub = document.createElement('div');
+            sub.className = 'cgfm-pop cgfm-submenu';
+            const grid = document.createElement('div');
+            grid.className = 'cgfm-color-grid';
+            const curColor = this.profile.data.folders[id]?.color || '#6b7280';
+            for (const c of colors) {
+                const dot = document.createElement('button');
+                dot.type = 'button';
+                dot.className = 'cgfm-color-dot' + (curColor === c ? ' cgfm-color-active' : '');
+                dot.style.backgroundColor = c;
+                dot.title = c;
+                dot.addEventListener('click', e => {
+                    e.stopPropagation();
+                    this.dismissPopup();
+                    this.apply({ type: 'folder.color', id, color: c });
+                });
+                grid.append(dot);
+            }
+            sub.append(grid);
+            this.root.append(sub);
+            const r = item.getBoundingClientRect();
+            const sw = sub.getBoundingClientRect().width || 150;
+            let left = r.right + 4;
+            if (left + sw > innerWidth - 8)
+                left = Math.max(8, r.left - sw - 4);
+            let top = r.top - 4;
+            const sh = sub.getBoundingClientRect().height || 70;
+            if (top + sh > innerHeight - 8)
+                top = Math.max(8, innerHeight - sh - 8);
+            sub.style.left = left + 'px';
+            sub.style.top = top + 'px';
+        };
+        const closeSub = () => { sub?.remove(); sub = null; };
+        item.addEventListener('pointerenter', openSub);
+        item.addEventListener('click', e => { e.stopPropagation(); if (sub)
+            closeSub();
+        else
+            openSub(); });
+        box.addEventListener('pointerleave', e => {
+            const rel = e.relatedTarget;
+            if (sub && (!rel || (!sub.contains(rel) && !box.contains(rel))))
+                closeSub();
+        });
+        box.append(item);
+    }
     folderMenu(id, anchor) {
         const f = this.profile.data.folders[id];
         if (!f)
@@ -792,9 +857,7 @@ class FolderApplication {
         box.className = 'cgfm-menu-box';
         this.menuItem(box, '创建子文件夹', 'folder-plus', () => this.editFolder(id));
         this.menuItem(box, '重命名', 'pencil', () => this.editFolder(f.parentId, id));
-        this.menuItem(box, '设置颜色', 'palette', () => this.colorDialog(id));
-        this.menuItem(box, '移动至...', 'folder-input', () => this.folderPicker('folder', id));
-        this.menuItem(box, '刷新对话标题', 'refresh-cw', () => { this.scanRecents(); this.apiAt = 0; void this.refreshApi(); });
+        this.colorMenuItem(box, id);
         this.menuDivider(box);
         this.menuItem(box, '删除文件夹', 'trash-2', () => { if (confirm(`删除「${f.name}」及其子文件夹和分类引用？不会删除 ChatGPT 对话。`))
             this.apply({ type: 'folder.delete', id }); }, true);
@@ -1042,7 +1105,7 @@ class FolderApplication {
         } if (targetChanged) {
             this.profile.base = (0, model_1.blank)();
             this.profile.baseRevision = 0;
-        } this.profile.preferences.sidebarWidth = Math.max(240, Math.min(520, Number(width.value) || 312)); this.profile.preferences.customWidth = true; this.persist(); this.width(); return true; };
+        } this.profile.preferences.sidebarWidth = Math.max(260, Math.min(500, Math.round((Number(width.value) || 330) / 5) * 5)); this.profile.preferences.customWidth = true; this.panel.style.width = this.profile.preferences.sidebarWidth + 'px'; this.persist(); this.width(); return true; };
         const syncActions = document.createElement('div');
         syncActions.className = 'cgfm-settings-actions';
         webdav.append(syncActions);
@@ -1100,25 +1163,26 @@ class FolderApplication {
         const widthHeader = document.createElement('div');
         widthHeader.className = 'cgfm-settings-row-between';
         const widthLabelText = document.createElement('span');
-        widthLabelText.textContent = '侧栏宽度';
+        widthLabelText.textContent = '文件夹面板宽度';
+        const currentW = Math.max(260, Math.min(500, Math.round((this.profile.preferences.sidebarWidth || 330) / 5) * 5));
         const widthValue = document.createElement('span');
         widthValue.className = 'cgfm-width-val';
-        widthValue.textContent = String(this.profile.preferences.sidebarWidth) + ' px';
+        widthValue.textContent = String(currentW) + ' px';
         widthHeader.append(widthLabelText, widthValue);
         interfaceSection.append(widthHeader);
         const width = document.createElement('input');
         width.type = 'range';
-        width.min = '240';
-        width.max = '520';
-        width.step = '1';
-        width.value = String(this.profile.preferences.sidebarWidth);
-        width.setAttribute('aria-label', '官方侧栏宽度');
+        width.min = '260';
+        width.max = '500';
+        width.step = '5';
+        width.value = String(currentW);
+        width.setAttribute('aria-label', '文件夹面板宽度');
         interfaceSection.append(width);
         const ticks = document.createElement('div');
         ticks.className = 'cgfm-slider-line';
-        ticks.innerHTML = '<span>240 px</span><span>520 px</span>';
+        ticks.innerHTML = '<span>260 px</span><span>500 px</span>';
         interfaceSection.append(ticks);
-        width.addEventListener('input', () => { widthValue.textContent = width.value + ' px'; this.width(Number(width.value), true); });
+        width.addEventListener('input', () => { widthValue.textContent = width.value + ' px'; this.panel.style.width = width.value + 'px'; this.width(Number(width.value), true); });
         const dataSection = section('数据管理');
         const dataActions = document.createElement('div');
         dataActions.className = 'cgfm-settings-actions cgfm-data-actions';
@@ -1133,6 +1197,7 @@ class FolderApplication {
         result.setAttribute('role', 'status');
         result.setAttribute('aria-live', 'polite');
         result.hidden = true;
+        result.style.display = 'none';
         box.append(result);
         const footer = document.createElement('footer');
         footer.className = 'cgfm-settings-footer';
@@ -1306,6 +1371,7 @@ class FolderApplication {
             this.syncFailures = 0;
             this.syncRetryAt = 0;
             this.authFailure = false;
+            this.profile.conflicts = [];
             if (manual)
                 this.notice('同步请求完成');
         }
@@ -1328,7 +1394,7 @@ class FolderApplication {
         dav.dataset.type = /失败|错误|损坏/.test(message) ? 'error' : 'success';
         dav.innerHTML = `<span>${message}</span>`;
     } const result = this.popup?.querySelector('.cgfm-settings-result'); if (result) {
-        result.hidden = false;
+        result.hidden = true;
         result.textContent = message;
     } if (this.status) {
         this.status.textContent = message;
@@ -1349,7 +1415,7 @@ exports.FolderApplication = FolderApplication;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.8
+// @version      2.0.9
 // @description  ChatGPT 多级文件夹与 WebDAV 同步（TypeScript 重写）
 // @author       ChatGPT
 // @match        https://chatgpt.com/*
