@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.0
+// @version      2.0.1
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -902,7 +902,7 @@ exports.STYLES = `
   --cg-hover: #f3f4f6;
   --cg-input: #f9fafb;
   --cg-muted: #6b7280;
-  --cg-shadow: rgba(0, 0, 0, 0.12);
+  --cg-shadow: rgba(0, 0, 0, 0.14);
   --cg-accent: #10a37f;
   --cg-sidebar-width: 312px;
 }
@@ -915,60 +915,68 @@ exports.STYLES = `
   --cg-hover: #262626;
   --cg-input: #202020;
   --cg-muted: #8e8ea0;
-  --cg-shadow: rgba(0, 0, 0, 0.45);
+  --cg-shadow: rgba(0, 0, 0, 0.5);
   --cg-accent: #10a37f;
 }
 
-/* 官方导航 Rail 挂载按钮 */
-.cgfm-rail-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  background: transparent;
-  border: none;
-  color: var(--cg-text);
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-  position: relative;
-}
-.cgfm-rail-btn:hover, .cgfm-rail-btn.active {
-  background: var(--cg-hover);
-}
-.cgfm-rail-btn svg {
-  width: 20px;
-  height: 20px;
+/* 官方导航 Rail 挂载项目容器与按钮 */
+#cgfm-rail-entry {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  flex-shrink: 0 !important;
+  margin: 2px 0 !important;
+  box-sizing: border-box !important;
 }
 
-/* 独立根面板 */
+.cgfm-rail-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--cg-muted) !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+  position: relative !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+}
+.cgfm-rail-btn:hover, .cgfm-rail-btn.active {
+  background: var(--cg-hover) !important;
+  color: var(--cg-text) !important;
+}
+.cgfm-rail-btn svg {
+  width: 20px !important;
+  height: 20px !important;
+}
+
+/* 独立根面板（采用 display: none / flex 与高 z-index 保障可靠显隐） */
 #cgfm-root {
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 60px;
-  width: var(--cg-sidebar-width);
-  background: var(--cg-panel-bg);
-  color: var(--cg-text);
-  border-right: 1px solid var(--cg-border);
-  box-shadow: 4px 0 24px var(--cg-shadow);
-  z-index: 1000;
-  display: flex;
-  flex-direction: column;
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
-  transform: translateX(-100%);
-  opacity: 0;
-  pointer-events: none;
-  font-family: inherit;
-  font-size: 13px;
-  user-select: none;
+  position: fixed !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  height: 100dvh !important;
+  width: var(--cg-sidebar-width) !important;
+  background: var(--cg-panel-bg) !important;
+  color: var(--cg-text) !important;
+  border-right: 1px solid var(--cg-border) !important;
+  box-shadow: 6px 0 32px var(--cg-shadow) !important;
+  z-index: 99999 !important;
+  display: none !important;
+  flex-direction: column !important;
+  font-family: inherit !important;
+  font-size: 13px !important;
+  user-select: none !important;
+  box-sizing: border-box !important;
 }
 
 #cgfm-root.cgfm-open {
-  transform: translateX(0);
-  opacity: 1;
-  pointer-events: auto;
+  display: flex !important;
 }
 
 /* 头部操作栏 */
@@ -1061,6 +1069,7 @@ exports.STYLES = `
   transition: background 0.12s ease;
   position: relative;
   gap: 6px;
+  box-sizing: border-box;
 }
 .cgfm-row:hover {
   background: var(--cg-hover);
@@ -1175,7 +1184,7 @@ exports.STYLES = `
   border-radius: 8px;
   box-shadow: 0 10px 25px var(--cg-shadow);
   padding: 4px;
-  z-index: 2000;
+  z-index: 100001;
   display: flex;
   flex-direction: column;
   min-width: 140px;
@@ -1228,7 +1237,7 @@ exports.STYLES = `
   border-radius: 8px;
   box-shadow: 0 10px 25px var(--cg-shadow);
   display: none;
-  z-index: 2100;
+  z-index: 100002;
 }
 .cgfm-palette-wrap:hover .cgfm-palette-grid,
 .cgfm-palette-grid:hover {
@@ -1254,7 +1263,7 @@ exports.STYLES = `
   border-radius: 8px;
   box-shadow: 0 12px 28px var(--cg-shadow);
   padding: 12px;
-  z-index: 2200;
+  z-index: 100003;
   width: 200px;
   display: flex;
   flex-direction: column;
@@ -1300,14 +1309,13 @@ exports.STYLES = `
 .cgfm-settings-panel {
   position: fixed;
   top: 0;
-  left: calc(60px + var(--cg-sidebar-width));
   width: 360px;
   max-height: 100vh;
   overflow-y: auto;
   background: var(--cg-panel-bg);
   border-right: 1px solid var(--cg-border);
   box-shadow: 6px 0 24px var(--cg-shadow);
-  z-index: 1050;
+  z-index: 100000;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -1414,7 +1422,7 @@ exports.STYLES = `
 .cgfm-drag-preview {
   position: fixed;
   pointer-events: none;
-  z-index: 9999;
+  z-index: 100010;
   background: var(--cg-panel-bg);
   border: 1px solid var(--cg-accent);
   box-shadow: 0 8px 20px var(--cg-shadow);
@@ -1449,6 +1457,7 @@ class FolderUiController {
     profile;
     collapsedFolders;
     rootEl;
+    railEntry = null;
     railBtn = null;
     settingsEl = null;
     activeMenu = null;
@@ -1470,7 +1479,7 @@ class FolderUiController {
         this.api = new api_1.ChatApiManager();
         this.profile = this.storage.loadProfile();
         this.collapsedFolders = this.storage.loadCollapsedFolders();
-        this.isPinned = this.profile.preferences.customWidth; // 复用持久化状态或偏好
+        this.isPinned = this.profile.preferences.customWidth;
     }
     init() {
         this.injectStyles();
@@ -1517,7 +1526,7 @@ class FolderUiController {
             }
         });
         document.body.appendChild(this.rootEl);
-        // 全局点击关闭菜单
+        // 全局点击关闭上下文菜单与删除确认卡片
         window.addEventListener('click', (e) => {
             const target = e.target;
             if (this.activeMenu && !this.activeMenu.contains(target) && !target.closest('.cgfm-mini-btn')) {
@@ -1533,48 +1542,103 @@ class FolderUiController {
         this.profile.preferences.sidebarWidth = val;
         this.rootEl.style.setProperty('--cg-sidebar-width', `${val}px`);
     }
+    updatePosition() {
+        const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
+        if (rail && this.rootEl) {
+            const rect = rail.getBoundingClientRect();
+            this.rootEl.style.left = `${Math.max(0, Math.round(rect.right))}px`;
+        }
+        else if (this.rootEl) {
+            this.rootEl.style.left = '52px';
+        }
+    }
     setupRailWatcher() {
         const tryMount = () => {
-            if (this.railBtn && document.body.contains(this.railBtn))
-                return;
-            // 匹配 ChatGPT 左侧官方导航 rail
-            const rail = document.querySelector('nav[aria-label="Chat history"], nav, #app-shell-sidebar');
+            // 精确匹配 ChatGPT 侧栏导航 rail
+            const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
             if (!rail)
                 return;
-            const container = rail.querySelector('div') || rail;
-            const btn = document.createElement('button');
-            btn.className = 'cgfm-rail-btn';
-            btn.type = 'button';
-            btn.title = 'ChatGPT 文件夹';
-            btn.innerHTML = constants_1.ICONS.rail;
-            btn.addEventListener('pointerenter', () => {
-                this.clearCloseTimer();
-                this.openPanel();
-            });
-            btn.addEventListener('pointerleave', () => {
-                if (!this.isPinned && !this.isEditing && !this.isDragging) {
-                    this.scheduleClose();
+            // 必须挂载在包含各个图标的实际导航列表容器 [data-appearance="plain"]
+            // 绝对不能挂载到 border 遮罩 div 或 nav 顶层直接破坏 React reconciliation
+            const host = rail.querySelector('[data-appearance="plain"], .group\\/nav-list');
+            if (!host)
+                return;
+            if (!this.railEntry) {
+                const entry = document.createElement('div');
+                entry.id = 'cgfm-rail-entry';
+                const btn = document.createElement('button');
+                btn.className = 'cgfm-rail-btn';
+                btn.type = 'button';
+                btn.title = 'ChatGPT 文件夹（点击固定/打开）';
+                btn.innerHTML = constants_1.ICONS.rail;
+                btn.addEventListener('pointerenter', () => {
+                    this.clearCloseTimer();
+                    this.openPanel();
+                });
+                btn.addEventListener('pointerleave', () => {
+                    if (!this.isPinned && !this.isEditing && !this.isDragging) {
+                        this.scheduleClose();
+                    }
+                });
+                btn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.clearCloseTimer();
+                    if (this.isOpen) {
+                        if (this.isPinned) {
+                            this.isPinned = false;
+                            this.closePanel();
+                        }
+                        else {
+                            this.isPinned = true;
+                        }
+                    }
+                    else {
+                        this.isPinned = true;
+                        this.openPanel();
+                    }
+                    this.render();
+                });
+                entry.appendChild(btn);
+                this.railEntry = entry;
+                this.railBtn = btn;
+            }
+            // 挂载位置：优先放在首页（builtin:home）下方，没有则追加至末尾
+            const homeItem = host.querySelector('[data-sidebar-destination="builtin:home"]')?.closest('.flex.shrink-0');
+            if (homeItem && homeItem.parentElement === host) {
+                if (this.railEntry.previousElementSibling !== homeItem) {
+                    homeItem.after(this.railEntry);
                 }
-            });
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.togglePin();
-            });
-            container.insertBefore(btn, container.firstChild);
-            this.railBtn = btn;
+            }
+            else {
+                if (this.railEntry.parentElement !== host) {
+                    host.appendChild(this.railEntry);
+                }
+            }
         };
         tryMount();
         const obs = new MutationObserver(() => tryMount());
         obs.observe(document.body, { childList: true, subtree: true });
+        window.setInterval(tryMount, 2000);
     }
     setupAccountWatcher() {
         const checkAccount = () => {
-            // 尝试从页面或全局状态获取 ChatGPT accountId
             let detectedAccount = 'local';
             try {
-                const match = document.cookie.match(/_account=([^;]+)/);
-                if (match)
-                    detectedAccount = match[1];
+                const boot = document.getElementById('client-bootstrap')?.textContent;
+                if (boot) {
+                    const val = JSON.parse(boot);
+                    const user = val.session?.user || val.user;
+                    const account = val.session?.account || val.account;
+                    const id = account?.id || user?.email || user?.id;
+                    if (id)
+                        detectedAccount = id;
+                }
+                else {
+                    const match = document.cookie.match(/_account=([^;]+)/);
+                    if (match)
+                        detectedAccount = match[1];
+                }
             }
             catch {
                 // 忽略
@@ -1600,6 +1664,7 @@ class FolderUiController {
         });
     }
     openPanel() {
+        this.updatePosition();
         this.isOpen = true;
         this.rootEl.classList.add('cgfm-open');
         if (this.railBtn)
@@ -1622,13 +1687,16 @@ class FolderUiController {
         if (this.isPinned) {
             this.openPanel();
         }
+        else {
+            this.closePanel();
+        }
         this.render();
     }
     scheduleClose() {
         this.clearCloseTimer();
         this.closeTimer = window.setTimeout(() => {
             this.closePanel();
-        }, 220);
+        }, 250);
     }
     clearCloseTimer() {
         if (this.closeTimer !== null) {
@@ -1730,7 +1798,6 @@ class FolderUiController {
                 container.appendChild(row);
                 // 如果未折叠，渲染包含的对话和子文件夹
                 if (!isCollapsed) {
-                    // 渲染该文件夹下的对话
                     const chats = Object.values(conversations).filter((c) => c.folderId === f.id);
                     chats.sort((a, b) => model_1.naturalSort.compare(a.title, b.title));
                     for (const c of chats) {
@@ -1759,12 +1826,10 @@ class FolderUiController {
                                 }
                                 return;
                             }
-                            // 普通点击导航到对应对话
                             window.location.href = `https://chatgpt.com/c/${c.id}`;
                         });
                         container.appendChild(chatRow);
                     }
-                    // 递归子级文件夹
                     renderLevel(f.id, depth + 1);
                 }
             }
@@ -1772,22 +1837,22 @@ class FolderUiController {
         renderLevel(null, 0);
     }
     renderRecentChats(container) {
-        // 从官方侧栏 DOM 提取最近对话
-        const nativeLinks = document.querySelectorAll('nav a[href*="/c/"]');
+        // 兼容 ChatGPT 最新与经典历史侧栏选择器
+        const nativeLinks = document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
         const seenIds = new Set();
-        for (const link of nativeLinks) {
-            const href = link.getAttribute('href') || '';
-            const match = href.match(/\/c\/([a-z0-9-]+)/i);
+        for (const el of nativeLinks) {
+            const key = el.getAttribute('data-sidebar-chatgpt-conversation-key');
+            const href = el.getAttribute('href') || (el.querySelector('a')?.getAttribute('href') ?? '');
+            const match = key ? key.replace('chatgpt:conversation:', '') : href.match(/\/c\/([a-z0-9-]+)/i)?.[1];
             if (!match)
                 continue;
-            const id = match[1];
+            const id = match;
             if (seenIds.has(id))
                 continue;
             seenIds.add(id);
-            // 如果已经在某个文件夹中了，不重复展示在“最近对话”中
             if (this.profile.data.conversations[id])
                 continue;
-            let title = link.textContent?.trim() || '未命名对话';
+            let title = el.textContent?.trim() || el.getAttribute('title') || '未命名对话';
             const guarded = this.api.getGuardedTitle(id);
             if (guarded)
                 title = guarded;
@@ -1985,7 +2050,7 @@ class FolderUiController {
             }
             else {
                 if (!payload.targetFolderId)
-                    return; // 对话不能放到根目录外
+                    return;
                 this.executeChange({
                     type: 'conversation.assign',
                     id: payload.sourceId,
@@ -2073,7 +2138,6 @@ class FolderUiController {
             const mergedRes = remoteData
                 ? (0, sync_1.merge)(baseline, local, remoteData)
                 : { data: local, conflicts: [] };
-            // 提交到云端
             const newEnvelope = (0, sync_1.createRemote)(this.storage.getAccount(), this.storage.getDeviceId(), remoteRevision + 1, mergedRes.data);
             const headers = remoteData && readRes.etag
                 ? { 'If-Match': readRes.etag }
@@ -2120,6 +2184,7 @@ class FolderUiController {
         }
         const panel = document.createElement('div');
         panel.className = 'cgfm-settings-panel';
+        panel.style.left = `calc(${this.rootEl.style.left || '52px'} + var(--cg-sidebar-width))`;
         const currentWidth = this.profile.preferences.sidebarWidth || 312;
         panel.innerHTML = `
       <div class="cgfm-settings-header">
@@ -2165,7 +2230,6 @@ class FolderUiController {
         <button class="cgfm-secondary-btn" data-act="import">导入 JSON</button>
       </div>
     `;
-        // 宽度滑块即时调节联动
         const slider = panel.querySelector('.cgfm-width-slider');
         const widthNum = panel.querySelector('.cgfm-width-num');
         slider.addEventListener('input', () => {
@@ -2268,7 +2332,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.0
+// @version      2.0.1
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
