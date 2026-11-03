@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.4
+// @version      2.0.5
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -1622,6 +1622,7 @@ class FolderUiController {
     isDragging = false;
     closeTimer = null;
     mountQueued = false;
+    hasGlobalClickBound = false;
     syncState = 'unconfigured';
     isSyncing = false;
     syncRetryTimer = null;
@@ -1638,7 +1639,7 @@ class FolderUiController {
     }
     init() {
         this.injectStyles();
-        this.createRootPanel();
+        this.ensureRootMounted();
         this.setupRailWatcher();
         this.setupAccountWatcher();
         this.setupVisibilityWatcher();
@@ -1659,6 +1660,15 @@ class FolderUiController {
         this.renderSkeleton();
         this.renderFolderTree();
         this.renderRecentList();
+        try {
+            window.__cgfm = this;
+            if (typeof unsafeWindow !== 'undefined') {
+                unsafeWindow.__cgfm = this;
+            }
+        }
+        catch {
+            // 忽略
+        }
     }
     injectStyles() {
         if (document.getElementById('cgfm-styles'))
@@ -1679,9 +1689,33 @@ class FolderUiController {
             window.setTimeout(() => toast.remove(), 200);
         }, duration);
     }
+    ensureRootMounted() {
+        let existing = document.getElementById('cgfm-root');
+        if (!existing) {
+            if (!this.rootEl) {
+                this.createRootPanel();
+            }
+            else {
+                document.body.appendChild(this.rootEl);
+            }
+        }
+        else {
+            this.rootEl = existing;
+        }
+        if (this.rootEl && !document.body.contains(this.rootEl)) {
+            document.body.appendChild(this.rootEl);
+        }
+        if (this.rootEl && !this.rootEl.querySelector('.cgfm-folder-tree')) {
+            this.renderSkeleton();
+            this.renderFolderTree();
+        }
+    }
     createRootPanel() {
-        if (document.getElementById('cgfm-root'))
+        const existing = document.getElementById('cgfm-root');
+        if (existing) {
+            this.rootEl = existing;
             return;
+        }
         this.rootEl = document.createElement('div');
         this.rootEl.id = 'cgfm-root';
         this.updatePanelWidth(this.profile.preferences.sidebarWidth || 312);
@@ -1698,16 +1732,28 @@ class FolderUiController {
         this.rootEl.addEventListener('pointerleave', onLeave);
         this.rootEl.addEventListener('mouseleave', onLeave);
         document.body.appendChild(this.rootEl);
-        // 全局点击关闭菜单
-        window.addEventListener('click', (e) => {
-            const target = e.target;
-            if (this.activeMenu && !this.activeMenu.contains(target) && !target.closest('.cgfm-mini-btn')) {
-                this.closeActiveMenu();
-            }
-            if (this.activeConfirmCard && !this.activeConfirmCard.contains(target)) {
-                this.closeActiveConfirm();
-            }
-        }, { capture: true });
+        // 全局点击关闭菜单与面板（仅绑定一次）
+        if (!this.hasGlobalClickBound) {
+            this.hasGlobalClickBound = true;
+            window.addEventListener('click', (e) => {
+                const target = e.target;
+                if (this.activeMenu && !this.activeMenu.contains(target) && !target.closest('.cgfm-mini-btn')) {
+                    this.closeActiveMenu();
+                }
+                if (this.activeConfirmCard && !this.activeConfirmCard.contains(target)) {
+                    this.closeActiveConfirm();
+                }
+                // 未固定且非悬停状态下，点击面板外部自动关闭
+                if (this.isOpen &&
+                    !this.isPinned &&
+                    this.rootEl &&
+                    !this.rootEl.contains(target) &&
+                    !this.railBtn?.contains(target)) {
+                    this.isHovered = false;
+                    this.closePanel(true);
+                }
+            }, { capture: true });
+        }
     }
     updatePanelWidth(width) {
         // 限制在 260 - 500 范围，并取 5px 整数倍
@@ -1746,6 +1792,8 @@ class FolderUiController {
         }, 1200);
     }
     tryMount() {
+        // 确保根面板随时在 DOM 中，不受 React 重新挂载影响
+        this.ensureRootMounted();
         const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
         if (!rail)
             return;
@@ -1760,14 +1808,12 @@ class FolderUiController {
             btn.type = 'button';
             btn.title = 'ChatGPT 文件夹（悬停展开，点击固定）';
             btn.innerHTML = constants_1.ICONS.folder;
-            const handleEnter = (e) => {
-                e.stopPropagation();
+            const handleEnter = () => {
                 this.isHovered = true;
                 this.clearCloseTimer();
                 this.openPanel();
             };
-            const handleLeave = (e) => {
-                e.stopPropagation();
+            const handleLeave = () => {
                 this.isHovered = false;
                 this.scheduleClose();
             };
@@ -1780,20 +1826,21 @@ class FolderUiController {
                     this.openPanel();
                 }
                 else {
-                    this.isPinned = !this.isPinned;
-                    if (!this.isPinned) {
-                        this.closePanel();
+                    // 已打开时再次点击侧栏图标：如果已固定则收起并取消固定，未固定则设为固定
+                    if (this.isPinned) {
+                        this.isPinned = false;
+                        this.isHovered = false;
+                        this.closePanel(true);
+                    }
+                    else {
+                        this.isPinned = true;
                     }
                 }
                 this.updateHeaderPinButton();
             };
-            btn.addEventListener('pointerenter', handleEnter, { capture: true });
-            btn.addEventListener('mouseenter', handleEnter, { capture: true });
-            btn.addEventListener('pointerleave', handleLeave, { capture: true });
-            btn.addEventListener('mouseleave', handleLeave, { capture: true });
-            btn.addEventListener('click', handleActivate, { capture: true });
-            btn.addEventListener('pointerdown', (e) => e.stopPropagation(), { capture: true });
-            btn.addEventListener('mousedown', (e) => e.stopPropagation(), { capture: true });
+            btn.addEventListener('mouseenter', handleEnter);
+            btn.addEventListener('mouseleave', handleLeave);
+            btn.addEventListener('click', handleActivate);
             entry.appendChild(btn);
             this.railEntry = entry;
             this.railBtn = btn;
@@ -1856,6 +1903,7 @@ class FolderUiController {
         });
     }
     openPanel() {
+        this.ensureRootMounted();
         this.updatePosition();
         this.isOpen = true;
         this.rootEl.classList.add('cgfm-open');
@@ -1863,18 +1911,19 @@ class FolderUiController {
             this.railBtn.classList.add('active');
         this.renderRecentList();
     }
-    closePanel() {
-        if (this.isPinned ||
-            this.isHovered ||
-            this.isEditing ||
-            this.isDragging ||
-            this.settingsEl ||
-            this.activeMenu ||
-            this.activeConfirmCard) {
+    closePanel(force = false) {
+        if (!force &&
+            (this.isPinned ||
+                this.isHovered ||
+                this.isEditing ||
+                this.isDragging ||
+                this.settingsEl ||
+                this.activeMenu ||
+                this.activeConfirmCard)) {
             return;
         }
         this.isOpen = false;
-        this.rootEl.classList.remove('cgfm-open');
+        this.rootEl?.classList.remove('cgfm-open');
         if (this.railBtn)
             this.railBtn.classList.remove('active');
         this.closeActiveMenu();
@@ -1888,7 +1937,7 @@ class FolderUiController {
             this.openPanel();
         }
         else {
-            this.closePanel();
+            this.updateHeaderPinButton();
         }
         this.updateHeaderPinButton();
     }
@@ -2688,7 +2737,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.4
+// @version      2.0.5
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -2710,8 +2759,9 @@ function bootstrap() {
         document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
         return;
     }
-    if (document.getElementById('cgfm-root'))
+    if (window.__cgfm_initialized)
         return;
+    window.__cgfm_initialized = true;
     try {
         const app = new ui_1.FolderUiController();
         app.init();
