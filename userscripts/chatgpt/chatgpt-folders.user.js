@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.8
+// @version      2.0.9
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -117,7 +117,7 @@ exports.uid = uid;
 const defaultProfile = () => ({
     data: (0, exports.blankData)(),
     base: (0, exports.blankData)(),
-    preferences: { sidebarWidth: 312, customWidth: false },
+    preferences: { sidebarWidth: 312, customWidth: false, rowGap: 2, indentSize: 14 },
     dav: { url: '', username: '', password: '', file: 'chatgpt-folders-v2.json' },
     pending: [],
     baseRevision: 0,
@@ -993,6 +993,8 @@ exports.STYLES = `
   --cg-shadow: rgba(0, 0, 0, 0.12);
   --cg-accent: #3b82f6;
   --cg-sidebar-width: 312px;
+  --cg-row-gap: 2px;
+  --cg-indent-size: 14px;
 }
 
 :root[class*="dark"], .dark, html[data-theme="dark"] {
@@ -1164,7 +1166,7 @@ exports.STYLES = `
   padding: 0 8px;
   border-radius: 6px;
   cursor: pointer;
-  margin: 1px 0;
+  margin: 0 0 var(--cg-row-gap, 2px) 0 !important;
   transition: background 0.12s ease;
   position: relative;
   gap: 6px;
@@ -1481,12 +1483,16 @@ exports.STYLES = `
   font-size: 13px;
   color: var(--cg-text);
 }
-.cgfm-width-num {
+.cgfm-width-num,
+.cgfm-gap-num,
+.cgfm-indent-num {
   font-weight: 600;
   color: #3b82f6;
 }
 
-.cgfm-width-slider {
+.cgfm-width-slider,
+.cgfm-gap-slider,
+.cgfm-indent-slider {
   -webkit-appearance: none !important;
   appearance: none !important;
   width: 100% !important;
@@ -1497,13 +1503,17 @@ exports.STYLES = `
   margin: 6px 0 !important;
   cursor: pointer !important;
 }
-.cgfm-width-slider::-webkit-slider-runnable-track {
+.cgfm-width-slider::-webkit-slider-runnable-track,
+.cgfm-gap-slider::-webkit-slider-runnable-track,
+.cgfm-indent-slider::-webkit-slider-runnable-track {
   width: 100% !important;
   height: 6px !important;
   border-radius: 3px !important;
   background: var(--cg-border) !important;
 }
-.cgfm-width-slider::-webkit-slider-thumb {
+.cgfm-width-slider::-webkit-slider-thumb,
+.cgfm-gap-slider::-webkit-slider-thumb,
+.cgfm-indent-slider::-webkit-slider-thumb {
   -webkit-appearance: none !important;
   appearance: none !important;
   width: 18px !important;
@@ -1516,7 +1526,9 @@ exports.STYLES = `
   margin-top: -6px !important;
   transition: transform 0.1s ease !important;
 }
-.cgfm-width-slider::-webkit-slider-thumb:hover {
+.cgfm-width-slider::-webkit-slider-thumb:hover,
+.cgfm-gap-slider::-webkit-slider-thumb:hover,
+.cgfm-indent-slider::-webkit-slider-thumb:hover {
   transform: scale(1.15) !important;
 }
 
@@ -1791,6 +1803,8 @@ class FolderUiController {
         this.rootEl = document.createElement('div');
         this.rootEl.id = 'cgfm-root';
         this.updatePanelWidth(this.profile.preferences.sidebarWidth || 312);
+        this.updateRowGap(this.profile.preferences.rowGap ?? 2);
+        this.updateIndentSize(this.profile.preferences.indentSize ?? 14, false);
         const onEnter = () => {
             this.isHovered = true;
             this.clearCloseTimer();
@@ -1846,6 +1860,19 @@ class FolderUiController {
         const val = Math.max(260, Math.min(500, rounded));
         this.profile.preferences.sidebarWidth = val;
         this.rootEl?.style.setProperty('--cg-sidebar-width', `${val}px`);
+    }
+    updateRowGap(gap) {
+        const val = Math.max(0, Math.min(16, Math.round(gap)));
+        this.profile.preferences.rowGap = val;
+        this.rootEl?.style.setProperty('--cg-row-gap', `${val}px`);
+    }
+    updateIndentSize(indent, shouldRerender = true) {
+        const val = Math.max(8, Math.min(32, Math.round(indent)));
+        this.profile.preferences.indentSize = val;
+        this.rootEl?.style.setProperty('--cg-indent-size', `${val}px`);
+        if (shouldRerender && this.rootEl?.querySelector('.cgfm-folder-tree')) {
+            this.renderFolderTree();
+        }
     }
     updatePosition() {
         const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
@@ -2112,6 +2139,7 @@ class FolderUiController {
             return;
         container.innerHTML = '';
         const { folders, conversations } = this.profile.data;
+        const indent = this.profile.preferences.indentSize ?? 14;
         const childrenMap = {};
         for (const f of Object.values(folders)) {
             const p = f.parentId || '__root__';
@@ -2129,7 +2157,7 @@ class FolderUiController {
                 const row = document.createElement('div');
                 row.className = 'cgfm-row';
                 row.dataset.folderId = f.id;
-                row.style.paddingLeft = `${depth * 14 + 8}px`;
+                row.style.paddingLeft = `${depth * indent + 8}px`;
                 const folderColor = f.color || '#3b82f6';
                 row.innerHTML = `
           <span class="cgfm-chevron" data-act="toggle">${isCollapsed ? constants_1.ICONS.chevronRight : constants_1.ICONS.chevronDown}</span>
@@ -2162,7 +2190,7 @@ class FolderUiController {
                         const chatRow = document.createElement('div');
                         chatRow.className = 'cgfm-row';
                         chatRow.dataset.chatId = c.id;
-                        chatRow.style.paddingLeft = `${(depth + 1) * 14 + 8}px`;
+                        chatRow.style.paddingLeft = `${(depth + 1) * indent + 8}px`;
                         chatRow.innerHTML = `
               <span class="cgfm-chevron-spacer"></span>
               <span class="cgfm-chat-icon">${constants_1.ICONS.messageCircle}</span>
@@ -2278,9 +2306,10 @@ class FolderUiController {
                 curr = curr.parentId ? this.profile.data.folders[curr.parentId] : undefined;
             }
         }
+        const indent = this.profile.preferences.indentSize ?? 14;
         const editRow = document.createElement('div');
         editRow.className = 'cgfm-row';
-        editRow.style.paddingLeft = `${depth * 14 + 8}px`;
+        editRow.style.paddingLeft = `${depth * indent + 8}px`;
         editRow.innerHTML = `
       <span class="cgfm-chevron-spacer"></span>
       <span class="cgfm-folder-icon" style="color: #3b82f6">${constants_1.ICONS.folder}</span>
@@ -2727,6 +2756,8 @@ class FolderUiController {
         panel.className = 'cgfm-settings-panel';
         panel.style.left = `calc(${this.rootEl.style.left || '52px'} + var(--cg-sidebar-width))`;
         const currentWidth = this.profile.preferences.sidebarWidth || 312;
+        const currentGap = this.profile.preferences.rowGap ?? 2;
+        const currentIndent = this.profile.preferences.indentSize ?? 14;
         panel.innerHTML = `
       <div class="cgfm-settings-header">
         <span class="cgfm-settings-title">文件夹设置</span>
@@ -2742,6 +2773,22 @@ class FolderUiController {
             <span class="cgfm-width-num">${currentWidth}px</span>
           </div>
           <input type="range" class="cgfm-width-slider" min="260" max="500" step="5" value="${currentWidth}" />
+        </div>
+
+        <div class="cgfm-slider-wrap">
+          <div class="cgfm-slider-header">
+            <span>项目行间距</span>
+            <span class="cgfm-gap-num">${currentGap}px</span>
+          </div>
+          <input type="range" class="cgfm-gap-slider" min="0" max="8" step="1" value="${currentGap}" />
+        </div>
+
+        <div class="cgfm-slider-wrap">
+          <div class="cgfm-slider-header">
+            <span>层级缩进量</span>
+            <span class="cgfm-indent-num">${currentIndent}px</span>
+          </div>
+          <input type="range" class="cgfm-indent-slider" min="8" max="24" step="1" value="${currentIndent}" />
         </div>
       </div>
 
@@ -2799,6 +2846,29 @@ class FolderUiController {
             widthNum.textContent = `${val}px`;
             this.updatePanelWidth(val);
             panel.style.left = `calc(${this.rootEl.style.left || '52px'} + var(--cg-sidebar-width))`;
+        });
+        slider.addEventListener('change', () => {
+            this.storage.saveProfile(this.profile);
+        });
+        const gapSlider = panel.querySelector('.cgfm-gap-slider');
+        const gapNum = panel.querySelector('.cgfm-gap-num');
+        gapSlider.addEventListener('input', () => {
+            const val = parseInt(gapSlider.value, 10);
+            gapNum.textContent = `${val}px`;
+            this.updateRowGap(val);
+        });
+        gapSlider.addEventListener('change', () => {
+            this.storage.saveProfile(this.profile);
+        });
+        const indentSlider = panel.querySelector('.cgfm-indent-slider');
+        const indentNum = panel.querySelector('.cgfm-indent-num');
+        indentSlider.addEventListener('input', () => {
+            const val = parseInt(indentSlider.value, 10);
+            indentNum.textContent = `${val}px`;
+            this.updateIndentSize(val);
+        });
+        indentSlider.addEventListener('change', () => {
+            this.storage.saveProfile(this.profile);
         });
         panel.addEventListener('mouseenter', () => {
             this.isHovered = true;
@@ -2902,7 +2972,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.8
+// @version      2.0.9
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
