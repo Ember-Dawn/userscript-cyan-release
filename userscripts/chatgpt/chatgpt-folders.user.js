@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.6
+// @version      2.0.7
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -24,12 +24,13 @@
 (function(){'use strict';const registry={"constants":function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ICONS = exports.PALETTE_COLORS = exports.KEY_AUTH_PREFIX = exports.KEY_TITLES_PREFIX = exports.KEY_COLLAPSED_PREFIX = exports.KEY_LAST_ACCOUNT = exports.KEY_DEVICE = exports.KEY_PREFIX_ACCOUNT = void 0;
+exports.ICONS = exports.PALETTE_COLORS = exports.KEY_AUTH_PREFIX = exports.KEY_TITLES_PREFIX = exports.KEY_RECENT_PREFIX = exports.KEY_COLLAPSED_PREFIX = exports.KEY_LAST_ACCOUNT = exports.KEY_DEVICE = exports.KEY_PREFIX_ACCOUNT = void 0;
 // 存储键名常量
 exports.KEY_PREFIX_ACCOUNT = 'cgfm.v2.account.';
 exports.KEY_DEVICE = 'cgfm.v2.device';
 exports.KEY_LAST_ACCOUNT = 'cgfm.v2.lastAccount';
 exports.KEY_COLLAPSED_PREFIX = 'cgfm.v2.collapsed.';
+exports.KEY_RECENT_PREFIX = 'cgfm.v2.recent.';
 exports.KEY_TITLES_PREFIX = 'cgfm.v2.titles.';
 exports.KEY_AUTH_PREFIX = 'cgfm.v2.auth.';
 // 10 种现代高质感色块 + 默认蓝色/灰色
@@ -357,6 +358,14 @@ class StorageManager {
     saveCollapsedFolders(map) {
         const key = `${constants_1.KEY_COLLAPSED_PREFIX}${this.currentAccount}`;
         GM_setValue(key, map);
+    }
+    loadRecentChats() {
+        const key = `${constants_1.KEY_RECENT_PREFIX}${this.currentAccount}`;
+        return GM_getValue(key, []);
+    }
+    saveRecentChats(chats) {
+        const key = `${constants_1.KEY_RECENT_PREFIX}${this.currentAccount}`;
+        GM_setValue(key, chats);
     }
     bindListener() {
         const key = this.getStorageKey();
@@ -1748,18 +1757,31 @@ class FolderUiController {
             this.hasGlobalClickBound = true;
             window.addEventListener('click', (e) => {
                 const target = e.target;
-                if (this.activeMenu && !this.activeMenu.contains(target) && !target.closest('.cgfm-mini-btn')) {
+                const isInsideMenu = this.activeMenu?.contains(target);
+                const isInsideConfirm = this.activeConfirmCard?.contains(target);
+                const isInsideSettings = this.settingsEl?.contains(target);
+                const isInsidePanel = this.rootEl?.contains(target);
+                const isInsideRail = this.railBtn?.contains(target);
+                const isInsideMiniBtn = target.closest('.cgfm-mini-btn') !== null;
+                if (this.activeMenu && !isInsideMenu && !isInsideMiniBtn) {
                     this.closeActiveMenu();
                 }
-                if (this.activeConfirmCard && !this.activeConfirmCard.contains(target)) {
+                if (this.activeConfirmCard && !isInsideConfirm) {
                     this.closeActiveConfirm();
                 }
-                // 未固定且非悬停状态下，点击面板外部自动关闭
+                // 如果处于编辑状态、删除确认或打开了设置面板，严禁关闭面板
+                if (this.isEditing || this.activeConfirmCard || this.settingsEl) {
+                    return;
+                }
+                // 未固定且非悬停状态下，仅当真正点击到所有相关容器外部时才关闭
                 if (this.isOpen &&
                     !this.isPinned &&
-                    this.rootEl &&
-                    !this.rootEl.contains(target) &&
-                    !this.railBtn?.contains(target)) {
+                    !isInsidePanel &&
+                    !isInsideRail &&
+                    !isInsideMenu &&
+                    !isInsideConfirm &&
+                    !isInsideSettings &&
+                    !isInsideMiniBtn) {
                     this.isHovered = false;
                     this.closePanel(true);
                 }
@@ -1792,6 +1814,11 @@ class FolderUiController {
             window.requestAnimationFrame(() => {
                 this.mountQueued = false;
                 this.tryMount();
+                // 当用户展开官方侧栏或官方对话链接在 DOM 中就绪时，自动更新最近对话并刷新本地缓存
+                const hasNativeChats = document.querySelector('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
+                if (hasNativeChats) {
+                    this.renderRecentList();
+                }
             });
         };
         // 避开 React 首次 Hydration 敏感期（彻底杜绝 React Error #418），等侧栏水合稳定后安全挂载
@@ -1923,15 +1950,22 @@ class FolderUiController {
         this.renderRecentList();
     }
     closePanel(force = false) {
-        if (!force &&
-            (this.isPinned ||
+        if (!force) {
+            if (this.isPinned ||
                 this.isHovered ||
                 this.isEditing ||
                 this.isDragging ||
                 this.settingsEl ||
                 this.activeMenu ||
-                this.activeConfirmCard)) {
-            return;
+                this.activeConfirmCard) {
+                return;
+            }
+        }
+        else {
+            // 即使是强制关闭，如果有正在进行的编辑、确认弹窗或设置面板，也严禁收起
+            if (this.isEditing || this.activeConfirmCard || this.settingsEl) {
+                return;
+            }
         }
         this.isOpen = false;
         this.rootEl?.classList.remove('cgfm-open');
@@ -1963,6 +1997,15 @@ class FolderUiController {
     scheduleClose() {
         this.clearCloseTimer();
         this.closeTimer = window.setTimeout(() => {
+            if (this.isPinned ||
+                this.isHovered ||
+                this.isEditing ||
+                this.isDragging ||
+                this.settingsEl ||
+                this.activeMenu ||
+                this.activeConfirmCard) {
+                return;
+            }
             this.closePanel();
         }, 350);
     }
@@ -2058,6 +2101,9 @@ class FolderUiController {
                 });
                 container.appendChild(row);
                 if (!isCollapsed) {
+                    // 1. 文件夹在前：优先递归渲染所有子文件夹
+                    renderLevel(f.id, depth + 1);
+                    // 2. 对话在后：渲染当前文件夹所属的对话
                     const chats = Object.values(conversations).filter((c) => c.folderId === f.id);
                     chats.sort((a, b) => model_1.naturalSort.compare(a.title, b.title));
                     for (const c of chats) {
@@ -2091,7 +2137,6 @@ class FolderUiController {
                         });
                         container.appendChild(chatRow);
                     }
-                    renderLevel(f.id, depth + 1);
                 }
             }
         };
@@ -2101,24 +2146,35 @@ class FolderUiController {
         const container = this.rootEl.querySelector('.cgfm-recent-list');
         if (!container)
             return;
-        container.innerHTML = '';
         const nativeLinks = document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
+        const chats = [];
         const seenIds = new Set();
-        for (const el of nativeLinks) {
-            const key = el.getAttribute('data-sidebar-chatgpt-conversation-key');
-            const href = el.getAttribute('href') || (el.querySelector('a')?.getAttribute('href') ?? '');
-            const match = key ? key.replace('chatgpt:conversation:', '') : href.match(/\/c\/([a-z0-9-]+)/i)?.[1];
-            if (!match)
-                continue;
-            const id = match;
-            if (seenIds.has(id))
-                continue;
-            seenIds.add(id);
-            // 需求修正：绝不在最近列表中隐藏已分类对话，完整保留历史记录
-            let title = el.textContent?.trim() || el.getAttribute('title') || '未命名对话';
-            const guarded = this.api.getGuardedTitle(id);
-            if (guarded)
-                title = guarded;
+        if (nativeLinks.length > 0) {
+            for (const el of nativeLinks) {
+                const key = el.getAttribute('data-sidebar-chatgpt-conversation-key');
+                const href = el.getAttribute('href') || (el.querySelector('a')?.getAttribute('href') ?? '');
+                const match = key ? key.replace('chatgpt:conversation:', '') : href.match(/\/c\/([a-z0-9-]+)/i)?.[1];
+                if (!match)
+                    continue;
+                const id = match;
+                if (seenIds.has(id))
+                    continue;
+                seenIds.add(id);
+                let title = el.textContent?.trim() || el.getAttribute('title') || '未命名对话';
+                const guarded = this.api.getGuardedTitle(id);
+                if (guarded)
+                    title = guarded;
+                chats.push({ id, title });
+            }
+            this.storage.saveRecentChats(chats);
+        }
+        else {
+            // 官方侧栏处于折叠状态时，从持久化本地缓存即时载入，永不为空
+            const cached = this.storage.loadRecentChats();
+            chats.push(...cached);
+        }
+        container.innerHTML = '';
+        for (const { id, title } of chats) {
             const row = document.createElement('div');
             row.className = 'cgfm-row';
             row.dataset.chatId = id;
@@ -2161,11 +2217,20 @@ class FolderUiController {
             this.storage.saveCollapsedFolders(this.collapsedFolders);
             this.renderFolderTree();
         }
+        // 计算子文件夹真实层级深度
+        let depth = 0;
+        if (parentId) {
+            let curr = this.profile.data.folders[parentId];
+            while (curr) {
+                depth++;
+                curr = curr.parentId ? this.profile.data.folders[curr.parentId] : undefined;
+            }
+        }
         const editRow = document.createElement('div');
         editRow.className = 'cgfm-row';
-        const depth = parentId ? 1 : 0;
         editRow.style.paddingLeft = `${depth * 14 + 8}px`;
         editRow.innerHTML = `
+      <span class="cgfm-chevron-spacer"></span>
       <span class="cgfm-folder-icon" style="color: #3b82f6">${constants_1.ICONS.folder}</span>
       <div class="cgfm-inline-edit">
         <input type="text" class="cgfm-inline-input" value="新建文件夹" />
@@ -2361,7 +2426,16 @@ class FolderUiController {
       <button class="cgfm-menu-item" data-act="rename">${constants_1.ICONS.pencil}<span>重命名</span></button>
       <button class="cgfm-menu-item danger" data-act="delete">${constants_1.ICONS.trash2}<span>删除文件夹</span></button>
     `;
+        menu.addEventListener('mouseenter', () => {
+            this.isHovered = true;
+            this.clearCloseTimer();
+        });
+        menu.addEventListener('mouseleave', () => {
+            this.isHovered = false;
+            this.scheduleClose();
+        });
         menu.addEventListener('click', (e) => {
+            e.stopPropagation();
             const target = e.target;
             const swatch = target.closest('.cgfm-color-swatch');
             if (swatch) {
@@ -2412,6 +2486,17 @@ class FolderUiController {
         <button class="cgfm-btn-danger">确认删除</button>
       </div>
     `;
+        card.addEventListener('mouseenter', () => {
+            this.isHovered = true;
+            this.clearCloseTimer();
+        });
+        card.addEventListener('mouseleave', () => {
+            this.isHovered = false;
+            this.scheduleClose();
+        });
+        card.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
         card.querySelector('.cgfm-btn-cancel').addEventListener('click', () => {
             this.closeActiveConfirm();
         });
@@ -2663,7 +2748,16 @@ class FolderUiController {
             this.updatePanelWidth(val);
             panel.style.left = `calc(${this.rootEl.style.left || '52px'} + var(--cg-sidebar-width))`;
         });
+        panel.addEventListener('mouseenter', () => {
+            this.isHovered = true;
+            this.clearCloseTimer();
+        });
+        panel.addEventListener('mouseleave', () => {
+            this.isHovered = false;
+            this.scheduleClose();
+        });
         panel.addEventListener('click', async (e) => {
+            e.stopPropagation();
             const btn = e.target.closest('button');
             if (!btn)
                 return;
@@ -2756,7 +2850,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.6
+// @version      2.0.7
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
