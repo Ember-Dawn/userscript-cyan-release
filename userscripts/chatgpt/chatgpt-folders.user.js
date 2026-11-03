@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.7
+// @version      2.0.8
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -401,18 +401,70 @@ class StorageManager {
         return JSON.stringify(payload, null, 2);
     }
     importJson(jsonStr) {
-        let payload;
+        let raw;
         try {
-            payload = JSON.parse(jsonStr);
+            raw = JSON.parse(jsonStr);
         }
         catch {
             throw new Error('JSON 解析失败，请检查文件格式');
         }
-        if (payload.format !== 'cgfm-v2-export' || payload.version !== 2) {
-            throw new Error('不支持的文件格式或版本，请导入由本脚本导出的 v2 备份文件');
+        // 1. 标准 v2 导出文件
+        if (raw.format === 'cgfm-v2-export' && raw.version === 2 && raw.data) {
+            (0, model_1.validateData)(raw.data);
+            return raw.data;
         }
-        (0, model_1.validateData)(payload.data);
-        return payload.data;
+        // 2. 自动兼容旧版备份文件 (schema 3 / v1.5.x)
+        if (raw.schema === 3 || raw.profile?.folders || raw.app === 'ChatGPT文件夹') {
+            const v2Data = this.migrateLegacyData(raw);
+            (0, model_1.validateData)(v2Data);
+            return v2Data;
+        }
+        throw new Error('不支持的文件格式或版本，请导入本脚本导出的 JSON 备份文件');
+    }
+    migrateLegacyData(legacy) {
+        const oldFolders = legacy.profile?.folders || legacy.folders || {};
+        const oldConvs = legacy.profile?.conversations || legacy.conversations || {};
+        const v2Folders = {};
+        const v2Convs = {};
+        for (const [id, f] of Object.entries(oldFolders)) {
+            if (id === 'root')
+                continue;
+            let parentId = f.parentId;
+            if (!parentId || parentId === 'root' || parentId === '')
+                parentId = null;
+            let color = f.color || '#3b82f6';
+            if (!/^#[a-f0-9]{6}$/i.test(color))
+                color = '#3b82f6';
+            v2Folders[id] = {
+                id,
+                parentId,
+                name: f.name || '未命名文件夹',
+                color,
+                createdAt: typeof f.createdAt === 'number' ? f.createdAt : (Date.parse(f.createdAt) || Date.now()),
+                updatedAt: typeof f.updatedAt === 'number' ? f.updatedAt : (Date.parse(f.updatedAt) || Date.now())
+            };
+        }
+        for (const f of Object.values(v2Folders)) {
+            if (f.parentId && !v2Folders[f.parentId]) {
+                f.parentId = null;
+            }
+        }
+        for (const [id, c] of Object.entries(oldConvs)) {
+            if (!v2Folders[c.folderId])
+                continue;
+            v2Convs[id] = {
+                id,
+                folderId: c.folderId,
+                title: c.title || '未命名对话',
+                addedAt: typeof c.addedAt === 'number' ? c.addedAt : (Date.parse(c.addedAt) || Date.now()),
+                updatedAt: typeof c.updatedAt === 'number' ? c.updatedAt : (Date.parse(c.updatedAt) || Date.now())
+            };
+        }
+        return {
+            schema: 2,
+            folders: v2Folders,
+            conversations: v2Convs
+        };
     }
 }
 exports.StorageManager = StorageManager;
@@ -2850,7 +2902,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.7
+// @version      2.0.8
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
