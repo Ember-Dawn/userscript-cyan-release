@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.0
+// @version      0.4.1
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -314,7 +314,11 @@ function restorePersistentRoundCountStats(state, cache) {
 function applyMappingSnapshot(state, cache, conversationId, mappingUserIds, requestStartedAt, currentPageId, seedVisibleIds, onStateChange) {
     const mappingIds = new Set(mappingUserIds);
     if (!isCurrentPageConversation(state, conversationId, currentPageId)) {
-        (0, storage_1.setCachedRoundCount)(cache, conversationId, mappingIds.size);
+        const cachedTotal = (0, storage_1.getCachedRoundCount)(cache, conversationId)?.totalRounds ?? null;
+        const nextTotal = Math.max(cachedTotal ?? 0, mappingIds.size);
+        if (cachedTotal === null || nextTotal > cachedTotal) {
+            (0, storage_1.setCachedRoundCount)(cache, conversationId, nextTotal);
+        }
         return;
     }
     const trailingLiveIds = new Map();
@@ -331,8 +335,10 @@ function applyMappingSnapshot(state, cache, conversationId, mappingUserIds, requ
     if (state.freshAwaitingBaseline && mappingIds.size > 0) {
         // A newly created conversation must establish a server-backed count
         // before enabling the persistent historical-maximum rule.
-        state.totalRounds = state.knownUserMessageIds.size;
-        state.source = 'mapping';
+        const cachedTotal = (0, storage_1.getCachedRoundCount)(cache, conversationId)?.totalRounds ?? null;
+        const historicMaximum = Math.max(state.totalRounds ?? 0, cachedTotal ?? 0);
+        state.totalRounds = Math.max(historicMaximum, state.knownUserMessageIds.size);
+        state.source = state.totalRounds > state.knownUserMessageIds.size ? 'protected' : 'mapping';
         state.freshAwaitingBaseline = false;
         state.mappingBaselineReady = true;
         state.domIncrementReady = true;
@@ -374,8 +380,9 @@ function applyMessagesFallback(state, cache, conversationId, messageUserIds, cur
         for (const id of getVisibleIds()) {
             state.knownUserMessageIds.add(id);
         }
-        state.totalRounds = messageIds.size;
-        state.source = 'messages';
+        const historicMaximum = Math.max(state.totalRounds ?? 0, cachedTotal ?? 0);
+        state.totalRounds = Math.max(historicMaximum, messageIds.size);
+        state.source = state.totalRounds > messageIds.size ? 'protected' : 'messages';
         state.freshAwaitingBaseline = false;
         state.domIncrementReady = true;
         seedVisibleIds();
@@ -408,8 +415,12 @@ function renderTemporaryConversationStats(state, onStateChange) {
     state.source = 'live';
     onStateChange();
 }
-function bootstrapFreshConversation(state, conversationId, seedVisibleIds, onStateChange) {
+function bootstrapFreshConversation(state, cache, conversationId, seedVisibleIds, onStateChange) {
     if (!(0, id_1.isStableConversationId)(conversationId) || state.pendingNewConversationUserIds.size === 0) {
+        return false;
+    }
+    const cached = (0, storage_1.getCachedRoundCount)(cache, conversationId);
+    if (cached && cached.totalRounds > 0) {
         return false;
     }
     state.knownUserMessageIds = new Set(state.pendingNewConversationUserIds.keys());
@@ -1172,7 +1183,6 @@ class RoundCounterUi {
             this.scheduleStableUiMount(portal);
             return;
         }
-        this.render();
     }
     startUiIntegrityWatch() {
         if (this.uiIntegrityTimer !== null) {
@@ -1229,7 +1239,7 @@ function patchHistoryForSpaNavigation(pageWindow, onNavigate) {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.0
+// @version      0.4.1
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -1331,18 +1341,16 @@ function handleNavigation() {
         (0, state_1.renderTemporaryConversationStats)(state, () => ui.render());
         return;
     }
-    const hasPendingBinding = previousWasTemporary && state.pendingNewConversationUserIds.size > 0;
-    if (hasPendingBinding && (0, state_1.bootstrapFreshConversation)(state, nextConversationId, seedVisibleUserMessageIds, () => ui.render())) {
+    const cachedEntry = nextConversationId ? (0, storage_1.getCachedRoundCount)(roundCountCache, nextConversationId) : null;
+    const cachedRounds = cachedEntry?.totalRounds ?? 0;
+    const hasPendingBinding = previousWasTemporary && state.pendingNewConversationUserIds.size > 0 && cachedRounds === 0;
+    if (hasPendingBinding && (0, state_1.bootstrapFreshConversation)(state, roundCountCache, nextConversationId, seedVisibleUserMessageIds, () => ui.render())) {
         state.pendingNewConversationUserIds.clear();
         return;
     }
     state.pendingNewConversationUserIds.clear();
-    if (!(0, state_1.restorePersistentRoundCountStats)(state, roundCountCache)) {
-        ui.render();
-    }
-    else {
-        ui.render();
-    }
+    (0, state_1.restorePersistentRoundCountStats)(state, roundCountCache);
+    ui.render();
     seedVisibleUserMessageIds();
 }
 function initializeDomFeatures() {
