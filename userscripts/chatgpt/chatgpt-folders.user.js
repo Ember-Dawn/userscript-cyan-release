@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.10
+// @version      2.0.11
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -544,12 +544,60 @@ class ChatApiManager {
         }
         return null;
     }
+    async getOrFetchAuthToken() {
+        const cached = this.getAuthToken();
+        if (cached)
+            return cached;
+        try {
+            const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            const res = await win.fetch('/api/auth/session', {
+                headers: { Accept: 'application/json' },
+                credentials: 'include'
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data?.accessToken) {
+                    const bearer = `Bearer ${data.accessToken}`;
+                    this.saveAuthToken(bearer);
+                    return bearer;
+                }
+            }
+        }
+        catch (e) {
+            console.warn('[CGFM] Failed to fetch session token', e);
+        }
+        return null;
+    }
     /**
-     * 调用 ChatGPT 官方接口重命名对话
+     * 调用 ChatGPT 官方接口重命名对话 (PATCH /backend-api/conversation/{id})
      */
     async renameConversation(chatId, newTitle) {
-        const token = this.getAuthToken();
-        const url = `https://chatgpt.com/backend-api/conversation/id/${chatId}/rename`;
+        const token = await this.getOrFetchAuthToken();
+        const url = `/backend-api/conversation/${chatId}`;
+        try {
+            const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            if (token) {
+                headers['Authorization'] = token;
+            }
+            const res = await win.fetch(url, {
+                method: 'PATCH',
+                headers,
+                body: JSON.stringify({ title: newTitle }),
+                credentials: 'include'
+            });
+            if (res.ok) {
+                this.guardTitle(chatId, newTitle);
+                return true;
+            }
+            console.warn('[CGFM] Rename failed with status', res.status);
+        }
+        catch (err) {
+            console.warn('[CGFM] Rename request error, attempting fallback...', err);
+        }
+        // Fallback via GM_xmlhttpRequest if window.fetch failed
         return new Promise((resolve) => {
             const headers = {
                 'Content-Type': 'application/json'
@@ -558,8 +606,8 @@ class ChatApiManager {
                 headers['Authorization'] = token;
             }
             GM_xmlhttpRequest({
-                method: 'POST',
-                url,
+                method: 'PATCH',
+                url: `https://chatgpt.com${url}`,
                 headers,
                 data: JSON.stringify({ title: newTitle }),
                 timeout: 10000,
@@ -569,7 +617,7 @@ class ChatApiManager {
                         resolve(true);
                     }
                     else {
-                        console.warn('[CGFM] Rename failed with status', res.status);
+                        console.warn('[CGFM] Fallback rename failed with status', res.status);
                         resolve(false);
                     }
                 },
@@ -1736,6 +1784,7 @@ class FolderUiController {
             this.renderFolderTree();
         });
         this.api = new api_1.ChatApiManager();
+        this.api.setAccountId(this.storage.getAccount());
         this.profile = this.storage.loadProfile();
         this.collapsedFolders = this.storage.loadCollapsedFolders();
         this.isPinned = this.profile.preferences.customWidth;
@@ -2477,6 +2526,19 @@ class FolderUiController {
                             if (this.profile.data.conversations[chatId]) {
                                 this.executeChange({ type: 'conversation.title', id: chatId, title: newTitle });
                             }
+                            // 同步更新本地最近对话持久化缓存
+                            const recents = this.storage.loadRecentChats();
+                            const found = recents.find((r) => r.id === chatId);
+                            if (found) {
+                                found.title = newTitle;
+                                this.storage.saveRecentChats(recents);
+                            }
+                            // 原位同步修改原生侧栏对应条目文本，杜绝 React 扫描回跳
+                            const nativeLinks = document.querySelectorAll(`[data-sidebar-chatgpt-conversation-key="chatgpt:conversation:${chatId}"], nav a[href*="/c/${chatId}"]`);
+                            for (const el of nativeLinks) {
+                                const targetText = el.querySelector('div, span') || el;
+                                targetText.textContent = newTitle;
+                            }
                             this.showToast('对话标题已同步更新');
                         }
                         else {
@@ -2991,7 +3053,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.10
+// @version      2.0.11
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
