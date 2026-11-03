@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.3
+// @version      2.0.4
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -1737,10 +1737,13 @@ class FolderUiController {
                 this.tryMount();
             });
         };
-        this.tryMount();
-        const obs = new MutationObserver(() => queueMount());
-        obs.observe(document.documentElement, { childList: true, subtree: true });
-        window.setInterval(() => queueMount(), 2000);
+        // 避开 React 首次 Hydration 敏感期（彻底杜绝 React Error #418），等侧栏水合稳定后安全挂载
+        window.setTimeout(() => {
+            this.tryMount();
+            const obs = new MutationObserver(() => queueMount());
+            obs.observe(document.documentElement, { childList: true, subtree: true });
+            window.setInterval(() => queueMount(), 2000);
+        }, 1200);
     }
     tryMount() {
         const rail = document.querySelector('nav[data-app-navigation-rail="true"], nav[aria-label="应用导航"], nav[aria-label="App navigation"], #app-shell-sidebar nav');
@@ -1757,12 +1760,14 @@ class FolderUiController {
             btn.type = 'button';
             btn.title = 'ChatGPT 文件夹（悬停展开，点击固定）';
             btn.innerHTML = constants_1.ICONS.folder;
-            const handleEnter = () => {
+            const handleEnter = (e) => {
+                e.stopPropagation();
                 this.isHovered = true;
                 this.clearCloseTimer();
                 this.openPanel();
             };
-            const handleLeave = () => {
+            const handleLeave = (e) => {
+                e.stopPropagation();
                 this.isHovered = false;
                 this.scheduleClose();
             };
@@ -1782,25 +1787,27 @@ class FolderUiController {
                 }
                 this.updateHeaderPinButton();
             };
-            btn.addEventListener('pointerenter', handleEnter);
-            btn.addEventListener('mouseenter', handleEnter);
-            btn.addEventListener('pointerleave', handleLeave);
-            btn.addEventListener('mouseleave', handleLeave);
+            btn.addEventListener('pointerenter', handleEnter, { capture: true });
+            btn.addEventListener('mouseenter', handleEnter, { capture: true });
+            btn.addEventListener('pointerleave', handleLeave, { capture: true });
+            btn.addEventListener('mouseleave', handleLeave, { capture: true });
             btn.addEventListener('click', handleActivate, { capture: true });
             btn.addEventListener('pointerdown', (e) => e.stopPropagation(), { capture: true });
+            btn.addEventListener('mousedown', (e) => e.stopPropagation(), { capture: true });
             entry.appendChild(btn);
             this.railEntry = entry;
             this.railBtn = btn;
         }
         // 核心定位：必须放在「更多/三个点」图标的下方
-        const moreBtn = host.querySelector('[data-slot="popover-trigger"], button[aria-haspopup="dialog"], [data-slate-sidebar-peek-area="customize"]')?.closest('button, .flex.shrink-0');
-        if (moreBtn && moreBtn.parentElement === host) {
-            if (this.railEntry.previousElementSibling !== moreBtn) {
-                moreBtn.after(this.railEntry);
+        const moreBtn = host.querySelector('[data-slot="popover-trigger"], button[aria-haspopup="dialog"], button:has(use[href*="ellipsis"])');
+        const targetItem = moreBtn ? (moreBtn.closest('.flex.shrink-0') || moreBtn) : null;
+        if (targetItem && targetItem.parentElement === host) {
+            if (this.railEntry.previousElementSibling !== targetItem) {
+                targetItem.after(this.railEntry);
             }
         }
         else {
-            if (this.railEntry.parentElement !== host) {
+            if (this.railEntry.parentElement !== host || host.lastElementChild !== this.railEntry) {
                 host.appendChild(this.railEntry);
             }
         }
@@ -2681,7 +2688,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.3
+// @version      2.0.4
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
