@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.12
+// @version      2.0.13
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -302,6 +302,8 @@ class StorageManager {
     constructor(onExternalChange) {
         this.onExternalChange = onExternalChange;
         this.deviceId = this.getOrCreateDeviceId();
+        this.currentAccount = this.getLastAccount();
+        this.bindListener();
     }
     getDeviceId() {
         return this.deviceId;
@@ -1861,6 +1863,7 @@ class FolderUiController {
         if (this.rootEl && !this.rootEl.querySelector('.cgfm-folder-tree')) {
             this.renderSkeleton();
             this.renderFolderTree();
+            this.renderRecentList(true);
         }
     }
     createRootPanel() {
@@ -2049,7 +2052,7 @@ class FolderUiController {
     }
     setupAccountWatcher() {
         const checkAccount = () => {
-            let detectedAccount = 'local';
+            let detectedAccount = this.storage.getLastAccount();
             try {
                 const boot = document.getElementById('client-bootstrap')?.textContent;
                 if (boot) {
@@ -2075,7 +2078,7 @@ class FolderUiController {
                 this.profile = this.storage.loadProfile();
                 this.collapsedFolders = this.storage.loadCollapsedFolders();
                 this.renderFolderTree();
-                this.renderRecentList();
+                this.renderRecentList(true);
             }
         };
         checkAccount();
@@ -2168,6 +2171,7 @@ class FolderUiController {
     renderSkeleton() {
         if (!this.rootEl)
             return;
+        this.lastRecentChatsHash = '';
         this.rootEl.innerHTML = `
       <div class="cgfm-header">
         <div class="cgfm-header-title">文件夹</div>
@@ -2299,43 +2303,66 @@ class FolderUiController {
             return;
         if (this.isEditing && !force)
             return;
+        // 1. 始终载入本地持久化缓存作为坚实兜底
+        const cached = this.storage.loadRecentChats();
+        // 2. 尝试从当前 DOM 抓取实时对话
         const nativeLinks = document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
-        const chats = [];
+        const liveChats = [];
         const seenIds = new Set();
-        if (nativeLinks.length > 0) {
-            for (const el of nativeLinks) {
-                const key = el.getAttribute('data-sidebar-chatgpt-conversation-key');
-                const href = el.getAttribute('href') || (el.querySelector('a')?.getAttribute('href') ?? '');
-                const match = key ? key.replace('chatgpt:conversation:', '') : href.match(/\/c\/([a-z0-9-]+)/i)?.[1];
-                if (!match)
-                    continue;
-                const id = match;
-                if (seenIds.has(id))
-                    continue;
-                seenIds.add(id);
-                const textNode = el.querySelector('.whitespace-nowrap, .truncate, div') || el;
-                let title = textNode.textContent?.trim() || el.getAttribute('title') || '未命名对话';
-                title = title.split('\n')[0].trim() || '未命名对话';
-                const guarded = this.api.getGuardedTitle(id);
-                if (guarded)
-                    title = guarded;
-                chats.push({ id, title });
+        for (const el of nativeLinks) {
+            const key = el.getAttribute('data-sidebar-chatgpt-conversation-key');
+            const href = el.getAttribute('href') || (el.querySelector('a')?.getAttribute('href') ?? '');
+            const match = key ? key.replace('chatgpt:conversation:', '') : href.match(/\/c\/([a-z0-9-]+)/i)?.[1];
+            if (!match)
+                continue;
+            const id = match;
+            if (seenIds.has(id))
+                continue;
+            seenIds.add(id);
+            const textNode = el.querySelector('.whitespace-nowrap, .truncate, div') || el;
+            let title = textNode.textContent?.trim() || el.getAttribute('title') || '未命名对话';
+            title = title.split('\n')[0].trim() || '未命名对话';
+            const guarded = this.api.getGuardedTitle(id);
+            if (guarded)
+                title = guarded;
+            liveChats.push({ id, title });
+        }
+        let chats = [];
+        if (liveChats.length >= 3) {
+            // 官方侧栏完全展开：获取到充足实时对话，全面刷新并存入持久缓存
+            chats = liveChats;
+            this.storage.saveRecentChats(chats);
+        }
+        else if (liveChats.length > 0) {
+            // 仅抓取到少量（例如仅当前页面所在单个会话），智能合并置顶，保留缓存中的全部历史条目
+            const map = new Map();
+            for (const item of liveChats)
+                map.set(item.id, item);
+            for (const item of cached) {
+                if (!map.has(item.id))
+                    map.set(item.id, item);
             }
-            if (chats.length > 0) {
-                this.storage.saveRecentChats(chats);
-            }
+            chats = Array.from(map.values());
+            this.storage.saveRecentChats(chats);
         }
         else {
-            // 官方侧栏处于折叠状态时，从持久化本地缓存即时载入，永不为空
-            const cached = this.storage.loadRecentChats();
-            chats.push(...cached);
+            // 官方侧栏处于折叠或未水合状态：100% 完整复用本地持久缓存，永不留白
+            chats = cached;
         }
         const currentHash = JSON.stringify(chats);
-        if (!force && currentHash === this.lastRecentChatsHash) {
-            return; // 内容无变动，绝对不重绘 DOM，保障 hover 与按钮状态稳定
+        const isDomEmpty = container.children.length === 0;
+        if (!force && !isDomEmpty && currentHash === this.lastRecentChatsHash) {
+            return; // 内容无变动且 DOM 不为空，不重复触碰 DOM，保障 hover 与按钮状态稳定
         }
         this.lastRecentChatsHash = currentHash;
         container.innerHTML = '';
+        if (chats.length === 0) {
+            const emptyTip = document.createElement('div');
+            emptyTip.style.cssText = 'padding: 10px 12px; color: var(--cg-muted); font-size: 12px; font-style: italic;';
+            emptyTip.textContent = '暂无最近对话记录';
+            container.appendChild(emptyTip);
+            return;
+        }
         for (const { id, title } of chats) {
             const row = document.createElement('div');
             row.className = 'cgfm-row';
@@ -3068,7 +3095,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.12
+// @version      2.0.13
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
