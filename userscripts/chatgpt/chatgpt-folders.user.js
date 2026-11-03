@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.9
+// @version      2.0.10
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -1162,7 +1162,7 @@ exports.STYLES = `
 .cgfm-row {
   display: flex;
   align-items: center;
-  height: 32px;
+  height: calc(26px + var(--cg-row-gap, 2px) * 0.5) !important;
   padding: 0 8px;
   border-radius: 6px;
   cursor: pointer;
@@ -1174,6 +1174,8 @@ exports.STYLES = `
 }
 .cgfm-row:hover {
   background: var(--cg-hover);
+  position: relative;
+  z-index: 2;
 }
 .cgfm-row.cgfm-drag-over {
   background: rgba(59, 130, 246, 0.2) !important;
@@ -1252,8 +1254,8 @@ exports.STYLES = `
 }
 
 .cgfm-mini-btn {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 4px;
   background: transparent;
   border: none;
@@ -1263,6 +1265,7 @@ exports.STYLES = `
   justify-content: center;
   cursor: pointer;
   padding: 0;
+  flex-shrink: 0;
 }
 .cgfm-mini-btn:hover {
   background: var(--cg-input);
@@ -1461,6 +1464,8 @@ exports.STYLES = `
   display: flex;
   flex-direction: column;
   gap: 10px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .cgfm-card-title {
   font-size: 12px;
@@ -1537,13 +1542,21 @@ exports.STYLES = `
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  box-sizing: border-box;
 }
 .cgfm-settings-field label {
   font-size: 12px;
   color: var(--cg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cgfm-settings-field input[type="text"],
 .cgfm-settings-field input[type="password"] {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
   height: 32px;
   padding: 0 10px;
   border-radius: 6px;
@@ -1552,7 +1565,7 @@ exports.STYLES = `
   color: var(--cg-text);
   font-size: 13px;
   outline: none;
-  box-sizing: border-box;
+  box-sizing: border-box !important;
 }
 .cgfm-settings-field input[type="text"]:focus,
 .cgfm-settings-field input[type="password"]:focus {
@@ -1560,8 +1573,14 @@ exports.STYLES = `
 }
 .cgfm-settings-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.cgfm-settings-row > .cgfm-settings-field {
+  flex: 1 1 0% !important;
+  min-width: 0 !important;
 }
 
 /* 现代按钮组 */
@@ -1862,7 +1881,7 @@ class FolderUiController {
         this.rootEl?.style.setProperty('--cg-sidebar-width', `${val}px`);
     }
     updateRowGap(gap) {
-        const val = Math.max(0, Math.min(16, Math.round(gap)));
+        const val = Math.max(-4, Math.min(16, Math.round(gap)));
         this.profile.preferences.rowGap = val;
         this.rootEl?.style.setProperty('--cg-row-gap', `${val}px`);
     }
@@ -2780,7 +2799,7 @@ class FolderUiController {
             <span>项目行间距</span>
             <span class="cgfm-gap-num">${currentGap}px</span>
           </div>
-          <input type="range" class="cgfm-gap-slider" min="0" max="8" step="1" value="${currentGap}" />
+          <input type="range" class="cgfm-gap-slider" min="-4" max="8" step="1" value="${currentGap}" />
         </div>
 
         <div class="cgfm-slider-wrap">
@@ -2801,11 +2820,11 @@ class FolderUiController {
         </div>
 
         <div class="cgfm-settings-row">
-          <div class="cgfm-settings-field" style="flex:1; margin-right:8px;">
+          <div class="cgfm-settings-field">
             <label>用户名</label>
             <input type="text" class="cgfm-dav-user" value="${this.profile.dav.username}" />
           </div>
-          <div class="cgfm-settings-field" style="flex:1;">
+          <div class="cgfm-settings-field">
             <label>密码 / App Token</label>
             <input type="password" class="cgfm-dav-pass" value="${this.profile.dav.password}" />
           </div>
@@ -2972,7 +2991,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.9
+// @version      2.0.10
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
