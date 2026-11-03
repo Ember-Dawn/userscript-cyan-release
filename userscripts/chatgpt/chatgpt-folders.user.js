@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.11
+// @version      2.0.12
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -1774,6 +1774,7 @@ class FolderUiController {
     closeTimer = null;
     mountQueued = false;
     hasGlobalClickBound = false;
+    lastRecentChatsHash = '';
     syncState = 'unconfigured';
     isSyncing = false;
     syncRetryTimer = null;
@@ -1961,10 +1962,12 @@ class FolderUiController {
             window.requestAnimationFrame(() => {
                 this.mountQueued = false;
                 this.tryMount();
-                // 当用户展开官方侧栏或官方对话链接在 DOM 中就绪时，自动更新最近对话并刷新本地缓存
-                const hasNativeChats = document.querySelector('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
-                if (hasNativeChats) {
-                    this.renderRecentList();
+                // 仅在非编辑状态下尝试更新最近对话（内置差异比对，无变动不重绘 DOM）
+                if (!this.isEditing) {
+                    const hasNativeChats = document.querySelector('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
+                    if (hasNativeChats) {
+                        this.renderRecentList();
+                    }
                 }
             });
         };
@@ -2290,9 +2293,11 @@ class FolderUiController {
         };
         renderLevel(null, 0);
     }
-    renderRecentList() {
-        const container = this.rootEl.querySelector('.cgfm-recent-list');
+    renderRecentList(force = false) {
+        const container = this.rootEl?.querySelector('.cgfm-recent-list');
         if (!container)
+            return;
+        if (this.isEditing && !force)
             return;
         const nativeLinks = document.querySelectorAll('[data-sidebar-chatgpt-conversation-key^="chatgpt:conversation:"], nav a[href*="/c/"]');
         const chats = [];
@@ -2308,19 +2313,28 @@ class FolderUiController {
                 if (seenIds.has(id))
                     continue;
                 seenIds.add(id);
-                let title = el.textContent?.trim() || el.getAttribute('title') || '未命名对话';
+                const textNode = el.querySelector('.whitespace-nowrap, .truncate, div') || el;
+                let title = textNode.textContent?.trim() || el.getAttribute('title') || '未命名对话';
+                title = title.split('\n')[0].trim() || '未命名对话';
                 const guarded = this.api.getGuardedTitle(id);
                 if (guarded)
                     title = guarded;
                 chats.push({ id, title });
             }
-            this.storage.saveRecentChats(chats);
+            if (chats.length > 0) {
+                this.storage.saveRecentChats(chats);
+            }
         }
         else {
             // 官方侧栏处于折叠状态时，从持久化本地缓存即时载入，永不为空
             const cached = this.storage.loadRecentChats();
             chats.push(...cached);
         }
+        const currentHash = JSON.stringify(chats);
+        if (!force && currentHash === this.lastRecentChatsHash) {
+            return; // 内容无变动，绝对不重绘 DOM，保障 hover 与按钮状态稳定
+        }
+        this.lastRecentChatsHash = currentHash;
         container.innerHTML = '';
         for (const { id, title } of chats) {
             const row = document.createElement('div');
@@ -2532,6 +2546,7 @@ class FolderUiController {
                             if (found) {
                                 found.title = newTitle;
                                 this.storage.saveRecentChats(recents);
+                                this.lastRecentChatsHash = JSON.stringify(recents);
                             }
                             // 原位同步修改原生侧栏对应条目文本，杜绝 React 扫描回跳
                             const nativeLinks = document.querySelectorAll(`[data-sidebar-chatgpt-conversation-key="chatgpt:conversation:${chatId}"], nav a[href*="/c/${chatId}"]`);
@@ -3053,7 +3068,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.11
+// @version      2.0.12
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
