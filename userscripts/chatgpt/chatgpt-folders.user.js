@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.5
+// @version      2.0.6
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -49,10 +49,14 @@ exports.PALETTE_COLORS = [
 exports.ICONS = {
     // 文件夹 (折叠状态)
     folder: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>`,
+    // 文件夹侧栏按钮加粗版
+    folderBold: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>`,
     // 文件夹 (展开状态)
     folderOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
-    // 对话气泡 (MessageSquare，与文件夹彻底区分)
+    // 对话气泡 (MessageSquare)
     messageSquare: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
+    // 圆形对话气泡 (MessageCircle，用户指定标准圆形)
+    messageCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>`,
     // 新建 (Plus)
     plus: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>`,
     // 同步刷新 (RotateCw)
@@ -71,7 +75,7 @@ exports.ICONS = {
     // 编辑铅笔 (Pencil)
     pencil: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`,
     // 删除垃圾桶 (Trash2)
-    trash2: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="3 6h18"/><path d="19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>`,
+    trash2: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>`,
     // 调色板 (Palette)
     palette: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/></svg>`,
     // 勾号保存 (Check)
@@ -918,7 +922,7 @@ exports.STYLES = void 0;
 exports.STYLES = `
 :root {
   --cg-bg: #ffffff;
-  --cg-panel-bg: #ffffff;
+  --cg-panel-bg: #f4f4f2;
   --cg-card-bg: #f9fafb;
   --cg-text: #0d0d0d;
   --cg-border: #e5e7eb;
@@ -983,6 +987,7 @@ exports.STYLES = `
   height: 20px !important;
   color: #3b82f6 !important;
   stroke: #3b82f6 !important;
+  stroke-width: 2.3 !important;
   pointer-events: none !important;
 }
 
@@ -1124,6 +1129,12 @@ exports.STYLES = `
 .cgfm-chevron svg {
   width: 14px;
   height: 14px;
+}
+.cgfm-chevron-spacer {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
 /* 文件夹专属图标 (纯正 Lucide，支持颜色着色，取消圆点) */
@@ -1807,7 +1818,7 @@ class FolderUiController {
             btn.className = 'cgfm-rail-btn';
             btn.type = 'button';
             btn.title = 'ChatGPT 文件夹（悬停展开，点击固定）';
-            btn.innerHTML = constants_1.ICONS.folder;
+            btn.innerHTML = constants_1.ICONS.folderBold;
             const handleEnter = () => {
                 this.isHovered = true;
                 this.clearCloseTimer();
@@ -2055,11 +2066,12 @@ class FolderUiController {
                         chatRow.dataset.chatId = c.id;
                         chatRow.style.paddingLeft = `${(depth + 1) * 14 + 8}px`;
                         chatRow.innerHTML = `
-              <span class="cgfm-chat-icon">${constants_1.ICONS.messageSquare}</span>
+              <span class="cgfm-chevron-spacer"></span>
+              <span class="cgfm-chat-icon">${constants_1.ICONS.messageCircle}</span>
               <span class="cgfm-title" title="${c.title}">${c.title}</span>
               <div class="cgfm-row-actions">
                 <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.pencil}</button>
-                <button class="cgfm-mini-btn" data-act="remove" title="从文件夹移出">${constants_1.ICONS.trash2}</button>
+                <button class="cgfm-mini-btn" data-act="remove" title="从文件夹移出">${constants_1.ICONS.x}</button>
               </div>
             `;
                         chatRow.addEventListener('click', (e) => {
@@ -2111,7 +2123,7 @@ class FolderUiController {
             row.className = 'cgfm-row';
             row.dataset.chatId = id;
             row.innerHTML = `
-        <span class="cgfm-chat-icon">${constants_1.ICONS.messageSquare}</span>
+        <span class="cgfm-chat-icon">${constants_1.ICONS.messageCircle}</span>
         <span class="cgfm-title" title="${title}">${title}</span>
         <div class="cgfm-row-actions">
           <button class="cgfm-mini-btn" data-act="edit" title="重命名">${constants_1.ICONS.pencil}</button>
@@ -2521,10 +2533,17 @@ class FolderUiController {
                 ? (0, sync_1.merge)(baseline, local, remoteData)
                 : { data: local, conflicts: [] };
             const newEnvelope = (0, sync_1.createRemote)(this.storage.getAccount(), this.storage.getDeviceId(), remoteRevision + 1, mergedRes.data);
-            const headers = remoteData && readRes.etag
-                ? { 'If-Match': readRes.etag }
-                : { 'If-None-Match': '*' };
-            const putRes = await (0, sync_1.davRequest)(this.profile.dav, 'PUT', headers, JSON.stringify(newEnvelope));
+            // 构造 WebDAV 写入请求头：仅在云端有效存在且带 ETag 时携带 If-Match，绝不使用 If-None-Match 避免误触发 412
+            const headers = {};
+            if (remoteData && readRes.etag) {
+                headers['If-Match'] = readRes.etag;
+            }
+            let putRes = await (0, sync_1.davRequest)(this.profile.dav, 'PUT', headers, JSON.stringify(newEnvelope));
+            // 412 智能自愈：若因反代抹除/改动 ETag 导致 SabreDAV 报 412 前置条件失败，自动无条件写入重试一次
+            if (putRes.status === 412) {
+                console.warn('[CGFM] WebDAV 412 Precondition Failed, retrying with force overwrite...');
+                putRes = await (0, sync_1.davRequest)(this.profile.dav, 'PUT', {}, JSON.stringify(newEnvelope));
+            }
             if (putRes.status < 200 || putRes.status >= 300) {
                 throw new Error(`云端写入失败 (HTTP ${putRes.status})`);
             }
@@ -2737,7 +2756,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.5
+// @version      2.0.6
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
