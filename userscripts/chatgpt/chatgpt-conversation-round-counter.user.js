@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.1
+// @version      0.4.2
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -425,13 +425,14 @@ function bootstrapFreshConversation(state, cache, conversationId, seedVisibleIds
     }
     state.knownUserMessageIds = new Set(state.pendingNewConversationUserIds.keys());
     state.liveUserMessageIds = new Map(state.pendingNewConversationUserIds);
-    // Show a provisional first turn, but do not persist provisional IDs
-    // to maxRounds or enable +1 until a server baseline is established.
+    // 新会话确定首轮后立即确立基线并开启 DOM 实时递增与持久化，
+    // 避免因现代 ChatGPT 全程走 SSE 通信而卡死在等待服务端 GET 消息基线的假死状态。
     state.totalRounds = 1;
     state.source = 'live';
-    state.freshAwaitingBaseline = true;
-    state.domIncrementReady = false;
+    state.freshAwaitingBaseline = false;
+    state.domIncrementReady = true;
     seedVisibleIds();
+    (0, storage_1.setCachedRoundCount)(cache, conversationId, state.totalRounds);
     onStateChange();
     return true;
 }
@@ -1239,7 +1240,7 @@ function patchHistoryForSpaNavigation(pageWindow, onNavigate) {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.1
+// @version      0.4.2
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
