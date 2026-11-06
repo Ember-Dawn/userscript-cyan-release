@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.13
+// @version      2.0.14
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -117,7 +117,7 @@ exports.uid = uid;
 const defaultProfile = () => ({
     data: (0, exports.blankData)(),
     base: (0, exports.blankData)(),
-    preferences: { sidebarWidth: 312, customWidth: false, rowGap: 2, indentSize: 14 },
+    preferences: { sidebarWidth: 312, customWidth: false, rowGap: 2, indentSize: 14, chatSortMode: 'timeAsc' },
     dav: { url: '', username: '', password: '', file: 'chatgpt-folders-v2.json' },
     pending: [],
     baseRevision: 0,
@@ -239,7 +239,7 @@ function executeCommand(data, cmd) {
                 id: cmd.id,
                 folderId: cmd.folderId,
                 title: (cmd.title ?? prev?.title ?? '未命名对话').trim(),
-                addedAt: prev?.addedAt || now,
+                addedAt: prev && prev.folderId === cmd.folderId ? (prev.addedAt || now) : now,
                 updatedAt: now
             };
             break;
@@ -1603,7 +1603,8 @@ exports.STYLES = `
   text-overflow: ellipsis;
 }
 .cgfm-settings-field input[type="text"],
-.cgfm-settings-field input[type="password"] {
+.cgfm-settings-field input[type="password"],
+.cgfm-settings-field select {
   width: 100% !important;
   min-width: 0 !important;
   max-width: 100% !important;
@@ -1617,8 +1618,12 @@ exports.STYLES = `
   outline: none;
   box-sizing: border-box !important;
 }
+.cgfm-settings-field select {
+  cursor: pointer;
+}
 .cgfm-settings-field input[type="text"]:focus,
-.cgfm-settings-field input[type="password"]:focus {
+.cgfm-settings-field input[type="password"]:focus,
+.cgfm-settings-field select:focus {
   border-color: #3b82f6;
 }
 .cgfm-settings-row {
@@ -2260,7 +2265,16 @@ class FolderUiController {
                     renderLevel(f.id, depth + 1);
                     // 2. 对话在后：渲染当前文件夹所属的对话
                     const chats = Object.values(conversations).filter((c) => c.folderId === f.id);
-                    chats.sort((a, b) => model_1.naturalSort.compare(a.title, b.title));
+                    const sortMode = this.profile.preferences.chatSortMode || 'timeAsc';
+                    if (sortMode === 'titleAsc') {
+                        chats.sort((a, b) => model_1.naturalSort.compare(a.title, b.title));
+                    }
+                    else {
+                        chats.sort((a, b) => {
+                            const diff = (a.addedAt || a.updatedAt || 0) - (b.addedAt || b.updatedAt || 0);
+                            return diff !== 0 ? diff : model_1.naturalSort.compare(a.title, b.title);
+                        });
+                    }
                     for (const c of chats) {
                         const chatRow = document.createElement('div');
                         chatRow.className = 'cgfm-row';
@@ -2881,6 +2895,7 @@ class FolderUiController {
         const currentWidth = this.profile.preferences.sidebarWidth || 312;
         const currentGap = this.profile.preferences.rowGap ?? 2;
         const currentIndent = this.profile.preferences.indentSize ?? 14;
+        const currentSortMode = this.profile.preferences.chatSortMode || 'timeAsc';
         panel.innerHTML = `
       <div class="cgfm-settings-header">
         <span class="cgfm-settings-title">文件夹设置</span>
@@ -2889,7 +2904,7 @@ class FolderUiController {
 
       <!-- 面板外观卡片 -->
       <div class="cgfm-card">
-        <div class="cgfm-card-title">面板外观</div>
+        <div class="cgfm-card-title">面板外观与排序</div>
         <div class="cgfm-slider-wrap">
           <div class="cgfm-slider-header">
             <span>面板宽度</span>
@@ -2912,6 +2927,14 @@ class FolderUiController {
             <span class="cgfm-indent-num">${currentIndent}px</span>
           </div>
           <input type="range" class="cgfm-indent-slider" min="8" max="24" step="1" value="${currentIndent}" />
+        </div>
+
+        <div class="cgfm-settings-field" style="margin-top: 10px;">
+          <label>文件夹内对话排序</label>
+          <select class="cgfm-chat-sort-select">
+            <option value="timeAsc"${currentSortMode === 'timeAsc' ? ' selected' : ''}>新加入的对话放入最后面 (默认)</option>
+            <option value="titleAsc"${currentSortMode === 'titleAsc' ? ' selected' : ''}>按照中英文升序排列</option>
+          </select>
         </div>
       </div>
 
@@ -2993,6 +3016,14 @@ class FolderUiController {
         indentSlider.addEventListener('change', () => {
             this.storage.saveProfile(this.profile);
         });
+        const sortSelect = panel.querySelector('.cgfm-chat-sort-select');
+        if (sortSelect) {
+            sortSelect.addEventListener('change', () => {
+                this.profile.preferences.chatSortMode = sortSelect.value;
+                this.storage.saveProfile(this.profile);
+                this.renderFolderTree();
+            });
+        }
         panel.addEventListener('mouseenter', () => {
             this.isHovered = true;
             this.clearCloseTimer();
@@ -3095,7 +3126,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.13
+// @version      2.0.14
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
