@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.2
+// @version      0.1.3
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -1330,6 +1330,7 @@ exports.initListFold = initListFold;
 const EDITOR_SELECTOR = '.nc-rich-text-content .tiptap.ProseMirror';
 const HOST_ATTRIBUTE = 'data-tm-nrl-host';
 const GUTTER_PX = 20;
+const NESTED_INDENT_PX = 6;
 const BUTTON_PX = 18;
 const TEXT_OFFSET_PX = 36;
 const CHEVRON_DOWN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
@@ -1404,6 +1405,8 @@ function createController(editor, id) {
     // The slot belongs to top-level lists only; all native list markers retain their alignment.
     const baseCss = `
     ${scope} > ol, ${scope} > ul { margin-left: ${GUTTER_PX}px !important; box-sizing: border-box; }
+    /* Move nested lists as a whole, preserving native marker alignment. */
+    ${scope} li > ol, ${scope} li > ul { translate: ${NESTED_INDENT_PX}px 0; }
     [${HOST_ATTRIBUTE}="${id}"] > .tm-nrl-overlay .tm-nrl-toggle {
       position:absolute; width:${BUTTON_PX}px; height:${BUTTON_PX}px; padding:0; margin:0;
       display:flex; align-items:center; justify-content:center; box-sizing:border-box;
@@ -1487,24 +1490,26 @@ function createController(editor, id) {
         button.type = 'button';
         button.className = 'tm-nrl-toggle';
         // NocoDB's dialog dismiss logic must not receive button pointer events.
-        for (const name of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        for (const name of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
             button.addEventListener(name, event => {
                 event.preventDefault();
                 event.stopPropagation();
                 event.stopImmediatePropagation();
             });
         }
-        button.addEventListener('click', () => {
+        // Keep click in its own handler: an earlier stopImmediatePropagation
+        // listener on click would prevent the actual fold handler from running.
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
             const entry = entries.get(key);
             if (!entry)
                 return;
             if (folded.has(key))
                 folded.delete(key);
-            else {
-                if (selectionTouches(entry.list))
-                    return;
+            else
                 folded.set(key, entry.signature);
-            }
             syncStyles();
             updateButton(button, folded.has(key));
             schedulePosition();
@@ -1677,7 +1682,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.2
+// @version      0.1.3
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
