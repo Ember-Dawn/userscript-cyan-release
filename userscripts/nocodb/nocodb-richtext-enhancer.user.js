@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.0
+// @version      0.1.1
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -1337,11 +1337,47 @@ function isRendered(item) {
     return item.isConnected && item.getClientRects().length > 0 &&
         !item.closest(`li.${FOLDED} > ol, li.${FOLDED} > ul`);
 }
-/** If the selection is within the subtree, leave it visible until the cursor moves. */
+/** Includes ranges spanning the subtree even when both endpoints are outside it. */
 function selectionIn(element) {
     const selection = window.getSelection();
-    return !!selection && !!selection.anchorNode &&
-        (element.contains(selection.anchorNode) || (!!selection.focusNode && element.contains(selection.focusNode)));
+    if (!selection || !selection.rangeCount)
+        return false;
+    if ((selection.anchorNode && element.contains(selection.anchorNode)) ||
+        (selection.focusNode && element.contains(selection.focusNode)))
+        return true;
+    for (let index = 0; index < selection.rangeCount; index++) {
+        try {
+            if (selection.getRangeAt(index).intersectsNode(element))
+                return true;
+        }
+        catch { /* The editor may have replaced the node during a selection change. */ }
+    }
+    return false;
+}
+/** Put the caret in the visible parent paragraph before hiding its nested list. */
+function moveSelectionOutOfSublist(item, sublist) {
+    if (!selectionIn(sublist))
+        return true;
+    const editor = item.closest('.tiptap.ProseMirror');
+    const paragraph = Array.from(item.children).find(child => child instanceof HTMLParagraphElement || child instanceof HTMLDivElement);
+    if (!editor || !(paragraph instanceof HTMLElement))
+        return false;
+    const selection = window.getSelection();
+    if (!selection)
+        return false;
+    try {
+        const range = document.createRange();
+        range.selectNodeContents(paragraph);
+        range.collapse(false);
+        // Focusing ProseMirror can restore its previous selection; focus first.
+        editor.focus({ preventScroll: true });
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return !selectionIn(sublist);
+    }
+    catch {
+        return false;
+    }
 }
 function initListFold() {
     if (document.getElementById(HOST_ID))
@@ -1394,9 +1430,10 @@ function initListFold() {
                         const sublist = directSublist(item);
                         if (!sublist)
                             return;
-                        if (!item.classList.contains(FOLDED) && selectionIn(sublist))
+                        const collapsing = !item.classList.contains(FOLDED);
+                        if (collapsing && !moveSelectionOutOfSublist(item, sublist))
                             return;
-                        item.classList.toggle(FOLDED);
+                        item.classList.toggle(FOLDED, collapsing);
                         schedule();
                     });
                     host.append(button);
@@ -1436,21 +1473,28 @@ function initListFold() {
     };
     const observer = new MutationObserver(mutations => {
         if (mutations.some(mutation => !host.contains(mutation.target) &&
-            (mutation.type === 'childList' || mutation.type === 'characterData')))
+            (mutation.type === 'childList' || mutation.type === 'characterData' ||
+                (mutation.type === 'attributes' && mutation.attributeName !== 'class'))))
             schedule();
     });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    // Watch layout-affecting attributes, but exclude class changes caused by our own folding.
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ['style', 'hidden', 'aria-hidden'] });
     document.addEventListener('scroll', schedule, true);
     window.addEventListener('resize', schedule);
     document.addEventListener('selectionchange', () => {
+        let expanded = false;
         for (const item of buttons.keys()) {
             if (!item.classList.contains(FOLDED))
                 continue;
             const list = directSublist(item);
-            if (list && selectionIn(list))
+            if (list && selectionIn(list)) {
                 item.classList.remove(FOLDED);
+                expanded = true;
+            }
         }
-        schedule();
+        if (expanded)
+            schedule();
     });
     schedule();
 }
@@ -1465,7 +1509,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.0
+// @version      0.1.1
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
