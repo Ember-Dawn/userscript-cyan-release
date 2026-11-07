@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.14
+// @version      2.0.15
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -1786,6 +1786,7 @@ class FolderUiController {
     isSyncing = false;
     syncRetryTimer = null;
     syncFailures = 0;
+    pendingSyncAgain = false;
     constructor() {
         this.storage = new storage_1.StorageManager((newProfile) => {
             this.profile = newProfile;
@@ -2214,8 +2215,10 @@ class FolderUiController {
         });
     }
     renderFolderTree() {
-        const container = this.rootEl.querySelector('.cgfm-folder-tree');
+        const container = this.rootEl?.querySelector('.cgfm-folder-tree');
         if (!container)
+            return;
+        if (this.isEditing)
             return;
         container.innerHTML = '';
         const { folders, conversations } = this.profile.data;
@@ -2443,12 +2446,19 @@ class FolderUiController {
       </div>
     `;
         const input = editRow.querySelector('input');
+        let finished = false;
         const finish = (save) => {
+            if (finished)
+                return;
+            finished = true;
             this.isEditing = false;
             const name = input.value.trim();
             editRow.remove();
             if (save && name) {
                 this.executeChange({ type: 'folder.create', parentId, name });
+            }
+            else {
+                this.renderFolderTree();
             }
         };
         let isComposing = false;
@@ -2461,6 +2471,17 @@ class FolderUiController {
                 finish(true);
             if (e.key === 'Escape')
                 finish(false);
+        });
+        input.addEventListener('blur', () => {
+            window.setTimeout(() => {
+                if (!finished)
+                    finish(true);
+            }, 150);
+        });
+        editRow.addEventListener('mousedown', (e) => {
+            const btn = e.target.closest('.cgfm-mini-btn');
+            if (btn)
+                e.preventDefault();
         });
         editRow.addEventListener('click', (e) => {
             const btn = e.target.closest('.cgfm-mini-btn');
@@ -2510,7 +2531,11 @@ class FolderUiController {
         let isComposing = false;
         input.addEventListener('compositionstart', () => (isComposing = true));
         input.addEventListener('compositionend', () => (isComposing = false));
+        let finished = false;
         const finish = (save) => {
+            if (finished)
+                return;
+            finished = true;
             this.isEditing = false;
             editWrap.remove();
             titleEl.style.display = '';
@@ -2529,6 +2554,17 @@ class FolderUiController {
                 finish(true);
             if (e.key === 'Escape')
                 finish(false);
+        });
+        input.addEventListener('blur', () => {
+            window.setTimeout(() => {
+                if (!finished)
+                    finish(true);
+            }, 150);
+        });
+        editWrap.addEventListener('mousedown', (e) => {
+            const btn = e.target.closest('.cgfm-mini-btn');
+            if (btn)
+                e.preventDefault();
         });
         editWrap.addEventListener('click', (e) => {
             const btn = e.target.closest('.cgfm-mini-btn');
@@ -2566,7 +2602,11 @@ class FolderUiController {
         let isComposing = false;
         input.addEventListener('compositionstart', () => (isComposing = true));
         input.addEventListener('compositionend', () => (isComposing = false));
+        let finished = false;
         const finish = (saved) => {
+            if (finished)
+                return;
+            finished = true;
             this.isEditing = false;
             editWrap.remove();
             titleEl.style.display = '';
@@ -2611,6 +2651,17 @@ class FolderUiController {
                 finish(true);
             if (e.key === 'Escape')
                 finish(false);
+        });
+        input.addEventListener('blur', () => {
+            window.setTimeout(() => {
+                if (!finished)
+                    finish(true);
+            }, 150);
+        });
+        editWrap.addEventListener('mousedown', (e) => {
+            const btn = e.target.closest('.cgfm-mini-btn');
+            if (btn)
+                e.preventDefault();
         });
         editWrap.addEventListener('click', (e) => {
             const btn = e.target.closest('.cgfm-mini-btn');
@@ -2765,6 +2816,9 @@ class FolderUiController {
             const before = this.profile.data;
             const after = (0, model_1.executeCommand)(before, cmd);
             this.profile.data = after;
+            if (this.isSyncing) {
+                this.pendingSyncAgain = true;
+            }
             this.profile.pending.push({
                 id: (0, model_1.uid)(),
                 device: this.storage.getDeviceId(),
@@ -2783,12 +2837,14 @@ class FolderUiController {
     }
     scheduleSync() {
         this.updateSyncState();
-        if (this.syncRetryTimer !== null)
-            return;
+        if (this.syncRetryTimer !== null) {
+            window.clearTimeout(this.syncRetryTimer);
+            this.syncRetryTimer = null;
+        }
         this.syncRetryTimer = window.setTimeout(() => {
             this.syncRetryTimer = null;
             this.sync(false);
-        }, 1500);
+        }, 2500);
     }
     updateSyncState() {
         if (!this.profile.dav.url) {
@@ -2808,8 +2864,10 @@ class FolderUiController {
         }
     }
     async sync(manual) {
-        if (this.isSyncing)
+        if (this.isSyncing) {
+            this.pendingSyncAgain = true;
             return;
+        }
         if (!this.profile.dav.url) {
             if (manual)
                 this.showToast('请先在设置中配置 WebDAV HTTPS 凭据');
@@ -2831,7 +2889,7 @@ class FolderUiController {
                 throw new Error(`云端读取失败 (HTTP ${readRes.status})`);
             }
             const baseline = this.profile.base;
-            const local = this.profile.data;
+            const local = (0, model_1.clone)(this.profile.data);
             const mergedRes = remoteData
                 ? (0, sync_1.merge)(baseline, local, remoteData)
                 : { data: local, conflicts: [] };
@@ -2850,15 +2908,35 @@ class FolderUiController {
             if (putRes.status < 200 || putRes.status >= 300) {
                 throw new Error(`云端写入失败 (HTTP ${putRes.status})`);
             }
-            this.profile.data = mergedRes.data;
-            this.profile.base = mergedRes.data;
-            this.profile.baseRevision = newEnvelope.revision;
-            this.profile.etag = putRes.etag;
-            this.profile.pending = [];
-            this.profile.conflicts = [];
-            this.syncFailures = 0;
-            this.storage.saveProfile(this.profile);
-            this.renderFolderTree();
+            // 关键防竞态覆盖逻辑：检查网络请求飞行期间，用户是否在本地产生了新的编辑修改
+            const currentLocal = this.profile.data;
+            const hasLocalChangesDuringSync = this.pendingSyncAgain || JSON.stringify(currentLocal) !== JSON.stringify(local);
+            if (hasLocalChangesDuringSync) {
+                // 本地在网络同步期间产生了新动作：
+                // 1. 云端已成功保存 mergedRes.data，更新基准快照为已写入云端的版本
+                this.profile.base = mergedRes.data;
+                this.profile.baseRevision = newEnvelope.revision;
+                this.profile.etag = putRes.etag;
+                // 2. 严禁覆盖 this.profile.data！保留本地最新修改！
+                this.syncFailures = 0;
+                this.pendingSyncAgain = false;
+                this.storage.saveProfile(this.profile);
+                // 3. 连环触发下一次防抖同步，把这批最新修改推上云
+                this.scheduleSync();
+            }
+            else {
+                // 网络期间无新修改，安全应用合并结果
+                this.profile.data = mergedRes.data;
+                this.profile.base = mergedRes.data;
+                this.profile.baseRevision = newEnvelope.revision;
+                this.profile.etag = putRes.etag;
+                this.profile.pending = [];
+                this.profile.conflicts = [];
+                this.syncFailures = 0;
+                this.pendingSyncAgain = false;
+                this.storage.saveProfile(this.profile);
+                this.renderFolderTree();
+            }
             if (manual)
                 this.showToast('WebDAV 同步成功！');
         }
@@ -2872,6 +2950,10 @@ class FolderUiController {
             this.isSyncing = false;
             this.updateSyncState();
             this.renderSyncButton();
+            // 如果有连环请求需要补发且目前没有定时器在跑
+            if (this.pendingSyncAgain && this.syncRetryTimer === null) {
+                this.scheduleSync();
+            }
         }
     }
     renderSyncButton() {
@@ -3126,7 +3208,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.14
+// @version      2.0.15
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
