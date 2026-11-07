@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.1
+// @version      0.1.2
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -1325,178 +1325,346 @@ function initImageViewer() {
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.initListFold = initListFold;
-/** View-only folding of nested Tiptap lists. No nodes are inserted into the editor. */
-const EDITOR = '.nc-rich-text-content .tiptap.ProseMirror';
-const FOLDED = 'tm-nrl-collapsed';
-const HOST_ID = 'tm-nrl-overlay';
-const STYLE_ID = 'tm-nrl-styles';
-function directSublist(item) {
-    return Array.from(item.children).find((child) => child instanceof HTMLOListElement || child instanceof HTMLUListElement) ?? null;
+/** View-only list folding for the NocoDB Tiptap editor.
+ *  The ProseMirror subtree is never mutated by this feature. */
+const EDITOR_SELECTOR = '.nc-rich-text-content .tiptap.ProseMirror';
+const HOST_ATTRIBUTE = 'data-tm-nrl-host';
+const GUTTER_PX = 20;
+const BUTTON_PX = 18;
+const TEXT_OFFSET_PX = 36;
+const CHEVRON_DOWN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+const CHEVRON_RIGHT = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
+function directList(item) {
+    return Array.from(item.children).find((child) => child instanceof HTMLOListElement || child instanceof HTMLUListElement);
 }
-function isRendered(item) {
-    return item.isConnected && item.getClientRects().length > 0 &&
-        !item.closest(`li.${FOLDED} > ol, li.${FOLDED} > ul`);
+function directTitle(item) {
+    return Array.from(item.children).find((child) => child instanceof HTMLElement && !(child instanceof HTMLOListElement) &&
+        !(child instanceof HTMLUListElement));
 }
-/** Includes ranges spanning the subtree even when both endpoints are outside it. */
-function selectionIn(element) {
+/** A structural selector relative to the editor, not the ephemeral DOM node identity. */
+function relativePath(node, editor) {
+    const parts = [];
+    let current = node;
+    while (current && current !== editor) {
+        const parent = current.parentElement;
+        if (!parent)
+            return '';
+        parts.unshift(`${current.localName}:nth-child(${Array.from(parent.children).indexOf(current) + 1})`);
+        current = parent;
+    }
+    return current === editor ? parts.join(' > ') : '';
+}
+function scanLists(editor) {
+    const result = [];
+    editor.querySelectorAll('li').forEach(item => {
+        const list = directList(item);
+        const title = directTitle(item);
+        if (!list || !title)
+            return;
+        const key = relativePath(list, editor);
+        if (!key)
+            return;
+        result.push({
+            key, list, title,
+            signature: `${list.tagName}|${title.textContent?.trim() ?? ''}`,
+        });
+    });
+    return result;
+}
+/** Selection is protected without calling focus(), modifying ranges, or dispatching edits. */
+function selectionTouches(list) {
     const selection = window.getSelection();
-    if (!selection || !selection.rangeCount)
+    if (!selection?.rangeCount)
         return false;
-    if ((selection.anchorNode && element.contains(selection.anchorNode)) ||
-        (selection.focusNode && element.contains(selection.focusNode)))
+    if ((selection.anchorNode && list.contains(selection.anchorNode)) ||
+        (selection.focusNode && list.contains(selection.focusNode)))
         return true;
-    for (let index = 0; index < selection.rangeCount; index++) {
+    for (let i = 0; i < selection.rangeCount; i++) {
         try {
-            if (selection.getRangeAt(index).intersectsNode(element))
+            if (selection.getRangeAt(i).intersectsNode(list))
                 return true;
         }
-        catch { /* The editor may have replaced the node during a selection change. */ }
+        catch { /* Tiptap may have replaced the range target. */ }
     }
     return false;
 }
-/** Put the caret in the visible parent paragraph before hiding its nested list. */
-function moveSelectionOutOfSublist(item, sublist) {
-    if (!selectionIn(sublist))
-        return true;
-    const editor = item.closest('.tiptap.ProseMirror');
-    const paragraph = Array.from(item.children).find(child => child instanceof HTMLParagraphElement || child instanceof HTMLDivElement);
-    if (!editor || !(paragraph instanceof HTMLElement))
-        return false;
-    const selection = window.getSelection();
-    if (!selection)
-        return false;
-    try {
-        const range = document.createRange();
-        range.selectNodeContents(paragraph);
-        range.collapse(false);
-        // Focusing ProseMirror can restore its previous selection; focus first.
-        editor.focus({ preventScroll: true });
-        selection.removeAllRanges();
-        selection.addRange(range);
-        return !selectionIn(sublist);
-    }
-    catch {
-        return false;
-    }
-}
-function initListFold() {
-    if (document.getElementById(HOST_ID))
-        return;
+function createController(editor, id) {
+    const parent = editor.parentElement;
+    if (!parent || parent.closest('[contenteditable="true"]'))
+        return null;
+    const host = parent;
+    const oldPosition = host.style.position;
+    const oldAttribute = host.getAttribute(HOST_ATTRIBUTE);
+    if (getComputedStyle(host).position === 'static')
+        host.style.position = 'relative';
+    host.setAttribute(HOST_ATTRIBUTE, id);
+    const scope = `[${HOST_ATTRIBUTE}="${id}"] > .tiptap.ProseMirror`;
     const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = `
-    ${EDITOR} li.${FOLDED} > ol,
-    ${EDITOR} li.${FOLDED} > ul { display: none !important; }
-    #${HOST_ID} { position: fixed; inset: 0; pointer-events: none; z-index: 100000; }
-    #${HOST_ID} .tm-nrl-toggle { position: absolute; width: 18px; height: 18px; padding: 0;
-      display: flex; align-items: center; justify-content: center; color: #888;
-      border: 0; background: transparent; border-radius: 3px; pointer-events: auto;
-      cursor: pointer; }
-    #${HOST_ID} .tm-nrl-toggle:hover { color: currentColor; background: rgba(127,127,127,.1); }
-    #${HOST_ID} .tm-nrl-toggle svg { width: 14px; height: 14px; fill: none;
-      stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+    style.setAttribute('data-tm-nrl-style', id);
+    // The slot belongs to top-level lists only; all native list markers retain their alignment.
+    const baseCss = `
+    ${scope} > ol, ${scope} > ul { margin-left: ${GUTTER_PX}px !important; box-sizing: border-box; }
+    [${HOST_ATTRIBUTE}="${id}"] > .tm-nrl-overlay .tm-nrl-toggle {
+      position:absolute; width:${BUTTON_PX}px; height:${BUTTON_PX}px; padding:0; margin:0;
+      display:flex; align-items:center; justify-content:center; box-sizing:border-box;
+      border:0; border-radius:3px; background:transparent; color:#888;
+      cursor:pointer; pointer-events:auto;
+    }
+    [${HOST_ATTRIBUTE}="${id}"] > .tm-nrl-overlay .tm-nrl-toggle:hover {
+      color:inherit; background:rgba(127,127,127,.1);
+    }
+    [${HOST_ATTRIBUTE}="${id}"] > .tm-nrl-overlay .tm-nrl-toggle svg {
+      width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.75;
+      stroke-linecap:round; stroke-linejoin:round; pointer-events:none;
+    }
   `;
+    style.textContent = baseCss;
     document.head.append(style);
-    const host = document.createElement('div');
-    host.id = HOST_ID;
-    host.setAttribute('aria-label', '列表折叠工具');
-    document.body.append(host);
+    const overlay = document.createElement('div');
+    overlay.className = 'tm-nrl-overlay';
+    overlay.setAttribute('aria-label', '列表折叠工具');
+    overlay.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;pointer-events:none;z-index:2147483000';
+    host.append(overlay); // Inside the dialog, but outside contenteditable: no outside-click close.
+    const folded = new Map();
     const buttons = new Map();
-    let frame = 0;
-    const refresh = () => {
-        frame = 0;
-        const targets = new Set();
-        document.querySelectorAll(EDITOR).forEach(editor => {
-            if (!(editor instanceof HTMLElement) || !isRendered(editor))
-                return;
-            editor.querySelectorAll('li').forEach(item => {
-                const child = directSublist(item);
-                if (!child || !isRendered(item))
-                    return;
-                targets.add(item);
-                let button = buttons.get(item);
-                if (!button) {
-                    button = document.createElement('button');
-                    button.type = 'button';
-                    button.className = 'tm-nrl-toggle';
-                    button.setAttribute('aria-label', '折叠子列表');
-                    button.setAttribute('title', '折叠子列表');
-                    // Do not focus the overlay: preserve the ProseMirror selection.
-                    button.addEventListener('pointerdown', event => { event.preventDefault(); event.stopPropagation(); });
-                    button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); });
-                    button.addEventListener('click', event => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        const sublist = directSublist(item);
-                        if (!sublist)
-                            return;
-                        const collapsing = !item.classList.contains(FOLDED);
-                        if (collapsing && !moveSelectionOutOfSublist(item, sublist))
-                            return;
-                        item.classList.toggle(FOLDED, collapsing);
-                        schedule();
-                    });
-                    host.append(button);
-                    buttons.set(item, button);
-                }
-                const collapsed = item.classList.contains(FOLDED);
-                button.setAttribute('aria-expanded', String(!collapsed));
-                button.setAttribute('aria-label', collapsed ? '展开子列表' : '折叠子列表');
-                button.title = collapsed ? '展开子列表' : '折叠子列表';
-                button.innerHTML = collapsed
-                    ? '<svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>'
-                    : '<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>';
-                const rect = item.getBoundingClientRect();
-                // Overlay is outside ProseMirror and does not change native list marker alignment.
-                const first = item.firstElementChild?.getBoundingClientRect();
-                const top = first && first.height > 0 ? first.top : rect.top;
-                const lineHeight = Number.parseFloat(getComputedStyle(item).lineHeight);
-                const y = top + (Number.isFinite(lineHeight) ? Math.min(lineHeight, 30) : 22) / 2 - 9;
-                const x = rect.left - 37;
-                const visible = rect.width > 0 && y >= -18 && y < window.innerHeight && x >= 0 && x < window.innerWidth;
-                button.style.display = visible ? 'flex' : 'none';
-                button.style.left = `${x}px`;
-                button.style.top = `${y}px`;
-            });
-        });
-        for (const [item, button] of buttons) {
-            if (!targets.has(item)) {
-                button.remove();
-                buttons.delete(item);
-            }
+    let entries = new Map();
+    let structureFrame = 0;
+    let positionFrame = 0;
+    let dragFrame = 0;
+    let disposed = false;
+    let dragging = false;
+    let lastCss = baseCss;
+    function syncStyles() {
+        const css = baseCss + Array.from(folded.keys()).map(key => `${scope} > ${key} { display:none!important; }`).join('\n');
+        if (css !== lastCss) {
+            style.textContent = css;
+            lastCss = css;
         }
-    };
-    const schedule = () => {
-        if (frame)
+    }
+    function isVisible() {
+        return editor.isConnected && host.isConnected && editor.getClientRects().length > 0;
+    }
+    function position() {
+        positionFrame = 0;
+        if (disposed || !isVisible())
             return;
-        frame = requestAnimationFrame(refresh);
-    };
-    const observer = new MutationObserver(mutations => {
-        if (mutations.some(mutation => !host.contains(mutation.target) &&
-            (mutation.type === 'childList' || mutation.type === 'characterData' ||
-                (mutation.type === 'attributes' && mutation.attributeName !== 'class'))))
-            schedule();
-    });
-    // Watch layout-affecting attributes, but exclude class changes caused by our own folding.
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true,
-        attributes: true, attributeFilter: ['style', 'hidden', 'aria-hidden'] });
-    document.addEventListener('scroll', schedule, true);
-    window.addEventListener('resize', schedule);
-    document.addEventListener('selectionchange', () => {
-        let expanded = false;
-        for (const item of buttons.keys()) {
-            if (!item.classList.contains(FOLDED))
+        const hostRect = host.getBoundingClientRect();
+        const editorRect = editor.getBoundingClientRect();
+        const scaleX = host.offsetWidth ? hostRect.width / host.offsetWidth : 1;
+        const scaleY = host.offsetHeight ? hostRect.height / host.offsetHeight : 1;
+        for (const [key, entry] of entries) {
+            const button = buttons.get(key);
+            if (!button)
                 continue;
-            const list = directSublist(item);
-            if (list && selectionIn(list)) {
-                item.classList.remove(FOLDED);
-                expanded = true;
+            const rect = entry.title.getBoundingClientRect();
+            const visible = rect.width > 0 && rect.height > 0 &&
+                rect.bottom > editorRect.top && rect.top < editorRect.bottom;
+            button.style.display = visible ? 'flex' : 'none';
+            if (!visible)
+                continue;
+            const x = (rect.left - hostRect.left) / scaleX + host.scrollLeft - host.clientLeft - TEXT_OFFSET_PX;
+            const y = (rect.top - hostRect.top) / scaleY + host.scrollTop - host.clientTop +
+                (rect.height / scaleY - BUTTON_PX) / 2;
+            button.style.left = `${x}px`;
+            button.style.top = `${y}px`;
+        }
+    }
+    function schedulePosition() {
+        if (!disposed && !positionFrame)
+            positionFrame = requestAnimationFrame(position);
+    }
+    function updateButton(button, collapsed) {
+        const label = collapsed ? '展开子列表' : '折叠子列表';
+        if (button.title !== label) {
+            button.title = label;
+            button.setAttribute('aria-label', label);
+            button.setAttribute('aria-expanded', String(!collapsed));
+            button.innerHTML = collapsed ? CHEVRON_RIGHT : CHEVRON_DOWN;
+        }
+    }
+    function createButton(key) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tm-nrl-toggle';
+        // NocoDB's dialog dismiss logic must not receive button pointer events.
+        for (const name of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            button.addEventListener(name, event => {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+            });
+        }
+        button.addEventListener('click', () => {
+            const entry = entries.get(key);
+            if (!entry)
+                return;
+            if (folded.has(key))
+                folded.delete(key);
+            else {
+                if (selectionTouches(entry.list))
+                    return;
+                folded.set(key, entry.signature);
+            }
+            syncStyles();
+            updateButton(button, folded.has(key));
+            schedulePosition();
+        });
+        overlay.append(button);
+        return button;
+    }
+    function refreshStructure() {
+        structureFrame = 0;
+        if (disposed || !isVisible())
+            return;
+        const found = scanLists(editor);
+        entries = new Map(found.map(entry => [entry.key, entry]));
+        for (const [key, signature] of folded) {
+            if (entries.get(key)?.signature !== signature)
+                folded.delete(key);
+        }
+        syncStyles();
+        for (const [key] of buttons) {
+            if (entries.has(key))
+                continue;
+            buttons.get(key)?.remove();
+            buttons.delete(key);
+        }
+        for (const [key] of entries) {
+            let button = buttons.get(key);
+            if (!button) {
+                button = createButton(key);
+                buttons.set(key, button);
+            }
+            updateButton(button, folded.has(key));
+        }
+        schedulePosition();
+    }
+    function scheduleStructure() {
+        if (!disposed && !structureFrame)
+            structureFrame = requestAnimationFrame(refreshStructure);
+    }
+    const mutationObserver = new MutationObserver(scheduleStructure);
+    mutationObserver.observe(editor, { childList: true, characterData: true, subtree: true });
+    const resizeObserver = new ResizeObserver(schedulePosition);
+    resizeObserver.observe(host);
+    resizeObserver.observe(editor);
+    const onScroll = () => schedulePosition();
+    const onSelectionChange = () => {
+        let changed = false;
+        for (const [key] of folded) {
+            const entry = entries.get(key);
+            if (entry && selectionTouches(entry.list)) {
+                folded.delete(key);
+                const button = buttons.get(key);
+                if (button)
+                    updateButton(button, false);
+                changed = true;
             }
         }
-        if (expanded)
+        if (changed)
+            syncStyles();
+        if (changed)
+            schedulePosition();
+    };
+    const dragTick = () => {
+        dragFrame = 0;
+        if (!dragging || disposed)
+            return;
+        schedulePosition();
+        dragFrame = requestAnimationFrame(dragTick);
+    };
+    const onPointerDown = (event) => {
+        // Any mouse/pointer drag may move a flex layout without resizing the window.
+        if (event.button !== 0 || overlay.contains(event.target))
+            return;
+        dragging = true;
+        if (!dragFrame)
+            dragFrame = requestAnimationFrame(dragTick);
+    };
+    const onPointerUp = () => {
+        dragging = false;
+        if (dragFrame)
+            cancelAnimationFrame(dragFrame);
+        dragFrame = 0;
+        schedulePosition();
+    };
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', onScroll);
+    document.addEventListener('selectionchange', onSelectionChange);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('pointerup', onPointerUp, true);
+    document.addEventListener('pointercancel', onPointerUp, true);
+    window.addEventListener('blur', onPointerUp);
+    function dispose() {
+        if (disposed)
+            return;
+        disposed = true;
+        mutationObserver.disconnect();
+        resizeObserver.disconnect();
+        document.removeEventListener('scroll', onScroll, true);
+        window.removeEventListener('resize', onScroll);
+        document.removeEventListener('selectionchange', onSelectionChange);
+        document.removeEventListener('pointerdown', onPointerDown, true);
+        document.removeEventListener('pointerup', onPointerUp, true);
+        document.removeEventListener('pointercancel', onPointerUp, true);
+        window.removeEventListener('blur', onPointerUp);
+        if (structureFrame)
+            cancelAnimationFrame(structureFrame);
+        if (positionFrame)
+            cancelAnimationFrame(positionFrame);
+        if (dragFrame)
+            cancelAnimationFrame(dragFrame);
+        overlay.remove();
+        style.remove();
+        buttons.clear();
+        folded.clear();
+        entries.clear();
+        if (host.getAttribute(HOST_ATTRIBUTE) === id) {
+            if (oldAttribute === null)
+                host.removeAttribute(HOST_ATTRIBUTE);
+            else
+                host.setAttribute(HOST_ATTRIBUTE, oldAttribute);
+            host.style.position = oldPosition;
+        }
+    }
+    refreshStructure();
+    return { dispose };
+}
+/** One controller per visible edit dialog; closing a dialog discards all fold state. */
+function initListFold() {
+    const controllers = new Map();
+    let nextId = 0;
+    let frame = 0;
+    function reconcile() {
+        frame = 0;
+        const visible = new Set(Array.from(document.querySelectorAll(EDITOR_SELECTOR))
+            .filter(editor => editor.getClientRects().length > 0));
+        for (const [editor, controller] of controllers) {
+            if (visible.has(editor))
+                continue;
+            controller.dispose();
+            controllers.delete(editor);
+        }
+        for (const editor of visible) {
+            if (controllers.has(editor))
+                continue;
+            const controller = createController(editor, `tm-nrl-${++nextId}`);
+            if (controller)
+                controllers.set(editor, controller);
+        }
+    }
+    const schedule = () => {
+        if (!frame)
+            frame = requestAnimationFrame(reconcile);
+    };
+    // The dialog is mounted/unmounted by Vue; do not store state on ProseMirror nodes.
+    const observer = new MutationObserver(mutations => {
+        if (mutations.some(m => m.addedNodes.length || m.removedNodes.length))
             schedule();
     });
-    schedule();
+    observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('resize', schedule);
+    reconcile();
 }
 
 },
@@ -1509,7 +1677,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.1
+// @version      0.1.2
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
