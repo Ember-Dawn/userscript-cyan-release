@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.3
+// @version      0.1.4
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -1407,6 +1407,11 @@ function createController(editor, id) {
     ${scope} > ol, ${scope} > ul { margin-left: ${GUTTER_PX}px !important; box-sizing: border-box; }
     /* Move nested lists as a whole, preserving native marker alignment. */
     ${scope} li > ol, ${scope} li > ul { translate: ${NESTED_INDENT_PX}px 0; }
+    /* Guide positioning validated in Console; preserve native color and opacity. */
+    ${scope} li > ol::before, ${scope} li > ul::before {
+      left: -20px !important;
+      width: 0.5px !important;
+    }
     [${HOST_ATTRIBUTE}="${id}"] > .tm-nrl-overlay .tm-nrl-toggle {
       position:absolute; width:${BUTTON_PX}px; height:${BUTTON_PX}px; padding:0; margin:0;
       display:flex; align-items:center; justify-content:center; box-sizing:border-box;
@@ -1682,7 +1687,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.3
+// @version      0.1.4
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
