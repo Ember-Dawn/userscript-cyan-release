@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.15
+// @version      2.0.16
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -2294,6 +2294,8 @@ class FolderUiController {
             `;
                         chatRow.addEventListener('click', (e) => {
                             const target = e.target;
+                            if (target.closest('.cgfm-inline-edit, input'))
+                                return;
                             const btn = target.closest('.cgfm-mini-btn');
                             if (btn) {
                                 e.stopPropagation();
@@ -2393,6 +2395,8 @@ class FolderUiController {
       `;
             row.addEventListener('click', (e) => {
                 const target = e.target;
+                if (target.closest('.cgfm-inline-edit, input'))
+                    return;
                 const btn = target.closest('.cgfm-mini-btn');
                 if (btn?.dataset.act === 'edit') {
                     e.stopPropagation();
@@ -2479,15 +2483,16 @@ class FolderUiController {
             }, 150);
         });
         editRow.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
             const btn = e.target.closest('.cgfm-mini-btn');
             if (btn)
                 e.preventDefault();
         });
         editRow.addEventListener('click', (e) => {
+            e.stopPropagation();
             const btn = e.target.closest('.cgfm-mini-btn');
             if (!btn)
                 return;
-            e.stopPropagation();
             if (btn.dataset.act === 'save')
                 finish(true);
             if (btn.dataset.act === 'cancel')
@@ -2562,15 +2567,16 @@ class FolderUiController {
             }, 150);
         });
         editWrap.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
             const btn = e.target.closest('.cgfm-mini-btn');
             if (btn)
                 e.preventDefault();
         });
         editWrap.addEventListener('click', (e) => {
+            e.stopPropagation();
             const btn = e.target.closest('.cgfm-mini-btn');
             if (!btn)
                 return;
-            e.stopPropagation();
             if (btn.dataset.act === 'save')
                 finish(true);
             if (btn.dataset.act === 'cancel')
@@ -2659,15 +2665,16 @@ class FolderUiController {
             }, 150);
         });
         editWrap.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
             const btn = e.target.closest('.cgfm-mini-btn');
             if (btn)
                 e.preventDefault();
         });
         editWrap.addEventListener('click', (e) => {
+            e.stopPropagation();
             const btn = e.target.closest('.cgfm-mini-btn');
             if (!btn)
                 return;
-            e.stopPropagation();
             if (btn.dataset.act === 'save')
                 finish(true);
             if (btn.dataset.act === 'cancel')
@@ -3208,7 +3215,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.15
+// @version      2.0.16
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
