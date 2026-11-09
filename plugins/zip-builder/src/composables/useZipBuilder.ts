@@ -9,7 +9,7 @@ export function useZipBuilder(){
 
 type Node=Entry&{expanded:boolean;loaded:boolean;busy:boolean;children:Node[];error:string};
 
-type Dialog='rules'|'save'|'delete'|'overwrite'|'clear'|null;
+type Dialog='rules'|'delete'|'overwrite'|'clear'|null;
 
 const nodes=ref<Node[]>([]),overrides=ref<Override[]>([]);
 const presets=ref<Preset[]>([]),currentPreset=ref(''),lastUsed=ref<Record<string,string>>({});
@@ -17,10 +17,10 @@ const focusedRoot=ref(''),favorites=ref<string[]>([]);
 const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
 const filename=ref(''),filenameEdited=ref(false),outputDirectory=ref(''),outputPath=ref('');
 const rules=reactive<RuleSettings>({enabled:true,names:['.git','node_modules','__pycache__','.venv','.cache']});
-const newRule=ref(''),dialog=ref<Dialog>(null),presetName=ref('');
+const newRule=ref(''),dialog=ref<Dialog>(null);
 const menu=ref<'presets'|'favorites'|'more'|null>(null),message=ref(''),error=ref('');
 const favoriteSearch=ref(''),presetActions=ref(''),targetPreset=ref('');
-const busy=ref(false),progress=ref<Progress|null>(null),destination=ref(''),overwriteConfirmed=ref(false),saveAsNew=ref(false);
+const busy=ref(false),progress=ref<Progress|null>(null),destination=ref(''),overwriteConfirmed=ref(false);
 const api=window.zipBuilderApi;
 // Only a completed scan is a final result. A pending scan reports a lower bound.
 const preview=ref<PreviewProgress|null>(null);
@@ -172,26 +172,27 @@ async function expand(n:Node){
 const visible=computed(()=>{const out:{node:Node;depth:number}[]=[];const visit=(n:Node,depth:number)=>{out.push({node:n,depth});if(n.expanded)for(const child of n.children)visit(child,depth+1);};for(const n of nodes.value)visit(n,0);return out;});
 function addRule(){const name=newRule.value.trim();if(!name)return;if(name.includes('/')||name.includes('\\')||name==='.'||name==='..'){error.value='排除规则只能是文件夹或文件名称';return;}if(!rules.names.some(n=>n.toLowerCase()===name.toLowerCase()))rules.names.push(name);newRule.value='';persist();}
 function deleteRule(index:number){rules.names.splice(index,1);persist();}
-function openSave(asNew=false){if(!focusNode.value)return;menu.value=null;saveAsNew.value=asNew;presetName.value=asNew?'':activePreset.value?.name||'';dialog.value='save';}
-function savePreset(){
-  const name=presetName.value.trim();if(!name||!focusNode.value)return;
-  let id=saveAsNew.value?'':currentPreset.value;
-  if(!id){id=presetId();presets.value.push(snapshot(id,name));}
-  else {const index=presets.value.findIndex(p=>p.id===id);if(index>=0)presets.value.splice(index,1,snapshot(id,name));else presets.value.push(snapshot(id,name));}
-  currentPreset.value=id;lastUsed.value[currentKey.value]=id;saveAsNew.value=false;persist();dialog.value=null;message.value=`方案「${name}」已保存`;
+function saveCurrentPreset(){
+  if(working.value||!focusNode.value||!currentPreset.value)return;
+  const current=activePreset.value;
+  if(!current)return;
+  const index=presets.value.findIndex(p=>p.id===current.id);
+  if(index<0)return;
+  presets.value.splice(index,1,snapshot(current.id,current.name));
+  lastUsed.value[currentKey.value]=current.id;
+  persist();message.value=`方案「${current.name}」已保存`;
 }
 function createPresetInline(rawName:string):string|null{
-  if(working.value||!focusNode.value)return '请先选择文件夹';
+  if(working.value||!focusNode.value)return '请先选择来源文件夹';
   const name=rawName.trim();
   if(!name)return '方案名称不能为空';
   if(name.length>80)return '方案名称不能超过 80 个字符';
-  if(availablePresets.value.some(item=>item.name===name))return '方案名称已存在';
+  if(availablePresets.value.some(p=>p.name===name))return '方案名称已存在';
   const id=presetId();
   presets.value.push(snapshot(id,name));
   currentPreset.value=id;
   lastUsed.value[currentKey.value]=id;
-  persist();
-  message.value=`方案「${name}」已保存`;
+  persist();message.value=`方案「${name}」已创建`;
   return null;
 }
 function selectPreset(p:Preset){menu.value=null;presetActions.value='';if(working.value)return;applyPreset(p);}
@@ -286,7 +287,7 @@ function schedulePreview(){
 watch([selectionSignature,busy],schedulePreview);
 const percentage=computed(()=>!progress.value||progress.value.phase!=='writing'||!progress.value.totalBytes?0:Math.min(100,Math.round(progress.value.bytes/progress.value.totalBytes*100)));
 function formatSize(bytes:number){if(bytes<1024)return bytes+' B';if(bytes<1048576)return (bytes/1024).toFixed(1)+' KB';if(bytes<1073741824)return (bytes/1048576).toFixed(1)+' MB';return (bytes/1073741824).toFixed(2)+' GB';}
-function onKey(e:KeyboardEvent){if(e.key==='Escape'){if(dialog.value){dialog.value=null;e.preventDefault();}else if(presetActions.value){presetActions.value='';e.preventDefault();}else if(menu.value){menu.value=null;e.preventDefault();}return;}if(e.key==='Enter'&&dialog.value==='save')savePreset();}
+function onKey(e:KeyboardEvent){if(e.key==='Escape'){if(dialog.value){dialog.value=null;e.preventDefault();}else if(presetActions.value){presetActions.value='';e.preventDefault();}else if(menu.value){menu.value=null;e.preventDefault();}return;}}
 function outsideMenu(e:MouseEvent){if(menu.value&&!(e.target as Element).closest('.menu-anchor')){menu.value=null;presetActions.value='';}}
 function menuKeyboard(e:KeyboardEvent){if((e.target as HTMLElement).matches('input'))return;if(e.key!=='ArrowDown'&&e.key!=='ArrowUp')return;const host=(e.currentTarget as HTMLElement).closest('.menu-anchor');const entries=Array.from(host?.querySelectorAll<HTMLButtonElement>('.popup-menu button:not(:disabled)')||[]);if(!entries.length)return;const index=entries.indexOf(document.activeElement as HTMLButtonElement);const next=e.key==='ArrowDown'?(index+1)%entries.length:(index<=0?entries.length-1:index-1);entries[next].focus();e.preventDefault();}
 function toggleMenu(which:'presets'|'favorites'|'more'){menu.value=menu.value===which?null:which;presetActions.value='';if(which==='favorites')favoriteSearch.value='';}
@@ -294,7 +295,7 @@ onMounted(()=>{initialize();hideHostInput();window.ztools?.onPluginEnter?.(()=>h
 onUnmounted(()=>{if(previewTimer)clearTimeout(previewTimer);previewGeneration++;api.cancelPreview();window.removeEventListener('keydown',onKey);document.removeEventListener('pointerdown',outsideMenu);});
 
 return {
-nodes,overrides,presets,currentPreset,lastUsed,focusedRoot,favorites,filename,filenameEdited,outputDirectory,outputPath,rules,newRule,dialog,presetName,menu,message,error,favoriteSearch,presetActions,targetPreset,busy,progress,dirty,destination,overwriteConfirmed,saveAsNew,preview,previewState,previewError,roots,working,activePreset,focusNode,availablePresets,sortedFavorites,filteredFavorites,favoriteCurrent,currentKey,joinOutput,syncOutputPath,updateOutputPath,defaultZipName,presetId,persist,initialize,node,labelFor,rootFor,chosen,partSelected,checkState,setChecked,fileKind,fileIcon,updateFilename,updateAutoFilename,snapshot,scopedOverrides,modifiedForFocus,focusSource,applyPreset,autoMatch,addFavorite,removeFavorite,chooseFavorite,chooseSources,removeRoot,expand,visible,addRule,deleteRule,openSave,savePreset,selectPreset,createPresetInline,renamePresetInline,askDeletePreset,targetPresetData,removePreset,resetSelection,hasUnsavedPresetChanges,clearSources,confirmClearSources,chooseOutputDirectory,zipFilename,archive,startArchive,confirmOverwrite,cancel,selectionSignature,schedulePreview,percentage,formatSize,onKey,outsideMenu,menuKeyboard,toggleMenu,normalize
+nodes,overrides,presets,currentPreset,lastUsed,focusedRoot,favorites,filename,filenameEdited,outputDirectory,outputPath,rules,newRule,dialog,menu,message,error,favoriteSearch,presetActions,targetPreset,busy,progress,dirty,destination,overwriteConfirmed,preview,previewState,previewError,roots,working,activePreset,focusNode,availablePresets,sortedFavorites,filteredFavorites,favoriteCurrent,currentKey,joinOutput,syncOutputPath,updateOutputPath,defaultZipName,presetId,persist,initialize,node,labelFor,rootFor,chosen,partSelected,checkState,setChecked,fileKind,fileIcon,updateFilename,updateAutoFilename,snapshot,scopedOverrides,modifiedForFocus,focusSource,applyPreset,autoMatch,addFavorite,removeFavorite,chooseFavorite,chooseSources,removeRoot,expand,visible,addRule,deleteRule,saveCurrentPreset,createPresetInline,selectPreset,renamePresetInline,askDeletePreset,targetPresetData,removePreset,resetSelection,hasUnsavedPresetChanges,clearSources,confirmClearSources,chooseOutputDirectory,zipFilename,archive,startArchive,confirmOverwrite,cancel,selectionSignature,schedulePreview,percentage,formatSize,onKey,outsideMenu,menuKeyboard,toggleMenu,normalize
 };
 }
 
