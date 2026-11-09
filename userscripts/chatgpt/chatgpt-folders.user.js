@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.16
+// @version      2.0.17
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
@@ -2300,7 +2300,8 @@ class FolderUiController {
                             if (btn) {
                                 e.stopPropagation();
                                 if (btn.dataset.act === 'edit') {
-                                    this.startInlineRenameChat(chatRow, c.id, c.title);
+                                    const liveTitle = chatRow.querySelector('.cgfm-title')?.textContent?.trim() || c.title;
+                                    this.startInlineRenameChat(chatRow, c.id, liveTitle);
                                 }
                                 else if (btn.dataset.act === 'remove') {
                                     this.handleRemoveChat(c.id);
@@ -2400,7 +2401,8 @@ class FolderUiController {
                 const btn = target.closest('.cgfm-mini-btn');
                 if (btn?.dataset.act === 'edit') {
                     e.stopPropagation();
-                    this.startInlineRenameChat(row, id, title);
+                    const liveTitle = row.querySelector('.cgfm-title')?.textContent?.trim() || title;
+                    this.startInlineRenameChat(row, id, liveTitle);
                     return;
                 }
                 window.location.href = `https://chatgpt.com/c/${id}`;
@@ -2517,12 +2519,14 @@ class FolderUiController {
     /**
      * 行内重命名文件夹 (绝不弹 window.prompt，直接就地编辑)
      */
-    startInlineRenameFolder(row, folderId, currentName) {
+    startInlineRenameFolder(row, folderId, defaultName) {
         this.isEditing = true;
         const titleEl = row.querySelector('.cgfm-title');
         const actionsEl = row.querySelector('.cgfm-row-actions');
         if (!titleEl || !actionsEl)
             return;
+        // 动态优先从 DOM 中读取当前正在展示的实时名称，杜绝闭包陈旧变量
+        const currentName = titleEl.textContent?.trim() || defaultName || '';
         titleEl.style.display = 'none';
         actionsEl.style.display = 'none';
         const editWrap = document.createElement('div');
@@ -2589,12 +2593,14 @@ class FolderUiController {
     /**
      * 行内重命名对话
      */
-    startInlineRenameChat(row, chatId, currentTitle) {
+    startInlineRenameChat(row, chatId, defaultTitle) {
         this.isEditing = true;
         const titleEl = row.querySelector('.cgfm-title');
         const actionsEl = row.querySelector('.cgfm-row-actions');
         if (!titleEl || !actionsEl)
             return;
+        // 动态优先从 DOM 中读取当前正在展示的实时标题，杜绝闭包陈旧变量
+        const currentTitle = titleEl.textContent?.trim() || defaultTitle || '';
         titleEl.style.display = 'none';
         actionsEl.style.display = 'none';
         const editWrap = document.createElement('div');
@@ -3215,7 +3221,7 @@ exports.FolderUiController = FolderUiController;
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-folders.user.js
-// @version      2.0.16
+// @version      2.0.17
 // @description  ChatGPT 多级文件夹管理与 WebDAV 跨设备同步（TypeScript 全新重写版）
 // @author       Euphoria
 // @match        https://chatgpt.com/*
