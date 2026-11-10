@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.2
+// @version      0.4.3
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -13,7 +13,6 @@
 // @match        *://chatgpt.com/
 // @match        *://chatgpt.com/*
 // @run-at       document-start
-// @sandbox      raw
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        unsafeWindow
@@ -161,6 +160,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeCacheEntry = normalizeCacheEntry;
+exports.parseStoredEntries = parseStoredEntries;
+exports.mergeEntries = mergeEntries;
 exports.loadRoundCountCache = loadRoundCountCache;
 exports.saveRoundCountCache = saveRoundCountCache;
 exports.getCachedRoundCount = getCachedRoundCount;
@@ -190,44 +191,95 @@ function normalizeCacheEntry(entry) {
         updatedAt,
     };
 }
+function parseStoredEntries(stored) {
+    if (!stored || typeof stored !== 'object') {
+        return {};
+    }
+    const container = stored;
+    const sourceEntries = container.entries && typeof container.entries === 'object'
+        ? container.entries
+        : container;
+    const entries = {};
+    for (const [conversationId, rawEntry] of Object.entries(sourceEntries)) {
+        if (typeof conversationId !== 'string' || !conversationId) {
+            continue;
+        }
+        const entry = normalizeCacheEntry(rawEntry);
+        if (entry) {
+            entries[conversationId] = entry;
+        }
+    }
+    return entries;
+}
+function mergeEntries(primary, secondary) {
+    const merged = { ...primary };
+    for (const [id, secEntry] of Object.entries(secondary)) {
+        const primEntry = merged[id];
+        if (!primEntry) {
+            merged[id] = secEntry;
+        }
+        else {
+            const maxRounds = Math.max(primEntry.maxRounds, secEntry.maxRounds);
+            merged[id] = {
+                totalRounds: maxRounds,
+                maxRounds,
+                updatedAt: Math.max(primEntry.updatedAt, secEntry.updatedAt),
+            };
+        }
+    }
+    return merged;
+}
 function loadRoundCountCache() {
+    let gmEntries = {};
+    let localEntries = {};
+    // 1. 从 GM 扩展存储加载（跨标签页、跨会话长期持久化）
     try {
-        if (typeof GM_getValue !== 'function') {
-            return { version: 2, entries: {} };
+        if (typeof GM_getValue === 'function') {
+            const stored = GM_getValue(constants_1.ROUND_COUNT_CACHE_KEY, { version: 2, entries: {} });
+            gmEntries = parseStoredEntries(stored);
         }
-        const stored = GM_getValue(constants_1.ROUND_COUNT_CACHE_KEY, { version: 2, entries: {} });
-        const sourceEntries = stored?.entries && typeof stored.entries === 'object'
-            ? stored.entries
-            : {};
-        const entries = {};
-        for (const [conversationId, rawEntry] of Object.entries(sourceEntries)) {
-            if (typeof conversationId !== 'string' || !conversationId) {
-                continue;
-            }
-            const entry = normalizeCacheEntry(rawEntry);
-            if (entry) {
-                entries[conversationId] = entry;
-            }
-        }
-        return { version: 2, entries };
     }
     catch {
-        return { version: 2, entries: {} };
+        // GM 存储读取异常时保持静默降级
     }
+    // 2. 从 localStorage 加载（F5 刷新在 document-start 时 0 延迟立即可用）
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const raw = localStorage.getItem(constants_1.ROUND_COUNT_CACHE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                localEntries = parseStoredEntries(parsed);
+            }
+        }
+    }
+    catch {
+        // localStorage 读取异常时保持静默降级
+    }
+    const mergedEntries = mergeEntries(gmEntries, localEntries);
+    return { version: 2, entries: mergedEntries };
 }
 function saveRoundCountCache(cache) {
+    const entries = Object.entries(cache.entries)
+        .sort((a, b) => (b[1]?.updatedAt ?? 0) - (a[1]?.updatedAt ?? 0))
+        .slice(0, constants_1.MAX_ROUND_COUNT_CACHE_ENTRIES);
+    cache.entries = Object.fromEntries(entries);
+    // 1. 写入 GM 存储
     try {
-        if (typeof GM_setValue !== 'function') {
-            return;
+        if (typeof GM_setValue === 'function') {
+            GM_setValue(constants_1.ROUND_COUNT_CACHE_KEY, cache);
         }
-        const entries = Object.entries(cache.entries)
-            .sort((a, b) => (b[1]?.updatedAt ?? 0) - (a[1]?.updatedAt ?? 0))
-            .slice(0, constants_1.MAX_ROUND_COUNT_CACHE_ENTRIES);
-        cache.entries = Object.fromEntries(entries);
-        GM_setValue(constants_1.ROUND_COUNT_CACHE_KEY, cache);
     }
     catch {
-        // Tampermonkey 存储不可用时仍允许当前页面继续计数。
+        // Tampermonkey 存储不可用时仍允许当前页面继续计数
+    }
+    // 2. 双写到 localStorage，保证 F5 刷新在 document-start 的 0 毫秒同步可用
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(constants_1.ROUND_COUNT_CACHE_KEY, JSON.stringify(cache));
+        }
+    }
+    catch {
+        // localStorage 配额超出或不可用时保持静默
     }
 }
 function getCachedRoundCount(cache, conversationId) {
@@ -1240,7 +1292,7 @@ function patchHistoryForSpaNavigation(pageWindow, onNavigate) {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.2
+// @version      0.4.3
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -1248,7 +1300,6 @@ function patchHistoryForSpaNavigation(pageWindow, onNavigate) {
 // @match        *://chatgpt.com/
 // @match        *://chatgpt.com/*
 // @run-at       document-start
-// @sandbox      raw
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        unsafeWindow
