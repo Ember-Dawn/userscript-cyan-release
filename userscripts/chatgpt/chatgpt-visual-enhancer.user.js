@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-visual-enhancer.user.js
-// @version      0.4.0
+// @version      0.4.1
 // @description  柔化 ChatGPT 白天模式，放宽对话正文，高亮文件下载入口，并为临时对话输入框提供青色视觉提示。
 // @author       Penghao
 // @match        https://chatgpt.com/*
@@ -17,7 +17,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.4.0';
+    const VERSION = '0.4.1';
     const STYLE_ID = 'cg-visual-enhancer-style';
     const TEMPORARY_CHAT_ATTRIBUTE = 'data-cg-temporary-chat';
     const LOCATION_CHANGE_EVENT = 'cg-visual-enhancer-location-change';
@@ -35,26 +35,29 @@
 
     const css = `
 /* 白天模式：主界面与侧边栏统一为中性浅灰，输入框稍亮以保留层次。 */
-html:not(.dark) {
+html:not(.dark):not([data-theme="dark"]) {
     --main-surface-primary: #f4f4f2 !important;
     --sidebar-surface-primary: #f4f4f2 !important;
     --composer-surface-primary: #fafaf9 !important;
 }
 
-html:not(.dark),
-html:not(.dark) body,
-html:not(.dark) main[class*="MainContentSurface-"],
-html:not(.dark) [class*="FullHeightPageSurfaceLayout-"] {
+html:not(.dark):not([data-theme="dark"]),
+html:not(.dark):not([data-theme="dark"]) body,
+html:not(.dark):not([data-theme="dark"]) main[data-app-shell-main-surface],
+html:not(.dark):not([data-theme="dark"]) [data-app-shell-frame="true"],
+html:not(.dark):not([data-theme="dark"]) main[class*="MainContentSurface-"],
+html:not(.dark):not([data-theme="dark"]) [class*="FullHeightPageSurfaceLayout-"] {
     background-color: #f4f4f2 !important;
 }
 
-/* 浅色模式：修正页面布局直系容器的底部背景伪元素，保留其原有遮罩与布局。 */
-html:not(.dark) [class*="FullHeightPageSurfaceLayout-"] > div.relative.flex::before {
+/* 浅色模式：修正工作区与页面布局直系容器的背景伪元素，保留其原有遮罩与布局。 */
+html:not(.dark):not([data-theme="dark"]) [data-app-shell-workspace="true"]::before,
+html:not(.dark):not([data-theme="dark"]) [class*="FullHeightPageSurfaceLayout-"] > div.relative.flex::before {
     background-color: #f4f4f2 !important;
 }
 
 /* 浅色模式：底部 Footer 的独立背景层与对话正文统一，不修改 Composer 本体。 */
-html:not(.dark) [data-thread-scroll-footer="true"] > [aria-hidden="true"].bg-surface {
+html:not(.dark):not([data-theme="dark"]) [data-thread-scroll-footer="true"] > [aria-hidden="true"].bg-surface {
     background-color: #f4f4f2 !important;
 }
 
