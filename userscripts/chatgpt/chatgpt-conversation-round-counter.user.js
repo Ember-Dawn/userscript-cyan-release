@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.3
+// @version      0.4.4
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -620,6 +620,9 @@ exports.extractConversationIdFromHref = extractConversationIdFromHref;
 exports.isVisibleElement = isVisibleElement;
 exports.extractTitleFromAnchor = extractTitleFromAnchor;
 exports.findNativeConversationTitle = findNativeConversationTitle;
+exports.setCachedConversationTitle = setCachedConversationTitle;
+exports.getCachedConversationTitle = getCachedConversationTitle;
+exports.clearConversationTitleCache = clearConversationTitleCache;
 exports.getCurrentConversationTitle = getCurrentConversationTitle;
 const id_1 = require("./id");
 function normalizeText(text) {
@@ -702,6 +705,23 @@ function findNativeConversationTitle(conversationId, pageWindow) {
     const anchor = matches.find((el) => isVisibleElement(el, pageWindow)) || matches[0];
     return extractTitleFromAnchor(anchor);
 }
+const conversationTitleCache = new Map();
+function setCachedConversationTitle(conversationId, title) {
+    if (!conversationId || typeof conversationId !== 'string')
+        return;
+    const cleaned = cleanConversationTitle(title);
+    if (cleaned && !/^ChatGPT$/i.test(cleaned) && cleaned !== '加载中…' && cleaned !== '新对话' && cleaned !== '临时对话') {
+        conversationTitleCache.set(conversationId, cleaned);
+    }
+}
+function getCachedConversationTitle(conversationId) {
+    if (!conversationId || typeof conversationId !== 'string')
+        return null;
+    return conversationTitleCache.get(conversationId) || null;
+}
+function clearConversationTitleCache() {
+    conversationTitleCache.clear();
+}
 function getCurrentConversationTitle(conversationId, documentTitleTrusted, docTitle, urlHref, pageWindow) {
     if (isTemporaryChat(urlHref)) {
         return '临时对话';
@@ -709,13 +729,33 @@ function getCurrentConversationTitle(conversationId, documentTitleTrusted, docTi
     if (!conversationId || (0, id_1.isLocalConversationId)(conversationId)) {
         return '新对话';
     }
+    // 1. 若当前 document.title 受信且为有效对话标题，优先更新缓存并返回
     if (documentTitleTrusted) {
         const pageTitle = cleanDocumentConversationTitle(docTitle || '');
         if (pageTitle && !/^ChatGPT$/i.test(pageTitle)) {
+            setCachedConversationTitle(conversationId, pageTitle);
             return pageTitle;
         }
     }
-    return findNativeConversationTitle(conversationId, pageWindow) || '加载中…';
+    // 2. 尝试从侧边栏匹配当前会话链接文本
+    const nativeTitle = findNativeConversationTitle(conversationId, pageWindow);
+    if (nativeTitle && !/^ChatGPT$/i.test(nativeTitle)) {
+        setCachedConversationTitle(conversationId, nativeTitle);
+        return nativeTitle;
+    }
+    // 3. Sticky 保护：若当前会话已有确认过的有效标题记忆，坚决不回退到“加载中…”
+    const cachedTitle = getCachedConversationTitle(conversationId);
+    if (cachedTitle) {
+        return cachedTitle;
+    }
+    // 4. 容错尝试：若尚无任何记忆，即使 documentTitleTrusted 尚未就绪，
+    // 只要 document.title 本身已经有具体对话名（不是单纯的 "ChatGPT"），也优先使用
+    const fallbackDocTitle = cleanDocumentConversationTitle(docTitle || '');
+    if (fallbackDocTitle && !/^ChatGPT$/i.test(fallbackDocTitle)) {
+        setCachedConversationTitle(conversationId, fallbackDocTitle);
+        return fallbackDocTitle;
+    }
+    return '加载中…';
 }
 
 },
@@ -725,6 +765,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getRequestMeta = getRequestMeta;
 exports.isBatchRequest = isBatchRequest;
 exports.getConversationMessagesRequestId = getConversationMessagesRequestId;
+exports.getConversationRenameRequestId = getConversationRenameRequestId;
+exports.extractTitleFromRequestBody = extractTitleFromRequestBody;
 exports.isJsonResponse = isJsonResponse;
 exports.getNodeRole = getNodeRole;
 exports.getNodeMessageId = getNodeMessageId;
@@ -766,6 +808,28 @@ function getConversationMessagesRequestId(method, url) {
     }
     const match = url.pathname.match(/^\/backend-api\/conversations\/([^/]+)$/);
     return match?.[1] ?? null;
+}
+function getConversationRenameRequestId(method, url) {
+    if (method !== 'PATCH' && method !== 'POST') {
+        return null;
+    }
+    const match = url.pathname.match(/^\/backend-api\/conversation\/([^/]+)(?:\/title)?$/);
+    return match?.[1] ?? null;
+}
+function extractTitleFromRequestBody(init) {
+    if (!init || !init.body || typeof init.body !== 'string') {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(init.body);
+        if (parsed && typeof parsed.title === 'string' && parsed.title.trim()) {
+            return parsed.title.trim();
+        }
+    }
+    catch {
+        // ignore JSON parse error
+    }
+    return null;
 }
 function isJsonResponse(response) {
     const contentType = response.headers.get('content-type') || '';
@@ -822,10 +886,15 @@ async function handleConversationMessagesResponse(response, conversationId, hand
     }
     try {
         const data = (await response.clone().json());
-        if (!data || typeof data !== 'object' || !Array.isArray(data.messages)) {
+        if (!data || typeof data !== 'object') {
             return response;
         }
-        handlers.onMessagesFallback(conversationId, getMessagesUserMessageIds(data.messages));
+        if (typeof data.title === 'string' && data.title.trim()) {
+            handlers.onTitleResolved?.(conversationId, data.title.trim());
+        }
+        if (Array.isArray(data.messages)) {
+            handlers.onMessagesFallback(conversationId, getMessagesUserMessageIds(data.messages));
+        }
     }
     catch (error) {
         handlers.onError('conversation messages response handling failed', error);
@@ -845,6 +914,9 @@ async function handleBatchResponse(response, requestStartedAt, handlers) {
             const conversationId = conversation?.id;
             if (!(0, id_1.isStableConversationId)(conversationId)) {
                 continue;
+            }
+            if (typeof conversation?.title === 'string' && conversation.title.trim()) {
+                handlers.onTitleResolved?.(conversationId, conversation.title.trim());
             }
             const mapping = conversation?.mapping;
             if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) {
@@ -873,8 +945,15 @@ function patchFetch(pageWindow, handlers) {
         }
         const batchRequest = isBatchRequest(meta.method, meta.url);
         const conversationMessagesId = getConversationMessagesRequestId(meta.method, meta.url);
-        if (!batchRequest && !conversationMessagesId) {
+        const renameConversationId = getConversationRenameRequestId(meta.method, meta.url);
+        if (!batchRequest && !conversationMessagesId && !renameConversationId) {
             return nativeFetch(...args);
+        }
+        if (renameConversationId) {
+            const requestTitle = extractTitleFromRequestBody(args[1]);
+            if (requestTitle) {
+                handlers.onTitleResolved?.(renameConversationId, requestTitle);
+            }
         }
         const requestStartedAt = Date.now();
         const response = await nativeFetch(...args);
@@ -883,6 +962,17 @@ function patchFetch(pageWindow, handlers) {
         }
         if (conversationMessagesId) {
             return handleConversationMessagesResponse(response, conversationMessagesId, handlers);
+        }
+        if (renameConversationId && isJsonResponse(response)) {
+            try {
+                const data = (await response.clone().json());
+                if (data && typeof data.title === 'string' && data.title.trim()) {
+                    handlers.onTitleResolved?.(renameConversationId, data.title.trim());
+                }
+            }
+            catch {
+                // ignore clone/parse errors
+            }
         }
         return response;
     };
@@ -1292,7 +1382,7 @@ function patchHistoryForSpaNavigation(pageWindow, onNavigate) {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/chatgpt/chatgpt-conversation-round-counter.user.js
-// @version      0.4.3
+// @version      0.4.4
 // @description  被动读取 ChatGPT 自身 conversation mapping，统计并缓存当前对话的累计用户消息节点数，并在 Composer 上沿显示当前对话名称。
 // @author       Ember-Dawn
 // @match        *://chat.openai.com/
@@ -1353,6 +1443,8 @@ function isTitleMutation(mutation) {
         return true;
     if (target?.parentElement?.tagName === 'TITLE')
         return true;
+    if (mutation.type === 'characterData' && target?.parentElement?.tagName === 'TITLE')
+        return true;
     return Array.from(mutation.addedNodes || []).some((node) => node instanceof Element && (node.tagName === 'TITLE' || Boolean(node.querySelector?.('title'))));
 }
 function installLocalMessageObserver() {
@@ -1368,11 +1460,18 @@ function installLocalMessageObserver() {
             }
         }
         if (titleChanged) {
-            documentTitleTrusted = true;
+            const pageTitle = (0, title_1.cleanDocumentConversationTitle)(document.title || '');
+            if (pageTitle && !/^ChatGPT$/i.test(pageTitle)) {
+                documentTitleTrusted = true;
+            }
             ui.renderTitle();
         }
     });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+    });
 }
 function handleNavigation() {
     const previousConversationId = state.currentConversationId;
@@ -1436,6 +1535,13 @@ function initializeDomFeatures() {
     },
     onMessagesFallback(conversationId, userIds) {
         (0, state_1.applyMessagesFallback)(state, roundCountCache, conversationId, userIds, (0, id_1.extractConversationPageId)(pageWindow.location.pathname), dom_scanner_1.getVisibleUserMessageIds, seedVisibleUserMessageIds, () => ui.render());
+    },
+    onTitleResolved(conversationId, title) {
+        (0, title_1.setCachedConversationTitle)(conversationId, title);
+        if (conversationId === state.currentConversationId) {
+            documentTitleTrusted = true;
+            ui.renderTitle();
+        }
     },
     onError(message, error) {
         console.error(`${constants_1.DIAGNOSTIC_PREFIX} ${message}`, error);
