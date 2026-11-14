@@ -5,16 +5,18 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-fix.user.js
 // @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-fix.user.js
-// @version      0.1.0
-// @description  修复 NocoDB LongText Rich Text 块级图片后的标题、代码块及连续图片在保存时被错误拼接的问题。
+// @version      0.2.0
+// @description  修复 NocoDB LongText Rich Text 块级图片后的块拼接，以及空行后首个列表项/标题前导空格导致的嵌套列表缩进丢失问题。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
 
 /*
- * 只修复 NocoDB Rich Text 的块级 image Markdown 序列化规则。
- * 不改动编辑器文档、DOM 正文、selection、网络请求或数据库内容。
+ * 修复 NocoDB Rich Text 的 Markdown 序列化规则：
+ * 1. 块级 image 序列化后闭合当前块，避免紧随其后的标题、代码块被错误拼接；
+ * 2. 清理空行/<br>后意外泄漏的前导空格，避免首个列表项因缩进基准偏移导致嵌套子列表在重新打开时被平铺。
+ * 不改动编辑器文档、DOM 正文、selection、网络请求或数据库结构。
  * 每个 Tiptap 实例分别安装；关闭面板后不持有旧实例的强引用。
  * 详细原理、兼容性边界与回归测试见同名 .md 文件。
  */
@@ -32,6 +34,30 @@ function nocodbRichtextMarkdownFixPageMain() {
   const pending = new WeakSet();
   let installedCount = 0;
   let skippedCount = 0;
+
+  // 规范化序列化产物：修复空行/<br>后意外泄漏的前导空格，保护嵌套列表不被 CommonMark 误判为顶层项
+  function normalizeMarkdownWhitespace(markdown) {
+    if (typeof markdown !== 'string' || !markdown) return markdown;
+
+    // 保护围栏代码块（``` ... ```），避免误伤代码块内部的排版空格
+    const codeBlocks = [];
+    const protectedMarkdown = markdown.replace(/(^|\n)```[\s\S]*?(?:\n```|$)/g, (match) => {
+      const token = `\u0000TM_CODE_BLOCK_${codeBlocks.length}\u0000`;
+      codeBlocks.push(match);
+      return token;
+    });
+
+    // 清理块级元素（标题、列表项、<br>）前由空行泄漏的前导空格
+    let normalized = protectedMarkdown.replace(/\n\n[ \t]+(?=(?:#{1,6}\s|\d+\.\s|[-*+]\s|<br>))/g, '\n\n');
+    normalized = normalized.replace(/^[ \t]+(?=(?:#{1,6}\s|\d+\.\s|[-*+]\s|<br>))/, '');
+
+    // 还原代码块
+    if (codeBlocks.length > 0) {
+      normalized = normalized.replace(/\u0000TM_CODE_BLOCK_(\d+)\u0000/g, (_, index) => codeBlocks[Number(index)] || '');
+    }
+
+    return normalized;
+  }
 
   // 返回 done / retry；所有不兼容状态均停止修改，不尝试文本替换。
   function install(root) {
@@ -98,6 +124,14 @@ function nocodbRichtextMarkdownFixPageMain() {
           };
         },
       });
+
+      const originalSerialize = serializer.serialize;
+      if (typeof originalSerialize === 'function') {
+        serializer.serialize = function (content, options) {
+          const result = originalSerialize.call(this, content, options);
+          return normalizeMarkdownWhitespace(result);
+        };
+      }
     } catch (_) {
       skippedCount += 1;
       return 'done';
