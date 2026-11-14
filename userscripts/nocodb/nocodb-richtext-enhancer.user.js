@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.5
+// @version      0.1.6
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -643,7 +643,14 @@ function initCodeTools() {
             anchor.href = objectUrl;
             anchor.download = 'nocodb-code-block.txt';
             anchor.style.display = 'none';
-            document.body.appendChild(anchor);
+            // Keep the synthetic click inside the editor overlay so NocoDB does not
+            // interpret it as a click outside the edit dialog.
+            toolbar.appendChild(anchor);
+            anchor.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (typeof event.stopImmediatePropagation === 'function')
+                    event.stopImmediatePropagation();
+            }, true);
             anchor.click();
             return true;
         }
@@ -740,9 +747,9 @@ function initCodeTools() {
             if (!isConfirmOpen())
                 scheduleHide(150);
         });
-        toolbar.appendChild(clearButton);
-        toolbar.appendChild(copyButton);
         toolbar.appendChild(downloadButton);
+        toolbar.appendChild(copyButton);
+        toolbar.appendChild(clearButton);
         return toolbar;
     }
     function createConfirmPanel() {
@@ -1769,7 +1776,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.5
+// @version      0.1.6
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
