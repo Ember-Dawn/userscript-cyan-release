@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.4
+// @version      0.1.5
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -297,6 +297,7 @@ function initCodeTools() {
     const TOOL_BUTTON_CLASS = 'tm-nocodb-code-tools-button';
     const CLEAR_BUTTON_CLASS = 'tm-nocodb-code-tools-clear';
     const COPY_BUTTON_CLASS = 'tm-nocodb-code-tools-copy';
+    const DOWNLOAD_BUTTON_CLASS = 'tm-nocodb-code-tools-download';
     const CONFIRM_CLASS = 'tm-nocodb-code-tools-confirm';
     let activePre = null;
     let activeContentRoot = null;
@@ -304,6 +305,7 @@ function initCodeTools() {
     let toolbar = null;
     let clearButton = null;
     let copyButton = null;
+    let downloadButton = null;
     let confirmPanel = null;
     let confirmTargetPre = null;
     let hideTimer = null;
@@ -375,6 +377,14 @@ function initCodeTools() {
       }
 
       .${COPY_BUTTON_CLASS}.tm-copy-failed {
+        color: #dc2626;
+      }
+
+      .${DOWNLOAD_BUTTON_CLASS}.tm-download-success {
+        color: #16a34a;
+      }
+
+      .${DOWNLOAD_BUTTON_CLASS}.tm-download-failed {
         color: #dc2626;
       }
 
@@ -607,6 +617,47 @@ function initCodeTools() {
             copyButton.setAttribute('title', '复制代码');
         }, 1200);
     }
+    function setDownloadButtonState(state) {
+        if (!downloadButton)
+            return;
+        downloadButton.classList.remove('tm-download-success', 'tm-download-failed');
+        if (state === 'success')
+            downloadButton.classList.add('tm-download-success');
+        if (state === 'failed')
+            downloadButton.classList.add('tm-download-failed');
+        downloadButton.setAttribute('title', state === 'success' ? '已开始下载' : state === 'empty' ? '代码块为空' : state === 'failed' ? '下载失败' : '下载为 TXT');
+        window.setTimeout(() => {
+            if (!downloadButton)
+                return;
+            downloadButton.classList.remove('tm-download-success', 'tm-download-failed');
+            downloadButton.setAttribute('title', '下载为 TXT');
+        }, 1500);
+    }
+    function downloadCodeText(text) {
+        let objectUrl = null;
+        let anchor = null;
+        try {
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            objectUrl = URL.createObjectURL(blob);
+            anchor = document.createElement('a');
+            anchor.href = objectUrl;
+            anchor.download = 'nocodb-code-block.txt';
+            anchor.style.display = 'none';
+            document.body.appendChild(anchor);
+            anchor.click();
+            return true;
+        }
+        catch (error) {
+            console.error('[NocoDB 代码块工具] download failed:', error);
+            return false;
+        }
+        finally {
+            if (anchor)
+                anchor.remove();
+            if (objectUrl)
+                window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        }
+    }
     function createToolbar() {
         if (toolbar && document.body.contains(toolbar))
             return toolbar;
@@ -632,9 +683,20 @@ function initCodeTools() {
         <path fill="currentColor" d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2m0 16H10V7h9z"></path>
       </svg>
     `;
+        downloadButton = document.createElement('button');
+        downloadButton.type = 'button';
+        downloadButton.className = `${TOOL_BUTTON_CLASS} ${DOWNLOAD_BUTTON_CLASS}`;
+        downloadButton.setAttribute('aria-label', '下载代码为 TXT');
+        downloadButton.setAttribute('title', '下载为 TXT');
+        downloadButton.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M5 20h14v-2H5v2ZM11 3v9.17L7.41 8.59 6 10l6 6 6-6-1.41-1.41L13 12.17V3h-2Z"></path>
+      </svg>
+    `;
         addProtectedControlEvents(toolbar);
         addProtectedControlEvents(clearButton);
         addProtectedControlEvents(copyButton);
+        addProtectedControlEvents(downloadButton);
         clearButton.addEventListener('click', (event) => {
             stopEvent(event);
             const targetPre = getBoundTargetPre();
@@ -658,6 +720,21 @@ function initCodeTools() {
             setCopyButtonState(ok);
             positionControls();
         }, true);
+        downloadButton.addEventListener('click', (event) => {
+            stopEvent(event);
+            const targetPre = getBoundTargetPre();
+            if (!targetPre) {
+                setDownloadButtonState('failed');
+                return;
+            }
+            const text = getCodeText(targetPre);
+            if (!text) {
+                setDownloadButtonState('empty');
+                return;
+            }
+            setDownloadButtonState(downloadCodeText(text) ? 'success' : 'failed');
+            positionControls();
+        }, true);
         toolbar.addEventListener('mouseenter', cancelHide);
         toolbar.addEventListener('mouseleave', () => {
             if (!isConfirmOpen())
@@ -665,6 +742,7 @@ function initCodeTools() {
         });
         toolbar.appendChild(clearButton);
         toolbar.appendChild(copyButton);
+        toolbar.appendChild(downloadButton);
         return toolbar;
     }
     function createConfirmPanel() {
@@ -777,6 +855,10 @@ function initCodeTools() {
         if (copyButton) {
             copyButton.classList.remove('tm-copy-success', 'tm-copy-failed');
             copyButton.setAttribute('title', '复制代码');
+        }
+        if (downloadButton) {
+            downloadButton.classList.remove('tm-download-success', 'tm-download-failed');
+            downloadButton.setAttribute('title', '下载为 TXT');
         }
         if (clearActive) {
             activePre = null;
@@ -1687,7 +1769,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.4
+// @version      0.1.5
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
