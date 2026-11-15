@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.7
+// @version      0.1.8
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -378,6 +378,11 @@ function initCodeTools() {
 
       .${COPY_BUTTON_CLASS}.tm-copy-failed {
         color: #dc2626;
+      }
+
+      .${DOWNLOAD_BUTTON_CLASS} svg {
+        width: 21px;
+        height: 21px;
       }
 
       .${DOWNLOAD_BUTTON_CLASS}.tm-download-success {
@@ -1776,7 +1781,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.7
+// @version      0.1.8
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
