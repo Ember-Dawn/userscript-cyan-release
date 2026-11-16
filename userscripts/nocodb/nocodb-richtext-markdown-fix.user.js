@@ -5,17 +5,17 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-fix.user.js
 // @downloadURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-fix.user.js
-// @version      0.2.0
-// @description  修复 NocoDB LongText Rich Text 块级图片后的块拼接，以及空行后首个列表项/标题前导空格导致的嵌套列表缩进丢失问题。
+// @version      0.2.1
+// @description  修复 NocoDB LongText Rich Text 块级图片拼接、空行后列表项前导空格导致嵌套丢失，以及代码块前导空格导致内部缩进被逐次削减的问题。
 // @match        https://nocodb.380782744.xyz/*
 // @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
 
 /*
- * 修复 NocoDB Rich Text 的 Markdown 序列化规则：
- * 1. 块级 image 序列化后闭合当前块，避免紧随其后的标题、代码块被错误拼接；
- * 2. 清理空行/<br>后意外泄漏的前导空格，避免首个列表项因缩进基准偏移导致嵌套子列表在重新打开时被平铺。
+ * 分层治理 NocoDB Rich Text 的 Markdown 序列化缺陷：
+ * 1. 结构层（AST 节点）：修复块级 image 序列化后闭合当前块，避免紧随其后的标题、代码块被错误拼接；
+ * 2. 格式层（产物过滤）：清洗空行/<br>后泄漏给代码围栏和块标记的前导空格，根除代码块吃缩进与嵌套列表平铺。
  * 不改动编辑器文档、DOM 正文、selection、网络请求或数据库结构。
  * 每个 Tiptap 实例分别安装；关闭面板后不持有旧实例的强引用。
  * 详细原理、兼容性边界与回归测试见同名 .md 文件。
@@ -35,28 +35,32 @@ function nocodbRichtextMarkdownFixPageMain() {
   let installedCount = 0;
   let skippedCount = 0;
 
-  // 规范化序列化产物：修复空行/<br>后意外泄漏的前导空格，保护嵌套列表不被 CommonMark 误判为顶层项
+  // 规范化序列化产物：清洗文首或换行（\n\n）后泄漏给代码围栏和块标记的前导空格
+  // 1. 修复代码围栏前意外泄漏的前导空格，确保 N = 0，避免 CommonMark 规则每次剥除代码内部缩进；
+  // 2. 修复列表项前意外泄漏的前导空格，确保列表首项顶格，保护嵌套子列表不被 CommonMark 误判平铺。
   function normalizeMarkdownWhitespace(markdown) {
     if (typeof markdown !== 'string' || !markdown) return markdown;
 
-    // 保护围栏代码块（``` ... ```），避免误伤代码块内部的排版空格
+    // 1. 修复开头的代码围栏前意外泄漏的前导空格（例如 "\n\n ```bash" -> "\n\n```bash"）
+    let normalized = markdown.replace(/(^|\n\n)[ \t]+(?=(?:```|~~~))/g, '$1');
+
+    // 2. 将代码块整体保护起来，避免后续清洗过程触及代码块内部的排版缩进或注释
     const codeBlocks = [];
-    const protectedMarkdown = markdown.replace(/(^|\n)```[\s\S]*?(?:\n```|$)/g, (match) => {
+    const protectedMarkdown = normalized.replace(/(^|\n)(?:```|~~~)[\s\S]*?(?:\n(?:```|~~~)|$)/g, (match) => {
       const token = `\u0000TM_CODE_BLOCK_${codeBlocks.length}\u0000`;
       codeBlocks.push(match);
       return token;
     });
 
-    // 清理块级元素（标题、列表项、<br>）前由空行泄漏的前导空格
-    let normalized = protectedMarkdown.replace(/\n\n[ \t]+(?=(?:#{1,6}\s|\d+\.\s|[-*+]\s|<br>))/g, '\n\n');
-    normalized = normalized.replace(/^[ \t]+(?=(?:#{1,6}\s|\d+\.\s|[-*+]\s|<br>))/, '');
+    // 3. 在代码块外部，清洗所有其它块标记（标题、列表项、引用、表格、<br>）前由空行泄漏的前导空格
+    let cleaned = protectedMarkdown.replace(/(^|\n\n)[ \t]+(?=(?:#{1,6}\s|\d+\.\s|[-*+]\s|>|\||<br>))/g, '$1');
 
-    // 还原代码块
+    // 4. 还原代码块
     if (codeBlocks.length > 0) {
-      normalized = normalized.replace(/\u0000TM_CODE_BLOCK_(\d+)\u0000/g, (_, index) => codeBlocks[Number(index)] || '');
+      cleaned = cleaned.replace(/\u0000TM_CODE_BLOCK_(\d+)\u0000/g, (_, index) => codeBlocks[Number(index)] || '');
     }
 
-    return normalized;
+    return cleaned;
   }
 
   // 返回 done / retry；所有不兼容状态均停止修改，不尝试文本替换。
