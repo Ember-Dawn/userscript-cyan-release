@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.3.0
+// @version      0.3.1
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
@@ -25,6 +25,7 @@ exports.CONFIG = {
     fallbackRootSelector: '.ant-modal-content .expanded-cell-input',
     contentWrapSelector: '.nc-rich-text-content',
     editorSelector: '.nc-rich-text-content .tiptap.ProseMirror',
+    sourceTextareaSelector: 'textarea.nc-rich-text-markdown-source',
     titleTextContainerSelector: '.flex.max-w-38, .max-w-38',
     headingSelector: 'h1, h2, h3, h4, h5, h6',
     panelWidth: 200,
@@ -98,6 +99,8 @@ exports.isVisible = isVisible;
 exports.getTitleBar = getTitleBar;
 exports.getTitleTextBox = getTitleTextBox;
 exports.isScrollableElement = isScrollableElement;
+exports.getSourceTextarea = getSourceTextarea;
+exports.isSourceModeActive = isSourceModeActive;
 exports.detectScrollContainer = detectScrollContainer;
 exports.clearScrollTimers = clearScrollTimers;
 exports.syncScrollContainer = syncScrollContainer;
@@ -158,7 +161,23 @@ function isScrollableElement(element) {
         return false;
     return element.scrollHeight - element.clientHeight > 2;
 }
-function detectScrollContainer(editor, contentWrap, root) {
+function getSourceTextarea(root) {
+    if (!(root instanceof HTMLElement))
+        return null;
+    const match = root.querySelector(constants_1.CONFIG.sourceTextareaSelector);
+    return match instanceof HTMLTextAreaElement ? match : null;
+}
+function isSourceModeActive(contentWrap, sourceTextarea) {
+    if (!(sourceTextarea instanceof HTMLTextAreaElement) || !sourceTextarea.isConnected)
+        return false;
+    if (isVisible(sourceTextarea))
+        return true;
+    return contentWrap instanceof HTMLElement ? !isVisible(contentWrap) : false;
+}
+function detectScrollContainer(editor, contentWrap, root, sourceTextarea = null) {
+    if (sourceTextarea instanceof HTMLTextAreaElement && isSourceModeActive(contentWrap, sourceTextarea)) {
+        return sourceTextarea;
+    }
     const candidates = [];
     const seen = new Set();
     if (editor instanceof HTMLElement)
@@ -197,7 +216,9 @@ function syncScrollContainer(state) {
     if (!(state.editor instanceof HTMLElement) || !(state.contentWrap instanceof HTMLElement) || !(state.root instanceof HTMLElement)) {
         return false;
     }
-    const next = detectScrollContainer(state.editor, state.contentWrap, state.root);
+    state.sourceTextarea = getSourceTextarea(state.root);
+    state.sourceMode = isSourceModeActive(state.contentWrap, state.sourceTextarea);
+    const next = detectScrollContainer(state.editor, state.contentWrap, state.root, state.sourceTextarea);
     if (!(next instanceof HTMLElement) || next === state.scrollContainer)
         return false;
     const previous = state.scrollContainer;
@@ -226,10 +247,11 @@ function collectRefs(root) {
         return null;
     if (!(contentWrap instanceof HTMLElement) || !(editor instanceof HTMLElement))
         return null;
-    const scrollContainer = detectScrollContainer(editor, contentWrap, root);
+    const sourceTextarea = getSourceTextarea(root);
+    const scrollContainer = detectScrollContainer(editor, contentWrap, root, sourceTextarea);
     if (!(scrollContainer instanceof HTMLElement))
         return null;
-    return { root, titleBar, titleTextBox, contentWrap, editor, scrollContainer };
+    return { root, titleBar, titleTextBox, contentWrap, editor, sourceTextarea, scrollContainer };
 }
 function getRootCandidates() {
     const unique = new Set();
@@ -265,76 +287,6 @@ function elementContainsLifecycleTarget(element, activeState) {
             return true;
     }
     return false;
-}
-
-},
-"focus-guard":function(require,module,exports){
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.stopInitialFocusGuard = stopInitialFocusGuard;
-exports.startInitialFocusGuard = startInitialFocusGuard;
-const constants_1 = require("./constants");
-const dom_1 = require("./dom");
-function stopInitialFocusGuard(state) {
-    if (!state)
-        return;
-    state.initialFocusGuardActive = false;
-    if (state.initialFocusTimer)
-        window.clearTimeout(state.initialFocusTimer);
-    state.initialFocusTimer = 0;
-    if (state.onInitialFocusIn)
-        state.root.removeEventListener('focusin', state.onInitialFocusIn, true);
-    if (state.onInitialUserPointer)
-        state.root.removeEventListener('pointerdown', state.onInitialUserPointer, true);
-    if (state.onInitialUserWheel)
-        state.root.removeEventListener('wheel', state.onInitialUserWheel, true);
-    if (state.onInitialUserKey)
-        document.removeEventListener('keydown', state.onInitialUserKey, true);
-    state.onInitialFocusIn = null;
-    state.onInitialUserPointer = null;
-    state.onInitialUserWheel = null;
-    state.onInitialUserKey = null;
-}
-function startInitialFocusGuard(state) {
-    if (!constants_1.CONFIG.preventInitialEditorFocus || !state || state.destroyed)
-        return;
-    state.initialFocusGuardActive = true;
-    const resetToTop = () => {
-        if (!state.initialFocusGuardActive || state.destroyed)
-            return;
-        (0, dom_1.syncScrollContainer)(state);
-        if (state.scrollContainer instanceof HTMLElement)
-            state.scrollContainer.scrollTop = 0;
-    };
-    const dismissAutoFocus = () => {
-        if (!state.initialFocusGuardActive || !state.editor.contains(document.activeElement))
-            return;
-        // Blur the automatically focused editor only; leave its caret/selection untouched.
-        if (document.activeElement instanceof HTMLElement)
-            document.activeElement.blur();
-        resetToTop();
-        // The host may scroll after dispatching focusin; limit correction to two frames.
-        requestAnimationFrame(() => {
-            resetToTop();
-            requestAnimationFrame(resetToTop);
-        });
-    };
-    state.onInitialFocusIn = (event) => {
-        const target = event.target;
-        if (target instanceof Node && (target === state.editor || state.editor.contains(target))) {
-            dismissAutoFocus();
-        }
-    };
-    state.onInitialUserPointer = () => stopInitialFocusGuard(state);
-    state.onInitialUserWheel = () => stopInitialFocusGuard(state);
-    state.onInitialUserKey = () => stopInitialFocusGuard(state);
-    state.root.addEventListener('focusin', state.onInitialFocusIn, true);
-    state.root.addEventListener('pointerdown', state.onInitialUserPointer, true);
-    state.root.addEventListener('wheel', state.onInitialUserWheel, { capture: true, passive: true });
-    document.addEventListener('keydown', state.onInitialUserKey, true);
-    state.initialFocusTimer = window.setTimeout(() => stopInitialFocusGuard(state), constants_1.CONFIG.initialFocusGuardMs);
-    // Handle the case where NocoDB focused the editor before we mounted the guard.
-    dismissAutoFocus();
 }
 
 },
@@ -483,6 +435,222 @@ function mutationMayAffectHeadingContent(mutation, editor) {
 }
 
 },
+"source":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.parseMarkdownHeadings = parseMarkdownHeadings;
+exports.buildSourceHeadingSignature = buildSourceHeadingSignature;
+exports.measureSourceHeadingTops = measureSourceHeadingTops;
+exports.extractSourceHeadings = extractSourceHeadings;
+const heading_1 = require("./heading");
+/**
+ * Parse ATX Markdown headings (# through ######) from source text while skipping fenced code blocks.
+ */
+function parseMarkdownHeadings(markdown) {
+    const source = String(markdown || '');
+    if (!source)
+        return [];
+    const headings = [];
+    let fence = null;
+    let offset = 0;
+    let lineNumber = 0;
+    while (offset <= source.length) {
+        const lineEnd = source.indexOf('\n', offset);
+        const rawLine = lineEnd === -1 ? source.slice(offset) : source.slice(offset, lineEnd);
+        const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+        const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+        if (fenceMatch) {
+            const marker = fenceMatch[1];
+            const rest = fenceMatch[2] || '';
+            const char = marker[0];
+            if (!fence) {
+                if (char !== '`' || !rest.includes('`')) {
+                    fence = { char, length: marker.length };
+                }
+            }
+            else if (fence.char === char && marker.length >= fence.length && /^\s*$/.test(rest)) {
+                fence = null;
+            }
+        }
+        else if (!fence) {
+            const headingMatch = /^ {0,3}(#{1,6})(?:[ \t]+(.*))?$/.exec(line);
+            if (headingMatch) {
+                const level = headingMatch[1].length;
+                const rawText = (headingMatch[2] || '').replace(/[ \t]+#+[ \t]*$/, '');
+                const text = (0, heading_1.normalizeHeadingText)(rawText);
+                if (text) {
+                    headings.push({ level, text, offset, line: lineNumber });
+                }
+            }
+        }
+        if (lineEnd === -1)
+            break;
+        offset = lineEnd + 1;
+        lineNumber += 1;
+    }
+    return headings;
+}
+function buildSourceHeadingSignature(headings) {
+    return headings.map((heading) => `${heading.level}:${heading.text.length}:${heading.text}`).join('\n');
+}
+/**
+ * Estimate or measure vertical pixel offsets for character positions inside a textarea.
+ * Uses a single off-screen mirror element so soft-wrapped lines are accounted for accurately.
+ */
+function measureSourceHeadingTops(textarea, offsets) {
+    if (!offsets.length)
+        return [];
+    const text = textarea.value || '';
+    const totalLines = Math.max(1, text.split('\n').length);
+    if (typeof document === 'undefined' || !document.body || textarea.clientWidth <= 0) {
+        const scrollableHeight = Math.max(0, textarea.scrollHeight || 0);
+        return offsets.map((offset) => {
+            const linesBefore = text.slice(0, offset).split('\n').length - 1;
+            return Math.max(0, Math.round((linesBefore / totalLines) * scrollableHeight));
+        });
+    }
+    const computed = getComputedStyle(textarea);
+    const mirror = document.createElement('div');
+    const styleProps = [
+        'boxSizing',
+        'fontFamily',
+        'fontSize',
+        'fontWeight',
+        'fontStyle',
+        'fontVariant',
+        'letterSpacing',
+        'lineHeight',
+        'paddingTop',
+        'paddingRight',
+        'paddingBottom',
+        'paddingLeft',
+        'borderTopWidth',
+        'borderRightWidth',
+        'borderBottomWidth',
+        'borderLeftWidth',
+        'textIndent',
+        'textTransform',
+        'wordSpacing',
+        'tabSize',
+    ];
+    mirror.style.position = 'fixed';
+    mirror.style.top = '-99999px';
+    mirror.style.left = '-99999px';
+    mirror.style.visibility = 'hidden';
+    mirror.style.pointerEvents = 'none';
+    mirror.style.whiteSpace = 'pre-wrap';
+    mirror.style.wordWrap = 'break-word';
+    mirror.style.overflowWrap = 'break-word';
+    mirror.style.width = `${textarea.clientWidth}px`;
+    for (const prop of styleProps) {
+        mirror.style[prop] = computed[prop];
+    }
+    const markers = [];
+    let cursor = 0;
+    for (const rawOffset of offsets) {
+        const clamped = Math.max(cursor, Math.min(text.length, rawOffset));
+        if (clamped > cursor) {
+            mirror.appendChild(document.createTextNode(text.slice(cursor, clamped)));
+        }
+        const marker = document.createElement('span');
+        marker.textContent = '\u200b';
+        mirror.appendChild(marker);
+        markers.push(marker);
+        cursor = clamped;
+    }
+    if (cursor < text.length) {
+        mirror.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+    document.body.appendChild(mirror);
+    const tops = markers.map((marker) => Math.max(0, Math.round(marker.offsetTop)));
+    mirror.remove();
+    return tops;
+}
+function extractSourceHeadings(textarea) {
+    const parsed = parseMarkdownHeadings(textarea.value);
+    if (!parsed.length)
+        return [];
+    const tops = measureSourceHeadingTops(textarea, parsed.map((item) => item.offset));
+    return parsed.map((item, index) => ({
+        element: null,
+        level: item.level,
+        text: item.text,
+        top: tops[index] ?? 0,
+        sourceOffset: item.offset,
+    }));
+}
+
+},
+"focus-guard":function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.stopInitialFocusGuard = stopInitialFocusGuard;
+exports.startInitialFocusGuard = startInitialFocusGuard;
+const constants_1 = require("./constants");
+const dom_1 = require("./dom");
+function stopInitialFocusGuard(state) {
+    if (!state)
+        return;
+    state.initialFocusGuardActive = false;
+    if (state.initialFocusTimer)
+        window.clearTimeout(state.initialFocusTimer);
+    state.initialFocusTimer = 0;
+    if (state.onInitialFocusIn)
+        state.root.removeEventListener('focusin', state.onInitialFocusIn, true);
+    if (state.onInitialUserPointer)
+        state.root.removeEventListener('pointerdown', state.onInitialUserPointer, true);
+    if (state.onInitialUserWheel)
+        state.root.removeEventListener('wheel', state.onInitialUserWheel, true);
+    if (state.onInitialUserKey)
+        document.removeEventListener('keydown', state.onInitialUserKey, true);
+    state.onInitialFocusIn = null;
+    state.onInitialUserPointer = null;
+    state.onInitialUserWheel = null;
+    state.onInitialUserKey = null;
+}
+function startInitialFocusGuard(state) {
+    if (!constants_1.CONFIG.preventInitialEditorFocus || !state || state.destroyed)
+        return;
+    state.initialFocusGuardActive = true;
+    const resetToTop = () => {
+        if (!state.initialFocusGuardActive || state.destroyed)
+            return;
+        (0, dom_1.syncScrollContainer)(state);
+        if (state.scrollContainer instanceof HTMLElement)
+            state.scrollContainer.scrollTop = 0;
+    };
+    const dismissAutoFocus = () => {
+        if (!state.initialFocusGuardActive || !state.editor.contains(document.activeElement))
+            return;
+        // Blur the automatically focused editor only; leave its caret/selection untouched.
+        if (document.activeElement instanceof HTMLElement)
+            document.activeElement.blur();
+        resetToTop();
+        // The host may scroll after dispatching focusin; limit correction to two frames.
+        requestAnimationFrame(() => {
+            resetToTop();
+            requestAnimationFrame(resetToTop);
+        });
+    };
+    state.onInitialFocusIn = (event) => {
+        const target = event.target;
+        if (target instanceof Node && (target === state.editor || state.editor.contains(target))) {
+            dismissAutoFocus();
+        }
+    };
+    state.onInitialUserPointer = () => stopInitialFocusGuard(state);
+    state.onInitialUserWheel = () => stopInitialFocusGuard(state);
+    state.onInitialUserKey = () => stopInitialFocusGuard(state);
+    state.root.addEventListener('focusin', state.onInitialFocusIn, true);
+    state.root.addEventListener('pointerdown', state.onInitialUserPointer, true);
+    state.root.addEventListener('wheel', state.onInitialUserWheel, { capture: true, passive: true });
+    document.addEventListener('keydown', state.onInitialUserKey, true);
+    state.initialFocusTimer = window.setTimeout(() => stopInitialFocusGuard(state), constants_1.CONFIG.initialFocusGuardMs);
+    // Handle the case where NocoDB focused the editor before we mounted the guard.
+    dismissAutoFocus();
+}
+
+},
 "styles":function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -505,7 +673,8 @@ function injectStyle() {
       --tm-rtoc-left-inset: ${getContentInsetForPanelWidth(constants_1.CONFIG.panelWidth)}px;
     }
 
-    .${constants_1.CLASS.rootOpen} .nc-rich-text-content .tiptap.ProseMirror {
+    .${constants_1.CLASS.rootOpen} .nc-rich-text-content .tiptap.ProseMirror,
+    .${constants_1.CLASS.rootOpen} textarea.nc-rich-text-markdown-source {
       padding-left: var(--tm-rtoc-left-inset) !important;
       box-sizing: border-box !important;
     }
@@ -862,8 +1031,13 @@ function positionButton(state) {
 function positionPanel(state) {
     if (!(state && state.panel instanceof HTMLElement) || !(state.contentWrap instanceof HTMLElement))
         return;
-    const top = Math.round(state.contentWrap.offsetTop + constants_1.CONFIG.panelInsetY);
-    const height = Math.max(220, Math.round(state.contentWrap.offsetHeight - constants_1.CONFIG.panelInsetY - constants_1.CONFIG.panelBottomGap));
+    const hostArea = (state.sourceMode &&
+        state.sourceTextarea instanceof HTMLElement &&
+        state.sourceTextarea.isConnected)
+        ? state.sourceTextarea
+        : state.contentWrap;
+    const top = Math.round(hostArea.offsetTop + constants_1.CONFIG.panelInsetY);
+    const height = Math.max(220, Math.round(hostArea.offsetHeight - constants_1.CONFIG.panelInsetY - constants_1.CONFIG.panelBottomGap));
     state.panel.style.top = `${top}px`;
     state.panel.style.height = `${height}px`;
 }
@@ -1060,17 +1234,26 @@ exports.createState = createState;
 exports.destroyState = destroyState;
 const constants_1 = require("./constants");
 const dom_1 = require("./dom");
+const source_1 = require("./source");
 const focus_guard_1 = require("./focus-guard");
 const heading_1 = require("./heading");
 const ui_1 = require("./ui");
 function buildSnapshot(state) {
-    if (!state || state.destroyed || !(state.editor instanceof HTMLElement))
+    if (!state || state.destroyed)
         return false;
-    if (!state.editor.isConnected)
-        return false;
-    const elements = (0, heading_1.getLiveHeadingElements)(state.editor);
-    state.headings = (0, heading_1.extractHeadings)(state.editor, state.scrollContainer);
-    state.headingSignature = (0, heading_1.buildHeadingSignature)(elements);
+    state.sourceTextarea = (0, dom_1.getSourceTextarea)(state.root);
+    state.sourceMode = (0, dom_1.isSourceModeActive)(state.contentWrap, state.sourceTextarea);
+    if (state.sourceMode && state.sourceTextarea instanceof HTMLTextAreaElement) {
+        state.headings = (0, source_1.extractSourceHeadings)(state.sourceTextarea);
+        state.headingSignature = (0, source_1.buildSourceHeadingSignature)(state.headings);
+    }
+    else {
+        if (!(state.editor instanceof HTMLElement) || !state.editor.isConnected)
+            return false;
+        const elements = (0, heading_1.getLiveHeadingElements)(state.editor);
+        state.headings = (0, heading_1.extractHeadings)(state.editor, state.scrollContainer);
+        state.headingSignature = (0, heading_1.buildHeadingSignature)(elements);
+    }
     if (state.activeIndex >= state.headings.length)
         state.activeIndex = -1;
     (0, ui_1.renderToc)(state, (index, text, level) => jumpToHeading(state, index, text, level));
@@ -1080,6 +1263,15 @@ function buildSnapshot(state) {
 function refreshHeadingGeometry(state) {
     if (!state || state.destroyed || !Array.isArray(state.headings))
         return;
+    if (state.sourceMode && state.sourceTextarea instanceof HTMLTextAreaElement && state.sourceTextarea.isConnected) {
+        const offsets = state.headings.map((heading) => heading.sourceOffset ?? 0);
+        const tops = (0, source_1.measureSourceHeadingTops)(state.sourceTextarea, offsets);
+        state.headings.forEach((heading, index) => {
+            heading.top = tops[index] ?? 0;
+        });
+        commitActiveFromScroll(state, false);
+        return;
+    }
     if (!(state.editor instanceof HTMLElement) || !(state.scrollContainer instanceof HTMLElement))
         return;
     let invalid = false;
@@ -1207,7 +1399,12 @@ function exitManualTocBrowsing(state, ensureVisible) {
 }
 function resolveHeadingForJump(state, index, text, level) {
     let heading = state.headings[index];
-    if (heading && heading.element.isConnected && state.editor.contains(heading.element)) {
+    if (state.sourceMode) {
+        if (heading && typeof heading.sourceOffset === 'number') {
+            return { heading, index };
+        }
+    }
+    else if (heading && heading.element instanceof HTMLElement && heading.element.isConnected && state.editor.contains(heading.element)) {
         return { heading, index };
     }
     if (!buildSnapshot(state))
@@ -1224,11 +1421,23 @@ function jumpToHeading(state, index, text, level) {
     if ((0, dom_1.syncScrollContainer)(state))
         refreshHeadingGeometry(state);
     const resolved = resolveHeadingForJump(state, index, text, level);
-    if (!resolved.heading || !(resolved.heading.element instanceof HTMLElement)) {
+    if (!resolved.heading) {
         (0, ui_1.setStatus)(state, '目录已变化，请刷新后重试。');
         return;
     }
-    const top = (0, heading_1.getHeadingTopWithinScroller)(resolved.heading.element, state.scrollContainer);
+    let top = 0;
+    if (state.sourceMode && state.sourceTextarea instanceof HTMLTextAreaElement && typeof resolved.heading.sourceOffset === 'number') {
+        const measured = (0, source_1.measureSourceHeadingTops)(state.sourceTextarea, [resolved.heading.sourceOffset]);
+        top = measured[0] ?? resolved.heading.top;
+        resolved.heading.top = top;
+    }
+    else if (resolved.heading.element instanceof HTMLElement) {
+        top = (0, heading_1.getHeadingTopWithinScroller)(resolved.heading.element, state.scrollContainer);
+    }
+    else {
+        (0, ui_1.setStatus)(state, '目录已变化，请刷新后重试。');
+        return;
+    }
     state.scrollContainer.scrollTop = Math.max(0, Math.round(top - constants_1.CONFIG.anchorTop));
     (0, ui_1.setActiveItem)(state, resolved.index);
     scheduleEnsureActiveItemVisible(state, true, 80);
@@ -1266,8 +1475,14 @@ function scheduleHeadingCheck(state, delay = constants_1.CONFIG.headingCheckDela
         state.headingCheckTimer = 0;
         if (!state || state.destroyed || !state.open || state.isComposing)
             return;
-        const elements = (0, heading_1.getLiveHeadingElements)(state.editor);
-        const signature = (0, heading_1.buildHeadingSignature)(elements);
+        let signature = '';
+        if (state.sourceMode && state.sourceTextarea instanceof HTMLTextAreaElement && state.sourceTextarea.isConnected) {
+            signature = (0, source_1.buildSourceHeadingSignature)((0, source_1.parseMarkdownHeadings)(state.sourceTextarea.value));
+        }
+        else {
+            const elements = (0, heading_1.getLiveHeadingElements)(state.editor);
+            signature = (0, heading_1.buildHeadingSignature)(elements);
+        }
         if (signature !== state.headingSignature) {
             buildSnapshot(state);
             commitActiveFromScroll(state, false);
@@ -1295,10 +1510,56 @@ function scheduleGeometryRefresh(state, delay = constants_1.CONFIG.geometryRefre
         refreshHeadingGeometry(state);
     }, delay);
 }
+function unbindSourceInput(state) {
+    if (state.boundSourceTextarea && state.onSourceInput) {
+        try {
+            state.boundSourceTextarea.removeEventListener('input', state.onSourceInput, false);
+        }
+        catch (_) { }
+    }
+    state.boundSourceTextarea = null;
+}
+function syncSourceInputBinding(state) {
+    if (!state || state.destroyed)
+        return;
+    const textarea = (0, dom_1.getSourceTextarea)(state.root);
+    state.sourceTextarea = textarea;
+    if (state.boundSourceTextarea === textarea)
+        return;
+    unbindSourceInput(state);
+    if (textarea instanceof HTMLTextAreaElement && state.onSourceInput) {
+        textarea.addEventListener('input', state.onSourceInput, false);
+        state.boundSourceTextarea = textarea;
+        if (state.layoutObserver) {
+            try {
+                state.layoutObserver.observe(textarea);
+            }
+            catch (_) { }
+        }
+    }
+}
+function syncEditorMode(state) {
+    if (!state || state.destroyed || !state.open)
+        return;
+    syncSourceInputBinding(state);
+    const nextSourceMode = (0, dom_1.isSourceModeActive)(state.contentWrap, state.sourceTextarea);
+    const scrollerChanged = (0, dom_1.syncScrollContainer)(state);
+    if (nextSourceMode === state.sourceMode && !scrollerChanged)
+        return;
+    state.sourceMode = nextSourceMode;
+    (0, ui_1.positionUI)(state);
+    buildSnapshot(state);
+    commitActiveFromScroll(state, false);
+}
 function bindEditorRuntime(state) {
     if (!state || state.destroyed || state.runtimeBound)
         return;
     state.onScroll = () => scheduleScrollStopCheck(state);
+    state.onSourceInput = () => {
+        if (!state || state.destroyed || !state.open || !state.sourceMode)
+            return;
+        scheduleHeadingCheck(state);
+    };
     state.onCompositionStart = () => {
         state.isComposing = true;
         if (state.headingCheckTimer)
@@ -1360,6 +1621,17 @@ function bindEditorRuntime(state) {
         state.layoutObserver.observe(state.contentWrap);
         state.layoutObserver.observe(state.editor);
     }
+    syncSourceInputBinding(state);
+    const modeContainer = state.contentWrap.parentElement || state.root;
+    state.modeObserver = new MutationObserver(() => {
+        syncEditorMode(state);
+    });
+    state.modeObserver.observe(modeContainer, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class', 'hidden'],
+    });
     state.runtimeBound = true;
 }
 function unbindEditorRuntime(state) {
@@ -1370,6 +1642,8 @@ function unbindEditorRuntime(state) {
             state.scrollContainer.removeEventListener('scroll', state.onScroll, false);
     }
     catch (_) { }
+    unbindSourceInput(state);
+    state.onSourceInput = null;
     try {
         if (state.onCompositionStart)
             state.editor.removeEventListener('compositionstart', state.onCompositionStart, false);
@@ -1391,10 +1665,15 @@ function unbindEditorRuntime(state) {
     }
     catch (_) { }
     try {
+        state.modeObserver?.disconnect();
+    }
+    catch (_) { }
+    try {
         state.layoutObserver?.disconnect();
     }
     catch (_) { }
     state.editorObserver = null;
+    state.modeObserver = null;
     state.layoutObserver = null;
     state.runtimeBound = false;
 }
@@ -1436,6 +1715,7 @@ function createState(root) {
         ...refs,
         destroyed: false,
         open: false,
+        sourceMode: (0, dom_1.isSourceModeActive)(refs.contentWrap, refs.sourceTextarea),
         snapshotReady: false,
         headings: [],
         headingSignature: '',
@@ -1450,8 +1730,11 @@ function createState(root) {
         resizer: null,
         runtimeBound: false,
         editorObserver: null,
+        modeObserver: null,
         layoutObserver: null,
         onScroll: null,
+        onSourceInput: null,
+        boundSourceTextarea: null,
         onCompositionStart: null,
         onCompositionEnd: null,
         onMediaLoad: null,
@@ -1543,7 +1826,7 @@ function destroyState(state) {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js
-// @version      0.3.0
+// @version      0.3.1
 // @description  为 NocoDB Rich Text 弹窗提供纯 DOM、低侵入的可滚动 TOC 大纲与标题定位
 // @match        https://nocodb.380782744.xyz/*
 // @run-at       document-idle
