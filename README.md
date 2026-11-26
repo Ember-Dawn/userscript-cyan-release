@@ -65,8 +65,6 @@ userscript-cyan-release/
 | NocoDB Rich Text 视觉样式增强 | [`nocodb-richtext-style.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-style.user.js) | 为 H1-H6、加粗文字、`【xxx】` 和 `「xxx」` 提供显示层颜色增强，并统一放宽顶层段落与有序/无序列表之后的间距。 |
 | NocoDB Rich Text 图片查看器 | [`nocodb-richtext-image.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-image.user.js) | 调整 Rich Text 正文图片宽度并居中；双击图片可缩放、拖拽和查看原始尺寸。 |
 | NocoDB 音频播放器 | [`nocodb-audio-player.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-audio-player.user.js) | 接管指定 Media Manager MP3 Button，在 NocoDB 页面内显示可拖动的深色悬浮播放器，并提供进度、倍速和快捷键控制。 |
-| NocoDB Markdown 表格 | [`nocodb-markdown-table.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-markdown-table.user.js) | 自动识别 Markdown 表格，并提供表格渲染、单元格编辑及行列增删。 |
-| NocoDB Rich Text Markdown 序列化修复 | [`nocodb-richtext-markdown-fix.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-fix.user.js) | 修复块级图片后标题与代码块保存时的拼接问题；自动覆盖新创建的 Rich Text 编辑器实例。 |
 | NocoDB Rich Text Markdown 导出 | [`nocodb-richtext-markdown-export.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-markdown-export.user.js) | 将当前 Rich Text 编辑器导出为普通 Markdown，并通过“切换 TOC”按钮锚点定位导出按钮。 |
 | NocoDB Rich Text 大纲 | [`nocodb-richtext-outline.user.js`](https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-outline.user.js) | 以纯 DOM 旁路方式提供可滚动、可调宽度的 H1-H6 TOC。 |
 

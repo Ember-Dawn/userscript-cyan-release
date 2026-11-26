@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.8
+// @version      0.1.9
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -1040,14 +1040,14 @@ function initImageViewer() {
      * NocoDB Rich Text 图片查看器
      *
      * 设计原则：
-     * 1. 正文图片仅通过 CSS 改变显示尺寸，不修改 ProseMirror 文档内容。
+     * 1. 保留 NocoDB 原生正文图片排版，不覆盖编辑器内部图片尺寸或对齐样式。
      * 2. 图片查看器挂载到 document.body，不向 ProseMirror 正文插入任何 DOM。
      * 3. 使用事件委托处理动态打开的 Rich Text 编辑器，不需要 MutationObserver。
-     * 4. 双击只接管 NocoDB Rich Text 正文中的普通图片，不接管 Markdown 表格 NodeView。
+     * 4. 双击只接管 NocoDB Rich Text 正文中的普通图片，不接管 Markdown 表格 NodeView 与 ProseMirror 分隔符。
      */
     const STYLE_ID = 'tm-nocodb-richtext-image-style-v01';
     const VIEWER_ID = 'tm-nocodb-richtext-image-viewer-v01';
-    const IMAGE_SELECTOR = '.nc-rich-text-content .ProseMirror img[contenteditable="false"][draggable="true"]';
+    const IMAGE_SELECTOR = '.nc-rich-text-content .ProseMirror img:not(.ProseMirror-separator)';
     const MARKDOWN_TABLE_SELECTOR = '[data-nocodb-markdown-table-id]';
     const MIN_SCALE = 0.1;
     const MAX_SCALE = 5;
@@ -1072,15 +1072,6 @@ function initImageViewer() {
         const style = document.createElement('style');
         style.id = STYLE_ID;
         style.textContent = `
-      ${IMAGE_SELECTOR} {
-        display: block !important;
-        width: auto !important;
-        max-width: 70% !important;
-        height: auto !important;
-        margin: 12px auto !important;
-        cursor: zoom-in !important;
-      }
-
       #${VIEWER_ID} {
         position: fixed;
         inset: 0;
@@ -1370,9 +1361,11 @@ function initImageViewer() {
         if (!(target instanceof Element))
             return false;
         const image = target.closest(IMAGE_SELECTOR);
-        if (!image)
+        if (!(image instanceof HTMLImageElement))
             return false;
         if (image.closest(MARKDOWN_TABLE_SELECTOR))
+            return false;
+        if (!(image.currentSrc || image.getAttribute('src')))
             return false;
         return image;
     }
@@ -1781,7 +1774,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.8
+// @version      0.1.9
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
