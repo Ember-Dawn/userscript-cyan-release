@@ -5,7 +5,7 @@
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan-release/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.9
+// @version      0.1.10
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
@@ -1242,48 +1242,14 @@ function initImageViewer() {
             scale: root.querySelector('.tm-nri-scale'),
             toolbar: root.querySelector('.tm-nri-toolbar'),
         };
-        viewer.toolbar.addEventListener('click', (event) => {
-            const button = event.target.closest('button[data-action]');
-            if (!button)
-                return;
-            switch (button.dataset.action) {
-                case 'zoom-out':
-                    zoomTo(state.scale / ZOOM_STEP);
-                    break;
-                case 'zoom-in':
-                    zoomTo(state.scale * ZOOM_STEP);
-                    break;
-                case 'fit':
-                    fitImage();
-                    break;
-                case 'original':
-                    showOriginalSize();
-                    break;
-                case 'close':
-                    closeViewer();
-                    break;
-                default:
-                    break;
-            }
-        });
         viewer.viewport.addEventListener('wheel', (event) => {
             if (!state.open)
                 return;
             event.preventDefault();
+            event.stopPropagation();
             const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
             zoomTo(state.scale * factor, event.clientX, event.clientY);
         }, { passive: false });
-        viewer.image.addEventListener('pointerdown', (event) => {
-            if (!state.open || event.button !== 0)
-                return;
-            event.preventDefault();
-            state.dragging = true;
-            state.dragPointerId = event.pointerId;
-            state.dragLastX = event.clientX;
-            state.dragLastY = event.clientY;
-            viewer.image.classList.add('is-dragging');
-            viewer.image.setPointerCapture(event.pointerId);
-        });
         viewer.image.addEventListener('pointermove', (event) => {
             if (!state.dragging || event.pointerId !== state.dragPointerId)
                 return;
@@ -1293,25 +1259,61 @@ function initImageViewer() {
             state.dragLastY = event.clientY;
             updateTransform();
         });
-        function stopDragging(event) {
-            if (!state.dragging || event.pointerId !== state.dragPointerId)
-                return;
-            state.dragging = false;
-            state.dragPointerId = null;
-            viewer.image.classList.remove('is-dragging');
-        }
-        viewer.image.addEventListener('pointerup', stopDragging);
         viewer.image.addEventListener('pointercancel', stopDragging);
-        viewer.viewport.addEventListener('click', (event) => {
-            if (event.target === viewer.viewport)
-                closeViewer();
-        });
-        viewer.image.addEventListener('dblclick', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            fitImage();
-        });
         return viewer;
+    }
+    function startDragging(event) {
+        if (!viewer || !state.open || event.button !== 0)
+            return;
+        state.dragging = true;
+        state.dragPointerId = event.pointerId;
+        state.dragLastX = event.clientX;
+        state.dragLastY = event.clientY;
+        viewer.image.classList.add('is-dragging');
+        try {
+            viewer.image.setPointerCapture(event.pointerId);
+        }
+        catch (_) { }
+    }
+    function stopDragging(event) {
+        if (!viewer || !state.dragging || event.pointerId !== state.dragPointerId)
+            return;
+        state.dragging = false;
+        state.dragPointerId = null;
+        viewer.image.classList.remove('is-dragging');
+    }
+    function handleToolbarAction(action) {
+        switch (action) {
+            case 'zoom-out':
+                zoomTo(state.scale / ZOOM_STEP);
+                break;
+            case 'zoom-in':
+                zoomTo(state.scale * ZOOM_STEP);
+                break;
+            case 'fit':
+                fitImage();
+                break;
+            case 'original':
+                showOriginalSize();
+                break;
+            case 'close':
+                closeViewer();
+                break;
+            default:
+                break;
+        }
+    }
+    function isEventInsideViewer(event) {
+        return Boolean(state.open &&
+            viewer &&
+            event.target instanceof Node &&
+            viewer.root.contains(event.target));
+    }
+    function isolateViewerEvent(event) {
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
     }
     function openViewer(sourceImage) {
         const source = sourceImage.currentSrc || sourceImage.src;
@@ -1377,6 +1379,56 @@ function initImageViewer() {
         event.stopPropagation();
         openViewer(image);
     }, true);
+    // Isolate all pointer/click events inside the fullscreen viewer at window capture phase
+    // so NocoDB modal's outside-click listeners never close the underlying Rich Text modal.
+    window.addEventListener('pointerdown', (event) => {
+        if (!isEventInsideViewer(event))
+            return;
+        event.preventDefault();
+        isolateViewerEvent(event);
+        if (event.target === viewer.image)
+            startDragging(event);
+    }, true);
+    window.addEventListener('pointerup', (event) => {
+        if (state.dragging)
+            stopDragging(event);
+        if (!isEventInsideViewer(event))
+            return;
+        isolateViewerEvent(event);
+    }, true);
+    window.addEventListener('click', (event) => {
+        if (!isEventInsideViewer(event))
+            return;
+        event.preventDefault();
+        isolateViewerEvent(event);
+        const target = event.target;
+        if (!(target instanceof Element))
+            return;
+        const button = target.closest('button[data-action]');
+        if (button && viewer.toolbar.contains(button)) {
+            handleToolbarAction(button.dataset.action);
+            return;
+        }
+        if (target === viewer.viewport) {
+            closeViewer();
+        }
+    }, true);
+    window.addEventListener('dblclick', (event) => {
+        if (!isEventInsideViewer(event))
+            return;
+        event.preventDefault();
+        isolateViewerEvent(event);
+        if (event.target === viewer.image) {
+            fitImage();
+        }
+    }, true);
+    for (const type of ['mousedown', 'mouseup', 'touchstart', 'touchend', 'contextmenu']) {
+        window.addEventListener(type, (event) => {
+            if (!isEventInsideViewer(event))
+                return;
+            isolateViewerEvent(event);
+        }, true);
+    }
     document.addEventListener('keydown', (event) => {
         if (!state.open)
             return;
@@ -1774,7 +1826,7 @@ function initListFold() {
 // @supportURL   https://github.com/Ember-Dawn/userscript-cyan/issues
 // @updateURL    https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/Ember-Dawn/userscript-cyan-release/main/userscripts/nocodb/nocodb-richtext-enhancer.user.js
-// @version      0.1.9
+// @version      0.1.10
 // @description  NocoDB Rich Text 样式、代码块操作、图片预览和嵌套列表折叠
 // @match        https://nocodb.380782744.xyz/*
 // @grant        GM_setClipboard
